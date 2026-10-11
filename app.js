@@ -273,11 +273,69 @@ async function viewEvents() {
 
 const KIND = { build: 'Bau', research: 'Forschung', ship: 'Schiffe', probe: 'Sonden', trade: 'Handel', defense: 'Verteidigung', fleet: 'Flotte', transport: 'Transport' };
 
+/* Autobuilder-Steuerung: Kommandos gehen über den Collector an den Autobuilder (start live/dry bis #N, stop, adopt).
+   Der Autobuilder prüft selbst Plan-id und „bis #“; ältere Kommandos als 10–15 min verfallen. */
+function abCard(active, hb, cmds, own) {
+  const plan = active?.payload, st = hb?.state || {};
+  const fresh = hb && (Date.now() - new Date(hb.at)) / 60e3 < 3;
+  const ok = fresh && plan && st.plan === plan.id;
+  const t0 = plan ? Date.parse(plan.startTime) : 0;
+  let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2>
+    <span class="muted small">${hb ? `${esc(hb.version)} · ${esc(ago(hb.at))}` : 'kein Lebenszeichen'}</span></div>`;
+  if (!hb) html += '<p class="muted">Noch kein Lebenszeichen. Autobuilder ab 0.4 und Collector ab 0.3 im Spiel-Tab nötig.</p>';
+  else html += `<p><b class="${fresh ? '' : 'err'}">${!fresh ? 'nicht erreichbar (Tab zu oder ausgeloggt)' : st.running ? (st.mode === 'live' ? `LÄUFT bis #${esc(st.until)}` : `PROBELAUF bis #${esc(st.until)}`) : 'angehalten'}</b>
+    <span class="muted small"> · Plan im Spiel ${esc(st.plan || '–')}${st.next && st.running ? ` · nächste Prüfung ${esc(dt(st.next))}` : ''}${st.ahead != null ? ` · Vorlauf ${esc(fmt(st.ahead, 1))} h` : ''}</span></p>`;
+  if (!active) html += '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben.</p>';
+  else {
+    html += `<p class="small">Freigegeben: <b>${esc(active.title)}</b> (Plan-id ${esc(plan?.id)}, ${esc(active.status)})</p>`;
+    if (hb && fresh && st.plan !== plan?.id) {
+      html += st.offered === plan?.id
+        ? `<p class="warn small">Der Autobuilder hat den freigegebenen Plan angeboten bekommen, arbeitet aber noch mit ${esc(st.plan)}.</p>
+           ${own ? `<button class="primary" data-cmd="adopt"${st.running ? ' disabled title="erst stoppen"' : ''}>Plan im Autobuilder übernehmen</button>` : ''}`
+        : '<p class="muted small">Der Collector bietet den Plan beim nächsten Abgleich an (bis 1 min).</p>';
+    }
+    if (own && ok) html += `<div class="row" style="margin:8px 0">bis # <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(st.until || 10)}" style="width:5em">
+      <button data-cmd="dry">Probelauf</button> <button class="primary" data-cmd="live">Start</button> <button class="danger" data-cmd="stop">Stopp</button></div>
+      <div class="muted small" id="abStep"></div>`;
+    else if (own && fresh && st.running) html += `<div class="row" style="margin:8px 0"><button class="danger" data-cmd="stop">Stopp</button></div>`;
+    if (plan) html += `<details><summary class="small">Planschritte (${plan.steps.length})</summary><table class="small">${plan.steps.map((s, i) =>
+      `<tr class="step" data-i="${i + 1}"><td class="num">#${i + 1}</td><td>${esc(s[5])}</td><td class="num muted">${esc(dt(t0 + s[3] * 3600e3))}</td></tr>`).join('')}</table></details>`;
+  }
+  if (cmds.length) html += `<h3>Letzte Kommandos</h3><table class="small">${cmds.map(c => `<tr><td>${esc(dt(c.created_at))}</td>
+    <td>${esc(c.cmd)}${c.args?.mode ? ' ' + esc(c.args.mode) : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}</td>
+    <td><span class="tag">${esc(c.status)}</span></td><td class="muted">${esc(c.result)}</td></tr>`).join('')}</table>`;
+  return html + '</div>';
+}
+
+async function sendCmd(active, cmd) {
+  const plan = active.payload;
+  const until = +($('#abUntil')?.value || 0);
+  const step = plan.steps[until - 1];
+  const args = cmd === 'stop' ? {} : cmd === 'adopt' ? { plan: plan.id } : { mode: cmd, until, plan: plan.id };
+  if (cmd === 'live' || cmd === 'dry') {
+    if (!step) return toast(`„bis #“ zwischen 1 und ${plan.steps.length}`);
+    if (cmd === 'live' && !confirm(`Planschritte bis #${until} (${step[5]}) LIVE starten?\nDer Autobuilder baut danach selbständig im Spiel.`)) return;
+  } else if (!confirm(cmd === 'stop' ? 'Autobuilder anhalten?' : `Plan ${plan.id} im Autobuilder übernehmen? Danach „bis #“ neu wählen.`)) return;
+  try {
+    await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
+      body: { account_id: S.acc, script: 'autobuilder', cmd: cmd === 'live' || cmd === 'dry' ? 'start' : cmd, args, plan_id: active.id } });
+    toast('Kommando gesendet – der Collector holt es innerhalb 1 min ab');
+    setTimeout(route, 1500);
+  } catch (e) { toast(e.message); }
+}
+
 async function viewPlans() {
-  const plans = await Cloud.q('plans', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 50,
-    select: 'id,kind,source,status,title,note,plan_hash,created_at,approved_at,status_at' });
+  const acc = `eq.${S.acc}`;
+  const [plans, active, hbs, cmds] = await Promise.all([
+    Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 50,
+      select: 'id,kind,source,status,title,note,plan_hash,created_at,approved_at,status_at' }),
+    Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
+      select: 'id,status,title,plan_hash,payload' }),
+    Cloud.q('heartbeats', { account_id: acc, script: 'eq.autobuilder', order: 'at.desc', limit: 1 }),
+    Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', order: 'id.desc', limit: 8 }),
+  ]);
   const own = isOwner();
-  $('#view').innerHTML = `<div class="card"><h2>Pläne</h2>
+  $('#view').innerHTML = abCard(active[0], hbs[0], cmds, own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
@@ -296,6 +354,12 @@ async function viewPlans() {
     try { await Cloud.rpc('plan_status', { p_id: b.dataset.id, p_status: act }); toast('Gespeichert'); route(); }
     catch (e) { toast(e.message); }
   }));
+  $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active[0], b.dataset.cmd)));
+  const showStep = () => { const s = active[0]?.payload?.steps?.[+$('#abUntil').value - 1]; $('#abStep').textContent = s ? `#${$('#abUntil').value}: ${s[5]}` : ''; };
+  if ($('#abUntil')) {
+    $('#abUntil').addEventListener('input', showStep); showStep();
+    $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => { $('#abUntil').value = r.dataset.i; showStep(); }));
+  }
 }
 
 /* ---------- Wissen (Gebäude und Forschung, Datenbank Runde 7) ---------- */
