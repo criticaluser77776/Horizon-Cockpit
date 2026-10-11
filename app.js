@@ -201,7 +201,7 @@ async function viewLage() {
   const d = head ? S.snap?.data : null;
   // jüngster Stand des Autobuilders (laufende Aufträge, Rohstoffe aus seiner letzten Prüfung)
   const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
-  let html = runCard(sess) + sessionsCard(sess);
+  let html = runCard(sess) + sessionsCard(sess) + bannerCard(sess);
   if (!d) {
     html += `<div class="card warn"><h2>Noch kein Live-Stand</h2><p class="muted">Sobald der Collector (ab Version 0.2) mit diesem Account
       verbunden ist, erscheint hier der Spielstand. Bis dahin: Mehr → Geräte &amp; Rechte → Firefox-Gerät als „Skript“ freigeben.</p></div>`;
@@ -259,13 +259,43 @@ async function viewLage() {
     : '<p class="muted">Noch keine erfasst. Der Collector trägt Freischaltungen ein (Werft, Raumhafen, Flotte …).</p>'}</div>`;
   html += '</div>';
   $('#view').innerHTML = html;
+  $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
+}
+
+/* ---------- Werbebanner (Autobuilder ab 0.5.1) ----------
+   Der Autobuilder meldet aktive Banner im Lebenszeichen; aufgerufen werden sie nur per Kommando „banner“ nach Tippen des Owners. */
+const bannerDev = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game' && x.ab.state?.banner?.n);
+function bannerCard(sess) {
+  const x = bannerDev(sess), b = x?.ab.state.banner;
+  if (!b) return '';
+  return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(dt(b.since))}</span></div>
+    <p>${esc(b.n)} von 3 aktiv auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Monitor ${esc(s.slot)}: ${esc(s.host || (s.href ? 'intern' : 'ohne Link'))}
+    <span class="muted">${esc(s.href || s.src || '')}</span>`).join('<br>')}</div>
+    ${isOwner() ? '<div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Banner jetzt öffnen</button></div>' : ''}</div>`;
+}
+async function sendBanner(sess) {
+  const x = bannerDev(sess);
+  if (!x) return toast('Kein Gerät mit aktiven Bannern erreichbar');
+  if (!confirm(`Banner auf ${x.name} jetzt einmal aufrufen?`)) return;
+  try {
+    await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
+      body: { account_id: S.acc, script: 'autobuilder', cmd: 'banner', args: {}, target_device: x.device } });
+    toast(`Kommando an ${x.name} gesendet – Ergebnis unter Ereignisse`);
+    setTimeout(() => route(true), 1500);
+  } catch (e) { toast(e.message); }
 }
 
 const CAT = { builder: 'Builder', cockpit: 'Cockpit', spiel: 'Spiel', system: 'System' };
 function evRow(e) {
   return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}" data-id="${esc(e.id)}"><div class="row between">
     <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}</span><span class="muted small">${esc(dt(e.t))}</span></div>
-    <div>${esc(e.text)}</div><div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+    <div>${esc(e.text)}</div>${bannerSlots(e)}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+}
+// Werbebanner (Autobuilder ab 0.5.1): Ziele nur als Text zeigen; ob und wie sie geöffnet werden, ist noch offen
+function bannerSlots(e) {
+  const s = e.kind === 'banner' && Array.isArray(e.data?.slots) ? e.data.slots : [];
+  return s.length ? `<div class="small">${s.map(x => `Monitor ${esc(x.slot)}: ${esc(x.host || (x.href ? 'intern' : 'ohne Link'))}
+    <span class="muted">${esc(x.href || x.onclick || x.src || '')}</span>`).join('<br>')}</div>` : '';
 }
 
 /* ---------- Sitzungen und Lauf (mehrere PCs) ----------
@@ -319,14 +349,30 @@ function runBody(sess) {
   }
   return html;
 }
+// Versionen vergleichen ('0.5.10' > '0.5.9')
+const verCmp = (a, b) => {
+  const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
+  return 0;
+};
 function sessionsCard(sess) {
   const shown = sess.devs.filter(x => x.holds || isFresh(x.last, 7 * 24 * 60));
   const hidden = sess.devs.length - shown.length;
+  // neueste Version je Skript unter den gezeigten Geräten; ältere Stände markieren (Tampermonkey holt Updates selbst)
+  const top = { ab: '', col: '' };
+  for (const x of shown) for (const k of ['ab', 'col']) if (x[k] && verCmp(x[k].version, top[k]) > 0) top[k] = x[k].version;
+  const ver = (x, k, label) => {
+    if (!x[k]) return '';
+    const old = verCmp(x[k].version, top[k]) < 0;
+    return `<span class="${old ? 'err' : ''}" title="${old ? `veraltet, neueste ${esc(top[k])}` : ''}">${label} ${esc(x[k].version)}${old ? ' ↓' : ''}</span>`;
+  };
+  const stale = shown.some(x => ['ab', 'col'].some(k => x[k] && verCmp(x[k].version, top[k]) < 0));
   return `<div class="card"><h2>Sitzungen</h2>${shown.length ? `<table>${shown.map(x => {
     const st = devState(x);
     return `<tr><td>${x.holds ? '★ ' : ''}<b>${esc(x.name)}</b><div class="small ${st.on ? '' : 'muted'}">${esc(st.txt)}</div></td>
-      <td class="num small muted">${x.ab ? 'AB ' + esc(x.ab.version) : ''}${x.col ? `<br>C ${esc(x.col.version)}` : ''}</td></tr>`;
+      <td class="num small muted">${ver(x, 'ab', 'AB')}${x.ab && x.col ? '<br>' : ''}${ver(x, 'col', 'C')}</td></tr>`;
   }).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>'}
+    ${stale ? '<p class="small err">Die PCs haben verschiedene Skript-Stände (↓ = veraltet). Tampermonkey holt Updates selbst, sobald das Skript einmal über die Update-Adresse installiert ist; sonst dort „Nach Updates suchen“.</p>' : ''}
     <p class="muted small">★ = hält den Lauf. Nur ein PC kann im Spiel eingeloggt sein; ein eingeloggter PC übernimmt den Lauf
     (Option im Autobuilder).${hidden ? ` ${hidden} ältere Geräte ausgeblendet.` : ''}</p></div>`;
 }
