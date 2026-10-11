@@ -149,18 +149,28 @@ function renderNoAccount() {
 
 const VIEWS = { lage: viewLage, ereignisse: viewEvents, plaene: viewPlans, wissen: viewWissen, mehr: viewMore };
 
-async function route() {
+// soft = automatische Aktualisierung: ohne „Lädt …“, die Ansicht bleibt bis zum Neuaufbau stehen
+async function route(soft) {
   if (!Cloud.loggedIn() || !S.acc) return;
   const [tab = 'lage', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
   const fn = VIEWS[tab] || viewLage;
   document.querySelectorAll('nav.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === (VIEWS[tab] ? tab : 'lage')));
-  $('#view').innerHTML = '<p class="muted pad">Lädt …</p>';
+  if (soft !== true) $('#view').innerHTML = '<p class="muted pad">Lädt …</p>';
   try { await fn(rest); } catch (e) {
     if (e instanceof LoginNeeded) return renderLogin(e.message);
     $('#view').innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p><button onclick="route()">Erneut versuchen</button></div>`;
   }
   updateBadge();
 }
+
+// Lage und Pläne alle 30 s still neu laden (nur sichtbar, nicht während einer Eingabe oder bei aufgeklappter Liste).
+// Der große Live-Stand kommt dabei nur bei neuem Zeitstempel (S.snap), sonst nur Lauf, Lebenszeichen, Ereignisse.
+setInterval(() => {
+  const tab = location.hash.replace(/^#\/?/, '').split('/')[0] || 'lage';
+  if (document.visibilityState !== 'visible' || !['lage', 'plaene'].includes(tab)) return;
+  if (document.activeElement?.matches?.('input,select,textarea')) return;
+  route(true);
+}, 30000);
 
 async function updateBadge() {
   try {
@@ -175,15 +185,23 @@ const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [snaps, beats, evs, feats] = await Promise.all([
-    Cloud.q('state_latest', { account_id: acc, select: 'kind,collected_at,version,data' }),
-    Cloud.q('heartbeats', { account_id: acc, order: 'at.desc' }),
+  const [heads, sess, evs, feats] = await Promise.all([
+    Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
+    loadSessions(),
     Cloud.q('events', { account_id: acc, order: 't.desc', limit: 6 }),
     Cloud.q('features', { account_id: acc, order: 'key' }),
   ]);
-  const live = snaps.find(s => s.kind === 'live');
-  const d = live?.data;
-  let html = '';
+  // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
+  const head = heads[0];
+  if (head && (S.snap?.acc !== S.acc || S.snap?.at !== head.collected_at)) {
+    const full = await Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'collected_at,data' });
+    S.snap = { acc: S.acc, at: head.collected_at, data: full[0]?.data };
+  }
+  const live = head ? { collected_at: head.collected_at } : null;
+  const d = head ? S.snap?.data : null;
+  // jüngster Stand des Autobuilders (laufende Aufträge, Rohstoffe aus seiner letzten Prüfung)
+  const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
+  let html = runCard(sess) + sessionsCard(sess);
   if (!d) {
     html += `<div class="card warn"><h2>Noch kein Live-Stand</h2><p class="muted">Sobald der Collector (ab Version 0.2) mit diesem Account
       verbunden ist, erscheint hier der Spielstand. Bis dahin: Mehr → Geräte &amp; Rechte → Firefox-Gerät als „Skript“ freigeben.</p></div>`;
@@ -211,20 +229,23 @@ async function viewLage() {
       const ratio = need[k] ? Math.min(1, (avail[k] || 0) / need[k]) : 1;
       return `<tr><td>${k}</td><td class="num">${fmt(avail[k])} / ${fmt(need[k])}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(ratio * 100)}%"></i></div></td><td class="num">${fmt(ratio * 100)} %</td></tr>`;
     }).join('')}</table></div>`;
-    // laufende Aufträge
-    const jobs = [...(d.buildings?.items || []).map(i => ({ ...i, k: 'Bau' })), ...(d.research?.items || []).map(i => ({ ...i, k: 'Forschung' }))]
-      .filter(i => i.inProgress);
-    html += `<div class="card"><h2>Laufende Aufträge</h2>${jobs.length ? `<table>${jobs.map(j => {
-      const end = j.remaining != null ? new Date(at.getTime() + j.remaining * 1000) : null;
-      const left = end ? (end - Date.now()) / 1000 : null;
-      const pct = j.totalTime && j.remaining != null ? Math.min(100, Math.max(0, 100 - left / j.totalTime * 100)) : null;
-      return `<tr><td><span class="tag">${j.k}</span> ${esc(j.name || j.type)} → ${esc(j.level)}
-        ${pct == null ? '' : `<div class="bar"><i style="width:${pct.toFixed(0)}%"></i></div>`}</td>
-        <td class="num">${end ? `${left > 0 ? dur(left) : 'fertig'}<div class="muted small">${esc(dt(end))}</div>` : '–'}</td></tr>`;
-    }).join('')}</table>` : '<p class="muted">Keine – Baustelle/Labor frei.</p>'}</div>`;
-    // Stufen
+    // laufende Aufträge: aus der letzten Prüfung des Autobuilders, wenn die neuer ist als der Live-Stand (Starts des
+    // Autobuilders erscheinen sofort, nicht erst nach dem nächsten Login)
     const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
     const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
+    const fromAb = abLive && abLive.liveAt > at.getTime();
+    const jobs = fromAb
+      ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', type: j.t, name: W?.[j.k === 'b' ? 'B' : 'R']?.[j.t]?.n, level: j.l, end: new Date(j.end) }))
+      : [...(d.buildings?.items || []).map(i => ({ ...i, k: 'Bau' })), ...(d.research?.items || []).map(i => ({ ...i, k: 'Forschung' }))]
+        .filter(i => i.inProgress).map(j => ({ ...j, end: j.remaining != null ? new Date(at.getTime() + j.remaining * 1000) : null }));
+    html += `<div class="card"><div class="row between"><h2>Laufende Aufträge</h2><span class="muted small">${fromAb
+      ? `Autobuilder ${esc(ago(abLive.liveAt))}` : `Live-Stand ${esc(ago(live.collected_at))}`}</span></div>${jobs.length ? `<table>${jobs.map(j => {
+      const left = j.end ? (j.end - Date.now()) / 1000 : null;
+      const pct = j.totalTime && left != null ? Math.min(100, Math.max(0, 100 - left / j.totalTime * 100)) : null;
+      return `<tr><td><span class="tag">${j.k}</span> ${esc(j.name || j.type)} → ${esc(j.level)}
+        ${pct == null ? '' : `<div class="bar"><i style="width:${pct.toFixed(0)}%"></i></div>`}</td>
+        <td class="num">${j.end ? `${left > 0 ? dur(left) : 'fertig'}<div class="muted small">${esc(dt(j.end))}</div>` : '–'}</td></tr>`;
+    }).join('')}</table>` : '<p class="muted">Keine – Baustelle/Labor frei.</p>'}</div>`;
     const lv = (items, set) => items.map(i => `<tr><td>${esc(nm(i, set))}</td><td class="num">${esc(i.levelDone ?? i.level)}${i.inProgress ? ` → ${esc(i.level)}` : ''}</td></tr>`).join('');
     html += `<div class="card"><h2>Gebäude</h2><table>${lv(d.buildings?.items || [], "B")}</table>
       ${d.buildings?.space ? `<p class="muted small">Bauplatz frei ${fmt(d.buildings.space.free)} von ${fmt(d.buildings.space.total)}</p>` : ''}</div>`;
@@ -232,10 +253,6 @@ async function viewLage() {
     html += '</div>';
   }
   html += '<div class="grid" style="margin-top:12px">';
-  html += `<div class="card"><h2>Skripte</h2>${beats.length ? `<table>${beats.map(b => {
-    const old = (Date.now() - new Date(b.at)) / 60e3 > 30;
-    return `<tr><td>${esc(b.script)} <span class="muted small">${esc(b.version)}</span></td><td class="num${old ? ' err' : ''}">${esc(ago(b.at))}</td></tr>`;
-  }).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>'}</div>`;
   html += `<div class="card"><div class="row between"><h2>Letzte Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
   html += `<div class="card"><h2>Funktionen</h2>${feats.length ? `<table>${feats.map(f => `<tr><td>${esc(f.label || f.key)}${f.unlocked_at ? '' : ' <span class="muted small">(gesperrt)</span>'}</td>
     <td title="${esc(STAGES[f.stage])}"><span class="stage">${STAGES.map((_, i) => `<i class="${i <= f.stage ? 'on' : ''}"></i>`).join('')}</span> <span class="small muted">${esc(STAGES[f.stage])}</span></td></tr>`).join('')}</table>`
@@ -244,25 +261,93 @@ async function viewLage() {
   $('#view').innerHTML = html;
 }
 
+const CAT = { builder: 'Builder', cockpit: 'Cockpit', spiel: 'Spiel', system: 'System' };
 function evRow(e) {
   return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}" data-id="${esc(e.id)}"><div class="row between">
-    <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> ${esc(e.kind)}</span><span class="muted small">${esc(dt(e.t))}</span></div>
-    <div>${esc(e.text)}</div><div class="muted small">${esc(e.origin)}</div></div>`;
+    <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}</span><span class="muted small">${esc(dt(e.t))}</span></div>
+    <div>${esc(e.text)}</div><div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+}
+
+/* ---------- Sitzungen und Lauf (mehrere PCs) ----------
+   runs: genau ein Lauf je Account (Gerät, Plan, bis #, Zustand); heartbeats je Gerät: Autobuilder (voller Zustand inkl.
+   Seite Spiel/Login) und Collector. „verloren“ setzt Supabase selbst (pg_cron), wenn der Halter 3 min schweigt. */
+const RUNST = { laeuft: 'läuft', schlaeft: 'schläft (ausgeloggt)', angehalten: 'angehalten', verloren: 'verloren' };
+const isFresh = (t, min = 3) => !!t && (Date.now() - new Date(t)) / 60e3 < min;
+const clockT = t => t ? new Date(t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '–';
+async function loadSessions() {
+  const acc = `eq.${S.acc}`;
+  const [runs, hbs] = await Promise.all([
+    Cloud.q('runs', { account_id: acc, script: 'eq.autobuilder' }),
+    Cloud.q('heartbeats', { account_id: acc, order: 'at.desc' }),
+  ]);
+  const by = {};
+  for (const h of hbs) {
+    const x = by[h.device] ||= { device: h.device, name: '', ab: null, col: null };
+    if (h.script === 'autobuilder') x.ab = h; else if (h.script === 'collector') x.col = h;
+    if (h.name && !x.name) x.name = h.name;
+  }
+  const run = runs[0] || null;
+  const devs = Object.values(by).map(x => ({ ...x, name: x.name || `Gerät ${x.device.slice(0, 6)}`, holds: run?.device === x.device,
+    last: [x.ab?.at, x.col?.at].filter(Boolean).sort().pop() }));
+  devs.sort((a, b) => (b.holds - a.holds) || String(b.last).localeCompare(String(a.last)));
+  return { run, devs };
+}
+// Text zum Zustand eines Geräts (Seite, Autobuilder)
+function devState(x) {
+  const s = x.ab?.state || {};
+  if (!x.ab || !isFresh(x.ab.at)) return { on: false, txt: `kein Lebenszeichen ${x.last ? ago(x.last) : ''}`.trim() };
+  const page = s.page === 'login' ? 'Login-Seite (ausgeloggt)' : 'im Spiel eingeloggt';
+  const ab = s.running ? `${s.mode === 'live' ? 'baut' : 'Probelauf'} bis #${s.until}${s.sleeping ? `, Login ${clockT(s.wakeAt)}` : ''}${s.claim ? ' · meldet sich an' : ''}`
+    : `angehalten${s.stopReason ? ': ' + s.stopReason : ''}`;
+  return { on: true, page: s.page, txt: `${page} · ${ab}` };
+}
+function runCard(sess) {
+  const r = sess.run;
+  return `<div class="card${r?.state === 'verloren' ? ' warn' : ''}"><div class="row between"><h2>Autobuilder</h2>
+    <span class="muted small">${r ? `seit ${esc(dt(r.since))}` : ''}</span></div>${runBody(sess)}</div>`;
+}
+// Zustand des Laufs (wer baut gerade, bis #, schläft/verloren, Status der letzten Prüfung)
+function runBody(sess) {
+  const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
+  if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
+  let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis #${esc(r.until ?? '–')}
+    auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}</p>`;
+  if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(r.reason)}</p>`;
+  if (['laeuft', 'schlaeft'].includes(r.state) && h?.ab) {
+    html += `<p class="small muted">${s.planInfo ? esc(s.planInfo) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
+      · Lebenszeichen ${esc(ago(h.ab.at))}</p>${s.status ? `<p class="small">${esc(s.status)}</p>` : ''}`;
+  }
+  return html;
+}
+function sessionsCard(sess) {
+  const shown = sess.devs.filter(x => x.holds || isFresh(x.last, 7 * 24 * 60));
+  const hidden = sess.devs.length - shown.length;
+  return `<div class="card"><h2>Sitzungen</h2>${shown.length ? `<table>${shown.map(x => {
+    const st = devState(x);
+    return `<tr><td>${x.holds ? '★ ' : ''}<b>${esc(x.name)}</b><div class="small ${st.on ? '' : 'muted'}">${esc(st.txt)}</div></td>
+      <td class="num small muted">${x.ab ? 'AB ' + esc(x.ab.version) : ''}${x.col ? `<br>C ${esc(x.col.version)}` : ''}</td></tr>`;
+  }).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>'}
+    <p class="muted small">★ = hält den Lauf. Nur ein PC kann im Spiel eingeloggt sein; ein eingeloggter PC übernimmt den Lauf
+    (Option im Autobuilder).${hidden ? ` ${hidden} ältere Geräte ausgeblendet.` : ''}</p></div>`;
 }
 
 /* ---------- Ereignisse ---------- */
 
 async function viewEvents() {
-  const lvl = sessionStorage.getItem('hz.evlvl') || '';
+  const lvl = sessionStorage.getItem('hz.evlvl') || '', cat = sessionStorage.getItem('hz.evcat') || '';
   const p = { account_id: `eq.${S.acc}`, order: 't.desc', limit: 200 };
   if (lvl) p.level = `eq.${lvl}`;
+  if (cat) p.cat = `eq.${cat}`;
   const evs = await Cloud.q('events', p);
   const canSee = ['owner', 'viewer'].includes(account()?.role);
   $('#view').innerHTML = `<div class="card"><div class="row between"><h2>Ereignisse</h2>
-    <div class="row"><select id="lvl"><option value="">alle Stufen</option>${['hoch', 'mittel', 'niedrig'].map(l => `<option${l === lvl ? ' selected' : ''}>${l}</option>`).join('')}</select>
+    <div class="row"><select id="cat"><option value="">alle Bereiche</option>${Object.entries(CAT).map(([k, t]) => `<option value="${k}"${k === cat ? ' selected' : ''}>${t}</option>`).join('')}</select>
+    <select id="lvl"><option value="">alle Stufen</option>${['hoch', 'mittel', 'niedrig'].map(l => `<option${l === lvl ? ' selected' : ''}>${l}</option>`).join('')}</select>
     ${canSee ? '<button id="seenAll">alle gesehen</button>' : ''}</div></div>
+    <p class="muted small">Builder = Autobuilder und Sitzungen · Cockpit = Freigaben und Kommandos · Spiel = Berichte und Nachrichten · System = Supabase-Wächter</p>
     ${evs.length ? evs.map(evRow).join('') : '<p class="muted">Keine Ereignisse.</p>'}</div>`;
   $('#lvl').onchange = e => { sessionStorage.setItem('hz.evlvl', e.target.value); route(); };
+  $('#cat').onchange = e => { sessionStorage.setItem('hz.evcat', e.target.value); route(); };
   $('#seenAll')?.addEventListener('click', async () => {
     await Cloud.rest(`events?account_id=eq.${S.acc}&seen_at=is.null`, { method: 'PATCH', body: { seen_at: new Date().toISOString() }, prefer: 'return=minimal' });
     route();
@@ -273,40 +358,85 @@ async function viewEvents() {
 
 const KIND = { build: 'Bau', research: 'Forschung', ship: 'Schiffe', probe: 'Sonden', trade: 'Handel', defense: 'Verteidigung', fleet: 'Flotte', transport: 'Transport' };
 
-/* Autobuilder-Steuerung: Kommandos gehen über den Collector an den Autobuilder (start live/dry bis #N, stop, adopt).
-   Der Autobuilder prüft selbst Plan-id und „bis #“; ältere Kommandos als 10–15 min verfallen. */
-function abCard(active, hb, cmds, own) {
-  const plan = active?.payload, st = hb?.state || {};
-  const fresh = hb && (Date.now() - new Date(hb.at)) / 60e3 < 3;
-  const ok = fresh && plan && st.plan === plan.id;
-  const t0 = plan ? Date.parse(plan.startTime) : 0;
-  let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2>
-    <span class="muted small">${hb ? `${esc(hb.version)} · ${esc(ago(hb.at))}` : 'kein Lebenszeichen'}</span></div>`;
-  if (!hb) html += '<p class="muted">Noch kein Lebenszeichen. Autobuilder ab 0.4 und Collector ab 0.3 im Spiel-Tab nötig.</p>';
-  else html += `<p><b class="${fresh ? '' : 'err'}">${!fresh ? 'nicht erreichbar (Tab zu oder ausgeloggt)' : st.running ? (st.mode === 'live' ? `LÄUFT bis #${esc(st.until)}` : `PROBELAUF bis #${esc(st.until)}`) : 'angehalten'}</b>
-    <span class="muted small"> · Plan im Spiel ${esc(st.plan || '–')}${st.next && st.running ? ` · nächste Prüfung ${esc(dt(st.next))}` : ''}${st.ahead != null ? ` · Vorlauf ${esc(fmt(st.ahead, 1))} h` : ''}</span></p>`;
-  if (!active) html += '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben.</p>';
+/* Autobuilder-Steuerung: Kommandos gehen über den Collector an GENAU EIN Gerät (target_device): start live/dry bis #N,
+   stop, adopt. Ziel ist standardmäßig der PC, der den Lauf hält, sonst der eingeloggte. Der Autobuilder prüft selbst
+   Plan-id und „bis #“; ältere Kommandos als 10–15 min verfallen. */
+const FMT_PCT = f => `${Math.round(f * 10) * 10} %`;
+// Faktorwechsel des Plans: [Planzeit h, {typ: Anteil}] → nur die Änderungen gegenüber der vorigen Liste
+function factorChanges(plan) {
+  const out = [];
+  let prev = {};
+  for (const [tau, f] of plan.factors || []) {
+    const ch = Object.entries(f).filter(([k, v]) => Math.round((prev[k] ?? 1) * 10) !== Math.round(v * 10)).map(([k, v]) => [k, prev[k] ?? 1, v]);
+    if (ch.length) out.push({ tau, ch });
+    prev = { ...prev, ...f };
+  }
+  return out;
+}
+// Planschritte: aktiver Ausschnitt (erster offener Schritt bis „bis #“) oder alle mit Historie (Ausführungen aus executions)
+function stepsTable(plan, st, execs, all, W) {
+  const t0 = Date.parse(plan.startTime);
+  const open = (st.open || []).filter(Number.isInteger);
+  const first = open.length ? Math.min(...open) : null;
+  const until = st.until || plan.steps.length;
+  const done = new Map(execs.filter(e => e.step).map(e => [e.step, e]));
+  const isDone = n => done.has(n) || (first != null && n < first);
+  const nameOf = k => W?.B?.[k]?.n || k;
+  const rows = [];
+  plan.steps.forEach((s, i) => { if (s[0] !== 's') rows.push({ tau: s[3], n: i + 1, s }); });
+  for (const fc of factorChanges(plan)) rows.push({ tau: fc.tau, fc });
+  rows.sort((a, b) => a.tau - b.tau || (a.fc ? -1 : 1));
+  const from = first ?? 1;
+  const vis = all ? rows : rows.filter(r => r.fc ? true : r.n >= from && r.n <= until);
+  // Faktorwechsel im Ausschnitt nur zwischen dem ersten und letzten gezeigten Schritt
+  const steps = vis.filter(r => !r.fc);
+  const lo = steps.length ? steps[0].tau : Infinity, hi = steps.length ? steps[steps.length - 1].tau : -Infinity;
+  const list = all ? vis : vis.filter(r => !r.fc || (r.tau >= lo && r.tau <= hi));
+  if (!steps.length && !all) return `<p class="muted small">Kein offener Schritt bis #${esc(until)}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
+  return `<table class="small">${list.map(r => {
+    if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num">${esc(dt(t0 + r.tau * 3600e3))}</td></tr>`;
+    const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
+    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
+      <td class="num">${esc(dt(t0 + r.tau * 3600e3))}</td></tr>`;
+  }).join('')}</table>`;
+}
+function abCard(active, sess, cmds, own, execs, W) {
+  const plan = active?.payload, run = sess.run;
+  const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
+  const holder = sess.devs.find(x => x.holds);
+  // Zielgerät: gewähltes, sonst Lauf-Halter (wenn erreichbar), sonst eingeloggtes, sonst erstes erreichbares
+  const target = live.find(x => x.device === S.abSel?.dev) || (holder && live.includes(holder) && holder)
+    || live.find(x => x.ab.state.page === 'game') || live[0] || null;
+  const st = target?.ab?.state || {};
+  let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2><span class="muted small">${run ? `seit ${esc(dt(run.since))}` : ''}</span></div>`;
+  html += runBody(sess);
+  if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben.</p>' + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
+  html += `<p class="small">Freigegeben: <b>${esc(active.title)}</b> (Plan-id ${esc(plan?.id)}, ${esc(active.status)})</p>`;
+  if (!live.length) html += '<p class="err small">Kein Autobuilder erreichbar (Browser zu oder Skripte aus).</p>';
   else {
-    html += `<p class="small">Freigegeben: <b>${esc(active.title)}</b> (Plan-id ${esc(plan?.id)}, ${esc(active.status)})</p>`;
-    if (hb && fresh && st.plan !== plan?.id) {
+    html += `<div class="row" style="margin:8px 0">Gerät <select id="abDev">${live.map(x => `<option value="${esc(x.device)}"${x === target ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)} – ${x.ab.state.page === 'login' ? 'ausgeloggt' : 'eingeloggt'}</option>`).join('')}</select></div>`;
+    if (st.plan !== plan?.id) {
       html += st.offered === plan?.id
-        ? `<p class="warn small">Der Autobuilder hat den freigegebenen Plan angeboten bekommen, arbeitet aber noch mit ${esc(st.plan)}.</p>
-           ${own ? `<button class="primary" data-cmd="adopt"${st.running ? ' disabled title="erst stoppen"' : ''}>Plan im Autobuilder übernehmen</button>` : ''}`
+        ? `<p class="warn small">${esc(target.name)} hat den freigegebenen Plan angeboten bekommen, arbeitet aber noch mit ${esc(st.plan)}.</p>
+           ${own ? `<button class="primary" data-cmd="adopt"${st.running || st.page === 'login' ? ' disabled title="erst stoppen bzw. einloggen"' : ''}>Plan auf ${esc(target.name)} übernehmen</button>` : ''}`
         : '<p class="muted small">Der Collector bietet den Plan beim nächsten Abgleich an (bis 1 min).</p>';
+    } else if (own) {
+      html += `<div class="row" style="margin:8px 0">bis # <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(S.abSel?.until || st.until || run?.until || 10)}" style="width:5em">
+        <button data-cmd="dry">Probelauf</button> <button class="primary" data-cmd="live">Start</button> <button class="danger" data-cmd="stop">Stopp</button></div>
+        <div class="muted small" id="abStep"></div>`;
     }
-    if (own && ok) html += `<div class="row" style="margin:8px 0">bis # <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(st.until || 10)}" style="width:5em">
-      <button data-cmd="dry">Probelauf</button> <button class="primary" data-cmd="live">Start</button> <button class="danger" data-cmd="stop">Stopp</button></div>
-      <div class="muted small" id="abStep"></div>`;
-    else if (own && fresh && st.running) html += `<div class="row" style="margin:8px 0"><button class="danger" data-cmd="stop">Stopp</button></div>`;
-    if (plan) html += `<details><summary class="small">Planschritte (${plan.steps.length})</summary><table class="small">${plan.steps.map((s, i) =>
-      `<tr class="step" data-i="${i + 1}"><td class="num">#${i + 1}</td><td>${esc(s[5])}</td><td class="num muted">${esc(dt(t0 + s[3] * 3600e3))}</td></tr>`).join('')}</table></details>`;
+  }
+  if (plan) {
+    const hst = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
+    html += `<div class="row between" style="margin-top:10px"><h3 style="margin:0">Planschritte ${S.allSteps ? `(alle ${plan.steps.length})` : `(offen bis #${esc(hst.until || '–')})`}</h3>
+      <button class="link small" id="allSteps">${S.allSteps ? 'nur offene' : 'alle mit Historie'}</button></div>${stepsTable(plan, hst, execs, S.allSteps, W)}`;
   }
   return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
 }
 
 const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3><table class="small">${cmds.map(c => `<tr><td>${esc(dt(c.created_at))}</td>
-    <td>${esc(c.cmd)}${c.args?.mode ? ' ' + esc(c.args.mode) : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}</td>
-    <td><span class="tag">${esc(c.status)}</span></td><td class="muted">${esc(c.result)}${c.taken_name ? ` · ${esc(c.taken_name)}` : ''}</td></tr>`).join('')}</table>`;
+    <td>${esc(c.cmd)}${c.args?.mode ? ' ' + esc(c.args.mode) : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</td>
+    <td><span class="tag">${esc(c.status)}</span></td><td class="muted">${esc(c.result)}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</td></tr>`).join('')}</table>`;
 
 // Offene Kommandos (neu/angenommen) alle 5 s nachsehen, ohne die Seite neu aufzubauen; fertig → einmal neu laden
 const OPEN_CMD = c => ['neu', 'angenommen'].includes(c.status);
@@ -319,40 +449,54 @@ function watchCmds(cmds, since = Date.now()) {
       const fresh = await Cloud.q('commands', { account_id: `eq.${S.acc}`, script: 'eq.autobuilder', order: 'id.desc', limit: 8 });
       if (!$('#abCmds')) return;
       $('#abCmds').innerHTML = cmdTable(fresh);
-      if (fresh.some(OPEN_CMD)) watchCmds(fresh, since); else route();
+      if (fresh.some(OPEN_CMD)) watchCmds(fresh, since); else route(true);
     } catch { watchCmds(cmds, since); }
   }, 5000);
 }
 
-async function sendCmd(active, cmd) {
+async function sendCmd(active, cmd, sess) {
   const plan = active.payload;
   const until = +($('#abUntil')?.value || 0);
   const step = plan.steps[until - 1];
+  const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
+  // Stopp geht an den Halter eines laufenden Laufs, sonst an das gewählte Gerät
+  const holder = sess.devs.find(x => x.holds && ['laeuft', 'schlaeft', 'verloren'].includes(sess.run?.state));
+  const tgt = cmd === 'stop' && holder ? holder : live.find(x => x.device === $('#abDev')?.value);
+  if (!tgt) return toast('Kein Gerät erreichbar');
   const args = cmd === 'stop' ? {} : cmd === 'adopt' ? { plan: plan.id } : { mode: cmd, until, plan: plan.id };
+  const login = tgt.ab?.state?.page === 'login';
   if (cmd === 'live' || cmd === 'dry') {
     if (!step) return toast(`„bis #“ zwischen 1 und ${plan.steps.length}`);
-    if (cmd === 'live' && !confirm(`Planschritte bis #${until} (${step[5]}) LIVE starten?\nDer Autobuilder baut danach selbständig im Spiel.`)) return;
-  } else if (!confirm(cmd === 'stop' ? 'Autobuilder anhalten?' : `Plan ${plan.id} im Autobuilder übernehmen? Danach „bis #“ neu wählen.`)) return;
+    if (!confirm(`${cmd === 'live' ? 'LIVE-Start' : 'Probelauf'} bis #${until} (${step[5]}) auf ${tgt.name}?`
+      + (login ? `\n${tgt.name} ist ausgeloggt: Mit Auto-Login meldet es sich jetzt im Spiel an – ein anderer eingeloggter PC fliegt dabei raus.` : '')
+      + (cmd === 'live' ? '\nDer Autobuilder baut danach selbständig im Spiel.' : ''))) return;
+  } else if (!confirm(cmd === 'stop' ? `Autobuilder auf ${tgt.name} anhalten?` : `Plan ${plan.id} auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen.`)) return;
   try {
     await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
-      body: { account_id: S.acc, script: 'autobuilder', cmd: cmd === 'live' || cmd === 'dry' ? 'start' : cmd, args, plan_id: active.id } });
-    toast('Kommando gesendet – der Collector holt es innerhalb 15 s ab');
-    setTimeout(route, 1500);
+      body: { account_id: S.acc, script: 'autobuilder', cmd: cmd === 'live' || cmd === 'dry' ? 'start' : cmd, args, plan_id: active.id, target_device: tgt.device } });
+    toast(`Kommando an ${tgt.name} gesendet – Ergebnis in wenigen Sekunden`);
+    setTimeout(() => route(true), 1500);
   } catch (e) { toast(e.message); }
 }
 
 async function viewPlans() {
   const acc = `eq.${S.acc}`;
-  const [plans, active, hbs, cmds] = await Promise.all([
+  const [plans, heads, sess, cmds, W] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 50,
       select: 'id,kind,source,status,title,note,plan_hash,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
-      select: 'id,status,title,plan_hash,payload' }),
-    Cloud.q('heartbeats', { account_id: acc, script: 'eq.autobuilder', order: 'at.desc', limit: 1 }),
+      select: 'id,status,title,plan_hash' }),
+    loadSessions(),
     Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', order: 'id.desc', limit: 8 }),
+    loadWissen().catch(() => null),
   ]);
+  // Plan-Inhalt (bis ca. 30 KB) nur einmal je Plan laden
+  const head = heads[0];
+  if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
+  const active = head ? { ...head, payload: S.planCache.payload } : null;
+  const execs = active ? await Cloud.q('executions', { account_id: acc, plan_id: `eq.${active.id}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }) : [];
   const own = isOwner();
-  $('#view').innerHTML = abCard(active[0], hbs[0], cmds, own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+  $('#view').innerHTML = abCard(active, sess, cmds, own, execs, W) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
@@ -371,11 +515,18 @@ async function viewPlans() {
     try { await Cloud.rpc('plan_status', { p_id: b.dataset.id, p_status: act }); toast('Gespeichert'); route(); }
     catch (e) { toast(e.message); }
   }));
-  $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active[0], b.dataset.cmd)));
+  $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
+  $('#allSteps')?.addEventListener('click', () => { S.allSteps = !S.allSteps; route(true); });
+  $('#abDev')?.addEventListener('change', e => { S.abSel = { ...S.abSel, dev: e.target.value }; route(true); });
   watchCmds(cmds);
-  const showStep = () => { const s = active[0]?.payload?.steps?.[+$('#abUntil').value - 1]; $('#abStep').textContent = s ? `#${$('#abUntil').value}: ${s[5]}` : ''; };
+  const showStep = () => {
+    const n = +$('#abUntil').value, s = active?.payload?.steps?.[n - 1];
+    S.abSel = { ...S.abSel, until: n };
+    $('#abStep').textContent = s ? `#${n}: ${s[5]}` : '';
+  };
   if ($('#abUntil')) {
-    $('#abUntil').addEventListener('input', showStep); showStep();
+    $('#abUntil').addEventListener('input', showStep);
+    const s = active?.payload?.steps?.[+$('#abUntil').value - 1]; $('#abStep').textContent = s ? `#${$('#abUntil').value}: ${s[5]}` : '';
     $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => { $('#abUntil').value = r.dataset.i; showStep(); }));
   }
 }
