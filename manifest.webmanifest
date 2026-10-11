@@ -3,7 +3,7 @@
   "short_name": "Cockpit",
   "description": "Entscheidungs-Cockpit für Horizon: Spielstand, Pläne, Freigaben",
   "lang": "de",
-  "id": "./",
+  "id": "./?app=horizon-cockpit",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

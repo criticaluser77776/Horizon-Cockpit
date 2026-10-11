@@ -36,6 +36,12 @@ function isOwner() { return account()?.role === 'owner'; }
 
 /* ---------- Start und Anmeldung ---------- */
 
+// Installation als App: Chrome meldet beforeinstallprompt nur einmal je Seitenaufruf, deshalb früh merken
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; if (location.hash === '#/mehr') route(); });
+window.addEventListener('appinstalled', () => { installPrompt = null; toast('Als App installiert'); });
+function isStandalone() { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
+
 async function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   window.addEventListener('hashchange', route);
@@ -656,6 +662,10 @@ async function viewMore() {
       <p><button id="logout">Abmelden</button></p></div>
     <div class="card"><h2>Über</h2><p class="small">Version ${esc(window.APP_VERSION?.number)} · ${esc(window.APP_VERSION?.built)}</p>
       <p class="small muted">Gerätekennung ${esc(Cloud.device.slice(0, 8))}…</p>
+      <p class="small">Ansicht: <b>${isStandalone() ? 'als App (ohne Browserleiste)' : 'im Browser'}</b></p>
+      ${!isStandalone() ? `<p><button id="install"${installPrompt ? '' : ' disabled'}>Als App installieren</button></p>
+        <p class="muted small" id="installHint">${installPrompt ? 'Chrome bietet die Installation an.'
+          : 'Chrome bietet gerade keine Installation an (Seite neu laden; sonst Chrome-Menü ⋮ → „App installieren“, auf dem iPhone Safari → Teilen → „Zum Home-Bildschirm“).'}</p>` : ''}
       <p class="small muted">Plan und Stand: doku/stand/cockpit.md im Horizon-Repo.</p></div></div>`;
   $('#view').querySelectorAll('select[data-member]').forEach(s => s.addEventListener('change', async () => {
     try { await Cloud.rpc('account_grant', { p_account: S.acc, p_member: s.dataset.member, p_role: s.value }); toast('Recht gespeichert'); }
@@ -675,6 +685,14 @@ async function viewMore() {
       await Cloud.login(code, Cloud.access().name);
       alert(`Neuer Gruppen-Code: ${code}\nBitte notieren.`);
     } catch (e) { toast(e.message); }
+  });
+  $('#install')?.addEventListener('click', async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    installPrompt = null;
+    toast(outcome === 'accepted' ? 'Wird installiert – danach „Cockpit“ in der App-Übersicht' : 'Installation abgebrochen');
+    route();
   });
   $('#logout').onclick = () => { if (confirm('Abmelden?')) { Cloud.logout(); renderLogin(); } };
 }
