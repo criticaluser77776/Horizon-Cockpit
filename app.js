@@ -301,10 +301,27 @@ function abCard(active, hb, cmds, own) {
     if (plan) html += `<details><summary class="small">Planschritte (${plan.steps.length})</summary><table class="small">${plan.steps.map((s, i) =>
       `<tr class="step" data-i="${i + 1}"><td class="num">#${i + 1}</td><td>${esc(s[5])}</td><td class="num muted">${esc(dt(t0 + s[3] * 3600e3))}</td></tr>`).join('')}</table></details>`;
   }
-  if (cmds.length) html += `<h3>Letzte Kommandos</h3><table class="small">${cmds.map(c => `<tr><td>${esc(dt(c.created_at))}</td>
+  return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
+}
+
+const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3><table class="small">${cmds.map(c => `<tr><td>${esc(dt(c.created_at))}</td>
     <td>${esc(c.cmd)}${c.args?.mode ? ' ' + esc(c.args.mode) : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}</td>
-    <td><span class="tag">${esc(c.status)}</span></td><td class="muted">${esc(c.result)}</td></tr>`).join('')}</table>`;
-  return html + '</div>';
+    <td><span class="tag">${esc(c.status)}</span></td><td class="muted">${esc(c.result)}${c.taken_name ? ` · ${esc(c.taken_name)}` : ''}</td></tr>`).join('')}</table>`;
+
+// Offene Kommandos (neu/angenommen) alle 5 s nachsehen, ohne die Seite neu aufzubauen; fertig → einmal neu laden
+const OPEN_CMD = c => ['neu', 'angenommen'].includes(c.status);
+function watchCmds(cmds, since = Date.now()) {
+  clearTimeout(watchCmds.t);
+  if (!cmds.some(OPEN_CMD)) return;
+  watchCmds.t = setTimeout(async () => {
+    if (!$('#abCmds') || Date.now() - since > 5 * 60e3) return;
+    try {
+      const fresh = await Cloud.q('commands', { account_id: `eq.${S.acc}`, script: 'eq.autobuilder', order: 'id.desc', limit: 8 });
+      if (!$('#abCmds')) return;
+      $('#abCmds').innerHTML = cmdTable(fresh);
+      if (fresh.some(OPEN_CMD)) watchCmds(fresh, since); else route();
+    } catch { watchCmds(cmds, since); }
+  }, 5000);
 }
 
 async function sendCmd(active, cmd) {
@@ -319,7 +336,7 @@ async function sendCmd(active, cmd) {
   try {
     await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
       body: { account_id: S.acc, script: 'autobuilder', cmd: cmd === 'live' || cmd === 'dry' ? 'start' : cmd, args, plan_id: active.id } });
-    toast('Kommando gesendet – der Collector holt es innerhalb 1 min ab');
+    toast('Kommando gesendet – der Collector holt es innerhalb 15 s ab');
     setTimeout(route, 1500);
   } catch (e) { toast(e.message); }
 }
@@ -355,6 +372,7 @@ async function viewPlans() {
     catch (e) { toast(e.message); }
   }));
   $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active[0], b.dataset.cmd)));
+  watchCmds(cmds);
   const showStep = () => { const s = active[0]?.payload?.steps?.[+$('#abUntil').value - 1]; $('#abStep').textContent = s ? `#${$('#abUntil').value}: ${s[5]}` : ''; };
   if ($('#abUntil')) {
     $('#abUntil').addEventListener('input', showStep); showStep();
