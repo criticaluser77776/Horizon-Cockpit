@@ -46,8 +46,23 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); instal
 window.addEventListener('appinstalled', () => { installPrompt = null; toast('Als App installiert'); });
 function isStandalone() { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
 
+// Neue Version online? Der Service Worker liefert zuerst die gespeicherte Fassung und lädt die neue nur im Hintergrund
+// (sichtbar erst beim übernächsten Laden). Seit dem Auto-Deploy (12.10.) kommen Versionen oft: config.js frisch lesen und
+// bei höherer Nummer „Neu laden“ anbieten. Beim Start und wenn die App wieder in den Vordergrund kommt (höchstens alle 10 min).
+async function checkUpdate() {
+  if (location.protocol !== 'https:' || Date.now() - (checkUpdate.at || 0) < 10 * 60e3) return;
+  checkUpdate.at = Date.now();
+  try {
+    const txt = await (await fetch('config.js', { cache: 'no-store' })).text();
+    const n = +((txt.match(/APP_VERSION = \{"number": (\d+)/) || [])[1] || 0);
+    if (n > (+window.APP_VERSION?.number || 0)) toast(`Neue Cockpit-Version ${n} verfügbar`, { label: 'Neu laden', run: () => location.reload() });
+  } catch { /* offline */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
+
 async function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  setTimeout(checkUpdate, 3000);   // nach dem ersten Laden; der Service Worker hat die neue Fassung bis dahin meist geholt
   window.addEventListener('hashchange', route);
   if (!Cloud.loggedIn()) return renderLogin();
   try { await Cloud.touch(); } catch (e) {
