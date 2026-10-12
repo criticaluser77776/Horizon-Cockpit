@@ -275,8 +275,8 @@ function bannerCard(sess) {
   const x = bannerDev(sess), b = x?.ab.state.banner;
   if (!b) return '';
   return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(dt(b.since))}</span></div>
-    <p>${esc(b.n)} von 3 aktiv auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Monitor ${esc(s.slot)}: ${esc(s.host || (s.href ? 'intern' : 'ohne Link'))}
-    <span class="muted">${esc(s.href || s.src || '')}</span>`).join('<br>')}</div>
+    <p>${esc(b.n)} von 3 Votes offen auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Vote ${esc(s.slot)}: ${esc(s.host || 'Ziel unbekannt')}
+    <span class="muted">${esc(s.url || s.href || s.src || '')}</span>`).join('<br>')}</div>
     ${isOwner() ? '<div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Banner jetzt öffnen</button></div>' : ''}</div>`;
 }
 async function sendBanner(sess) {
