@@ -108,6 +108,10 @@ label.f input, label.f select { width: 100%; }
 .list-item { padding: 8px 0; border-bottom: 1px solid var(--line); }
 .list-item:last-child { border-bottom: 0; }
 .ev.unseen { font-weight: 600; }
+.ev { touch-action: pan-y; }
+.ev.dismissed { opacity: .55; }
+.evx { padding: 0 4px; }
+tr.step td { padding-top: 2px; padding-bottom: 2px; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabs-h) + 16px + env(safe-area-inset-bottom));
   background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; z-index: 9; max-width: calc(100vw - 32px); }
 .search { width: 100%; margin-bottom: 8px; }

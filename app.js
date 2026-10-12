@@ -21,9 +21,13 @@ function dur(sec) {
   const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
   return (d ? `${d} d ` : '') + `${h} h ${String(m).padStart(2, '0')} min`;
 }
-function toast(msg) {
+function toast(msg, action) {     // action = { label, run } → Knopf im Toast (z. B. Rückgängig), dann 6 s sichtbar
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
-  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 3500);
+  if (action) {
+    const b = document.createElement('button'); b.className = 'link'; b.textContent = action.label;
+    b.onclick = () => { t.hidden = true; action.run(); }; t.append(' ', b);
+  }
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, action ? 6000 : 3500);
 }
 
 const S = { acc: null, wissen: null };
@@ -180,7 +184,7 @@ setInterval(() => {
 
 async function updateBadge() {
   try {
-    const r = await Cloud.q('events', { select: 'id', account_id: `eq.${S.acc}`, level: 'eq.hoch', seen_at: 'is.null', limit: 99 });
+    const r = await Cloud.q('events', { select: 'id', account_id: `eq.${S.acc}`, level: 'eq.hoch', seen_at: 'is.null', dismissed_at: 'is.null', limit: 99 });
     $('#evBadge').hidden = !r.length; $('#evBadge').textContent = r.length;
   } catch { /* egal */ }
 }
@@ -194,7 +198,7 @@ async function viewLage() {
   const [heads, sess, evs, feats] = await Promise.all([
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
-    Cloud.q('events', { account_id: acc, order: 't.desc', limit: 6 }),
+    Cloud.q('events', { account_id: acc, dismissed_at: 'is.null', order: 't.desc', limit: 6 }),
     Cloud.q('features', { account_id: acc, order: 'key' }),
   ]);
   // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
@@ -266,6 +270,7 @@ async function viewLage() {
   html += '</div>';
   $('#view').innerHTML = html;
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
+  swipeEvents($('#view'));
 }
 
 /* ---------- Werbebanner (Autobuilder ab 0.5.1) ----------
@@ -273,7 +278,11 @@ async function viewLage() {
 const bannerDev = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game' && x.ab.state?.banner?.n);
 function bannerCard(sess) {
   const x = bannerDev(sess), b = x?.ab.state.banner;
-  if (!b) return '';
+  if (!b) {
+    const due = Math.max(0, ...sess.devs.filter(d => d.ab && isFresh(d.ab.at, 24 * 60)).map(d => +d.ab.state?.bannerDue || 0));
+    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">keine offen</span></div>
+      <p class="small">Nächste erwartet ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(dt(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).</p></div>` : '';
+  }
   return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(dt(b.since))}</span></div>
     <p>${esc(b.n)} von 3 Votes offen auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Vote ${esc(s.slot)}: ${esc(s.host || 'Ziel unbekannt')}
     <span class="muted">${esc(s.url || s.href || s.src || '')}</span>`).join('<br>')}</div>
@@ -293,15 +302,51 @@ async function sendBanner(sess) {
 
 const CAT = { builder: 'Builder', cockpit: 'Cockpit', spiel: 'Spiel', system: 'System' };
 function evRow(e) {
-  return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}" data-id="${esc(e.id)}"><div class="row between">
-    <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}</span><span class="muted small">${esc(dt(e.t))}</span></div>
+  const can = ['owner', 'viewer'].includes(account()?.role);
+  return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}${e.dismissed_at ? ' dismissed' : ''}" data-id="${esc(e.id)}"><div class="row between">
+    <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
+    <span class="muted small">${esc(dt(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
     <div>${esc(e.text)}</div>${bannerSlots(e)}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
 }
 // Werbebanner (Autobuilder ab 0.5.1): Ziele nur als Text zeigen; ob und wie sie geöffnet werden, ist noch offen
 function bannerSlots(e) {
   const s = e.kind === 'banner' && Array.isArray(e.data?.slots) ? e.data.slots : [];
-  return s.length ? `<div class="small">${s.map(x => `Monitor ${esc(x.slot)}: ${esc(x.host || (x.href ? 'intern' : 'ohne Link'))}
-    <span class="muted">${esc(x.href || x.onclick || x.src || '')}</span>`).join('<br>')}</div>` : '';
+  return s.length ? `<div class="small">${s.map(x => `${x.url !== undefined ? 'Vote' : 'Monitor'} ${esc(x.slot)}: ${esc(x.host || (x.href ? 'intern' : 'ohne Link'))}
+    <span class="muted">${esc(x.url || x.href || x.onclick || x.src || '')}</span>`).join('<br>')}</div>` : '';
+}
+// Ereignis ausblenden: nach rechts wischen (Handy) oder ✕ (Rechner); Rückgängig im Toast. Nur Owner/Lesen (wie „gesehen“).
+async function setDismissed(id, on) {
+  await Cloud.rest(`events?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', body: { dismissed_at: on ? new Date().toISOString() : null }, prefer: 'return=minimal' });
+}
+async function dismissEvent(el) {
+  const id = el.dataset.id, undo = el.classList.contains('dismissed');
+  try {
+    await setDismissed(id, !undo);
+    if (undo) { route(true); return toast('Wieder eingeblendet'); }
+    el.style.transition = 'opacity .2s'; el.style.opacity = '0';
+    setTimeout(() => (S.showDismissed ? route(true) : el.remove()), 200);
+    toast('Ausgeblendet', { label: 'Rückgängig', run: async () => { try { await setDismissed(id, false); route(true); } catch (e) { toast(e.message); } } });
+  } catch (e) { el.style.transform = ''; toast(e.message); }
+}
+function swipeEvents(root) {
+  if (!['owner', 'viewer'].includes(account()?.role)) return;
+  root.querySelectorAll('.ev .evx').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); dismissEvent(b.closest('.ev')); }));
+  root.querySelectorAll('.ev:not(.dismissed)').forEach(el => {
+    let x0 = null, y0 = 0, dx = 0;
+    el.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; el.style.transition = ''; }, { passive: true });
+    el.addEventListener('touchmove', e => {
+      if (x0 == null) return;
+      dx = e.touches[0].clientX - x0;
+      if (Math.abs(e.touches[0].clientY - y0) > Math.abs(dx)) { x0 = null; el.style.transform = ''; return; }   // senkrecht = scrollen
+      if (dx > 0) el.style.transform = `translateX(${dx}px)`;
+    }, { passive: true });
+    el.addEventListener('touchend', () => {
+      if (x0 == null) return;
+      x0 = null; el.style.transition = 'transform .15s';
+      if (dx > Math.min(120, el.offsetWidth * 0.35)) { el.style.transform = 'translateX(100%)'; dismissEvent(el); }
+      else el.style.transform = '';
+    });
+  });
 }
 
 /* ---------- Sitzungen und Lauf (mehrere PCs) ----------
@@ -390,16 +435,22 @@ async function viewEvents() {
   const p = { account_id: `eq.${S.acc}`, order: 't.desc', limit: 200 };
   if (lvl) p.level = `eq.${lvl}`;
   if (cat) p.cat = `eq.${cat}`;
+  S.showDismissed = sessionStorage.getItem('hz.evdis') === '1';
+  if (!S.showDismissed) p.dismissed_at = 'is.null';
   const evs = await Cloud.q('events', p);
   const canSee = ['owner', 'viewer'].includes(account()?.role);
   $('#view').innerHTML = `<div class="card"><div class="row between"><h2>Ereignisse</h2>
     <div class="row"><select id="cat"><option value="">alle Bereiche</option>${Object.entries(CAT).map(([k, t]) => `<option value="${k}"${k === cat ? ' selected' : ''}>${t}</option>`).join('')}</select>
     <select id="lvl"><option value="">alle Stufen</option>${['hoch', 'mittel', 'niedrig'].map(l => `<option${l === lvl ? ' selected' : ''}>${l}</option>`).join('')}</select>
     ${canSee ? '<button id="seenAll">alle gesehen</button>' : ''}</div></div>
+    <label class="small"><input type="checkbox" id="evDis"${S.showDismissed ? ' checked' : ''}> ausgeblendete zeigen</label>
+    ${canSee ? '<span class="muted small"> · nach rechts wischen oder ✕ = ausblenden</span>' : ''}
     <p class="muted small">Builder = Autobuilder und Sitzungen · Cockpit = Freigaben und Kommandos · Spiel = Berichte und Nachrichten · System = Supabase-Wächter</p>
     ${evs.length ? evs.map(evRow).join('') : '<p class="muted">Keine Ereignisse.</p>'}</div>`;
   $('#lvl').onchange = e => { sessionStorage.setItem('hz.evlvl', e.target.value); route(); };
   $('#cat').onchange = e => { sessionStorage.setItem('hz.evcat', e.target.value); route(); };
+  $('#evDis').onchange = e => { sessionStorage.setItem('hz.evdis', e.target.checked ? '1' : ''); route(); };
+  swipeEvents($('#view'));
   $('#seenAll')?.addEventListener('click', async () => {
     await Cloud.rest(`events?account_id=eq.${S.acc}&seen_at=is.null`, { method: 'PATCH', body: { seen_at: new Date().toISOString() }, prefer: 'return=minimal' });
     route();
@@ -426,7 +477,15 @@ function factorChanges(plan) {
   return out;
 }
 // Planschritte: aktiver Ausschnitt (erster offener Schritt bis „bis #“) oder alle mit Historie (Ausführungen aus executions)
-function stepsTable(plan, st, execs, all, W) {
+// Planeten des Plans: plan.planet (ab 12.10. von build_autobuilder.js), weitere über plan.stepPlanet {Schritt: Koordinaten}
+// und plan.planets [{name, coords}]; ältere Pläne ohne Angabe: Heimatplanet aus dem Live-Stand
+function planPlanets(plan, home) {
+  const list = [plan.planet || home, ...(plan.planets || [])].filter(p => p?.coords);   // Heimat zuerst
+  for (const c of Object.values(plan.stepPlanet || {})) if (!list.some(p => p.coords === c)) list.push({ name: '', coords: c });
+  return list.filter((p, i) => list.findIndex(q => q.coords === p.coords) === i);
+}
+const stepPlanet = (plan, n, def) => plan.stepPlanet?.[n] || def;
+function stepsTable(plan, st, execs, all, W, planet) {
   const t0 = Date.parse(plan.startTime);
   const open = (st.open || []).filter(Number.isInteger);
   const first = open.length ? Math.min(...open) : null;
@@ -435,7 +494,8 @@ function stepsTable(plan, st, execs, all, W) {
   const isDone = n => done.has(n) || (first != null && n < first);
   const nameOf = k => W?.B?.[k]?.n || k;
   const rows = [];
-  plan.steps.forEach((s, i) => { if (s[0] !== 's') rows.push({ tau: s[3], n: i + 1, s }); });
+  const def = (plan.planet || S.home)?.coords;
+  plan.steps.forEach((s, i) => { if (s[0] !== 's' && (!planet || stepPlanet(plan, i + 1, def) === planet)) rows.push({ tau: s[3], n: i + 1, s }); });
   for (const fc of factorChanges(plan)) rows.push({ tau: fc.tau, fc });
   rows.sort((a, b) => a.tau - b.tau || (a.fc ? -1 : 1));
   const from = first ?? 1;
@@ -448,7 +508,7 @@ function stepsTable(plan, st, execs, all, W) {
   return `<table class="small">${list.map(r => {
     if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num">${esc(dt(t0 + r.tau * 3600e3))}</td></tr>`;
     const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
-    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
+    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
       <td class="num">${esc(dt(t0 + r.tau * 3600e3))}</td></tr>`;
   }).join('')}</table>`;
 }
@@ -480,8 +540,14 @@ function abCard(active, sess, cmds, own, execs, W) {
   }
   if (plan) {
     const hst = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
+    const pls = planPlanets(plan, S.home);
+    const cur = pls.find(p => p.coords === S.planet) || pls[0] || null;
+    const plName = p => `${p.name || 'Planet'} (${p.coords})`;
     html += `<div class="row between" style="margin-top:10px"><h3 style="margin:0">Planschritte ${S.allSteps ? `(alle ${plan.steps.length})` : `(offen bis #${esc(hst.until || '–')})`}</h3>
-      <button class="link small" id="allSteps">${S.allSteps ? 'nur offene' : 'alle mit Historie'}</button></div>${stepsTable(plan, hst, execs, S.allSteps, W)}`;
+      <button class="link small" id="allSteps">${S.allSteps ? 'nur offene' : 'alle mit Historie'}</button></div>
+      ${pls.length > 1 ? `<div class="row small" style="margin:4px 0">Planet <select id="plSel">${pls.map(p => `<option value="${esc(p.coords)}"${p === cur ? ' selected' : ''}>${esc(plName(p))}</option>`).join('')}</select></div>`
+        : cur ? `<div class="small muted" style="margin:4px 0">Planet ${esc(plName(cur))} · Forschung gilt für alle Planeten („global“)</div>` : ''}
+      ${stepsTable(plan, hst, execs, S.allSteps, W, cur?.coords)}`;
   }
   return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
 }
@@ -533,7 +599,7 @@ async function sendCmd(active, cmd, sess) {
 
 async function viewPlans() {
   const acc = `eq.${S.acc}`;
-  const [plans, heads, sess, cmds, W] = await Promise.all([
+  const [plans, heads, sess, cmds, W, homes] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 50,
       select: 'id,kind,source,status,title,note,plan_hash,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
@@ -541,7 +607,9 @@ async function viewPlans() {
     loadSessions(),
     Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', order: 'id.desc', limit: 8 }),
     loadWissen().catch(() => null),
+    S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
   ]);
+  if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   // Plan-Inhalt (bis ca. 30 KB) nur einmal je Plan laden
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
@@ -569,6 +637,7 @@ async function viewPlans() {
   }));
   $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
   $('#allSteps')?.addEventListener('click', () => { S.allSteps = !S.allSteps; route(true); });
+  $('#plSel')?.addEventListener('change', e => { S.planet = e.target.value; route(true); });
   $('#abDev')?.addEventListener('change', e => { S.abSel = { ...S.abSel, dev: e.target.value }; route(true); });
   watchCmds(cmds);
   const showStep = () => {
