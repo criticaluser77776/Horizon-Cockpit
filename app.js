@@ -597,6 +597,45 @@ async function sendCmd(active, cmd, sess) {
   } catch (e) { toast(e.message); }
 }
 
+// „Neuer Plan verfügbar – starten?“: neuester Bauplan-Entwurf, der mit Claude im Chat abgestimmt ist (payload.agreed,
+// push_plan.py --abgestimmt) oder früher fertig wird als der aktive Plan (Planstart + hours; ältere Pläne: Stunden aus created)
+const planEnd = p => {
+  const h = +p?.hours || +(String(p?.created || '').match(/([\d.]+) h$/) || [])[1];
+  return p?.startTime && h ? Date.parse(p.startTime) + h * 3600e3 : null;
+};
+async function newPlanOffer(plans, active) {
+  const draft = plans.find(p => p.kind === 'build' && p.status === 'entwurf');
+  if (!draft) return null;
+  const d = (await Cloud.q('plans', { id: `eq.${draft.id}`, select: 'startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed' }))[0] || {};
+  const end = planEnd(d), activeEnd = planEnd(active?.payload);
+  const gain = end && activeEnd ? (activeEnd - end) / 3600e3 : null;
+  const agreed = d.agreed === 'true';
+  if (!agreed && !(gain > 0.5) && active) return null;
+  return { draft, end, gain, agreed };
+}
+function newPlanCard(o, own) {
+  if (!o) return '';
+  const why = [o.agreed ? 'mit Claude im Chat abgestimmt' : '', o.gain > 0.5 ? `SCOL ${fmt(o.gain, 1)} h früher` : o.gain != null && o.gain < -0.5 ? `SCOL ${fmt(-o.gain, 1)} h später` : '']
+    .filter(Boolean).join(' · ');
+  return `<div class="card warn"><div class="row between"><h2>Neuer Plan verfügbar – starten?</h2><span class="muted small">${esc(dt(o.draft.created_at))}</span></div>
+    <p><b>${esc(o.draft.title || '')}</b>${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
+    ${o.draft.note ? `<div class="small muted" style="white-space:pre-wrap">${esc(o.draft.note)}</div>` : ''}
+    ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npNo">Verwerfen</button></div>
+      <p class="muted small">Gestartet wird danach wie gewohnt unter Autobuilder („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
+}
+async function takeNewPlan(o, sess) {
+  if (!confirm(`Plan „${o.draft.title}“ freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.`)) return;
+  try {
+    await Cloud.rpc('plan_status', { p_id: o.draft.id, p_status: 'freigegeben' });
+    // Der Collector bietet den freigegebenen Plan binnen 1 min an; dann erscheint unter Autobuilder „Plan übernehmen“
+    const busy = sess.devs.some(x => x.ab && isFresh(x.ab.at) && x.ab.state?.running);
+    toast(busy ? 'Freigegeben – der Autobuilder läuft noch: erst stoppen, dann unter Autobuilder übernehmen'
+      : 'Freigegeben – in bis zu 1 min erscheint unter Autobuilder „Plan übernehmen“, danach „bis #“ wählen');
+    S.planCache = null;
+    setTimeout(() => route(true), 1500);
+  } catch (e) { toast(e.message); }
+}
+
 async function viewPlans() {
   const acc = `eq.${S.acc}`;
   const [plans, heads, sess, cmds, W, homes] = await Promise.all([
@@ -614,9 +653,10 @@ async function viewPlans() {
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
+  const offer = await newPlanOffer(plans, active).catch(() => null);
   const execs = active ? await Cloud.q('executions', { account_id: acc, plan_id: `eq.${active.id}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }) : [];
   const own = isOwner();
-  $('#view').innerHTML = abCard(active, sess, cmds, own, execs, W) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
@@ -637,6 +677,11 @@ async function viewPlans() {
   }));
   $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
   $('#allSteps')?.addEventListener('click', () => { S.allSteps = !S.allSteps; route(true); });
+  $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
+  $('#npNo')?.addEventListener('click', async () => {
+    if (!confirm('Entwurf verwerfen?')) return;
+    try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
+  });
   $('#plSel')?.addEventListener('change', e => { S.planet = e.target.value; route(true); });
   $('#abDev')?.addEventListener('change', e => { S.abSel = { ...S.abSel, dev: e.target.value }; route(true); });
   watchCmds(cmds);
