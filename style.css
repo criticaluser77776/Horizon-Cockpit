@@ -119,3 +119,15 @@ tr.step td { padding-top: 2px; padding-bottom: 2px; }
 .wlist button { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; padding: 7px 4px; }
 .wlist button.on { background: var(--accent-2); }
 @media (min-width: 900px) { .wissen { display: grid; grid-template-columns: 300px 1fr; gap: var(--gap); align-items: start; } }
+/* Plan-Editor (F4) */
+.row.wrap { gap: 6px; }
+.edsteps { width: 100%; }
+.edsteps td.acts { white-space: nowrap; text-align: right; width: 1%; padding-left: 2px; padding-right: 0; }
+.edsteps td.acts button { padding: 2px 6px; margin-left: 1px; min-width: 0; }
+.edsteps td.acts button.on { background: var(--accent-2); border-color: var(--accent); }
+.edsteps tr.skip td { opacity: .5; text-decoration: line-through; }
+.edsteps tr.skip td.acts { text-decoration: none; opacity: 1; }
+.edsteps tr.bad td:first-child { color: var(--bad); font-weight: 600; }
+.edsteps tr.halt td { color: var(--warn); font-weight: 600; border-top: 2px solid var(--warn); }
+.ok { color: var(--ok); }
+span.warn, p.warn { color: var(--warn); }

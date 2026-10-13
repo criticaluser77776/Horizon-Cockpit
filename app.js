@@ -192,7 +192,7 @@ async function route(soft) {
 // Der große Live-Stand kommt dabei nur bei neuem Zeitstempel (S.snap), sonst nur Lauf, Lebenszeichen, Ereignisse.
 setInterval(() => {
   const tab = location.hash.replace(/^#\/?/, '').split('/')[0] || 'lage';
-  if (document.visibilityState !== 'visible' || !['lage', 'plaene'].includes(tab)) return;
+  if (document.visibilityState !== 'visible' || !['lage', 'plaene'].includes(tab) || /^#\/plaene\/edit\//.test(location.hash)) return;
   if (document.activeElement?.matches?.('input,select,textarea')) return;
   route(true);
 }, 30000);
@@ -777,11 +777,12 @@ async function takeNewPlan(o, sess) {
   } catch (e) { toast(e.message); }
 }
 
-async function viewPlans() {
+async function viewPlans(rest = []) {
+  if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
   const [plans, heads, sess, cmds, W, homes] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 50,
-      select: 'id,kind,source,status,title,note,plan_hash,created_at,approved_at,status_at' }),
+      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
       select: 'id,status,title,plan_hash' }),
     loadSessions(),
@@ -802,14 +803,16 @@ async function viewPlans() {
     ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
       <span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
-      <div class="muted small">${esc(p.source)} · ${esc(dt(p.created_at))}${p.plan_hash ? ` · Plan-id ${esc(p.plan_hash)}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}</div>
+      <div class="muted small">${esc(p.source)} · ${esc(dt(p.created_at))}${p.plan_hash ? ` · Plan-id ${esc(p.plan_hash)}` : ''}${p.parent_id ? ` · aus ${esc(plans.find(x => x.id === p.parent_id)?.plan_hash || 'älterem Plan')}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}</div>
       ${p.note ? `<div class="small" style="white-space:pre-wrap">${esc(p.note)}</div>` : ''}
       ${own && p.status === 'entwurf' ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
       ${own && ['freigegeben', 'aktiv'].includes(p.status) ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(p.id)}">Abbrechen</button></div>` : ''}
+      ${own && p.kind === 'build' && p.plan_hash ? `<div class="row" style="margin-top:6px"><a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a></div>` : ''}
     </div>`).join('') : '<p class="muted">Noch keine Pläne. Ab P3 legt der Optimierer jeden neuen Bauplan hier als Entwurf ab.</p>'}</div>`;
   $('#view').querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', async () => {
-    const act = b.dataset.act;
+    const act = b.dataset.act, p = plans.find(x => x.id === b.dataset.id);
+    if (act === 'freigegeben' && p?.kind === 'build') return takeNewPlan({ draft: p }, sess);   // F4: danach direkt übernehmen
     const q = { freigegeben: 'Plan freigeben? Die Skripte dürfen ihn danach ausführen (Start nur per Kommando).',
       verworfen: 'Entwurf verwerfen?', abgebrochen: 'Plan abbrechen? Laufende Skripte halten an.' }[act];
     if (!confirm(q)) return;
@@ -836,6 +839,184 @@ async function viewPlans() {
     const s = active?.payload?.steps?.[+$('#abUntil').value - 1]; $('#abStep').textContent = s ? `#${$('#abUntil').value}: ${s[5]}` : '';
     $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => { $('#abUntil').value = r.dataset.i; showStep(); }));
   }
+}
+
+/* ---------- Plan neu starten / Planschritte ändern (Paket F4, 13.10.) ----------
+   Aus einem vorhandenen Bauplan (auch abgebrochen oder alt) entsteht ein neuer Entwurf: neue Plan-id (payload.id = plan_hash;
+   mit der alten id böte der Collector ihn nicht an und der Autobuilder sähe ihn als abgebrochen), Verweis parent_id.
+   Ändern: Schritte überspringen und verschieben, Haltepunkte (payload.halts: der Autobuilder hält ab 0.5.10 vor diesem
+   Schritt an), Faktor-Grenzen je Gebäude (payload.limits {Typ: [min %, max %]}, ab 0.5.10; Risiko-Grenzen und „laufender
+   Auftrag ≥ 10 %“ gehen vor). Vor dem Anlegen prüft das Cockpit die Reihenfolge der Voraussetzungen (Datenbank Runde 7 wie
+   REQS im Autobuilder) gegen den Live-Stand. Freigeben nur der Owner, wie jeden Entwurf. */
+// Voraussetzungen von Objekt k:id für Stufe l (horizon-data: q = [[ab, bis, [[Art, Typ, Stufe] …]] …])
+function reqsOf(W, k, id, l) {
+  const o = (k === 'b' ? W?.B : W?.R)?.[id];
+  return (o?.q || []).filter(([a, b]) => l >= a && l <= b).flatMap(x => x[2]);
+}
+/* Reihenfolge prüfen. Ausgangsstufe je Objekt: Live-Stufe (laufender Auftrag zählt als fertig), sonst die Stufe vor dem ersten
+   Schritt im Ursprungsplan; Objekte, die weder live gelesen noch im Ursprungsplan gebaut werden, gelten als vorhanden (der
+   Plan setzte sie voraus). Ergebnis: [{i, text}] (i = Index im neuen Plan). */
+function checkOrder(steps, orig, live, W) {
+  const have = {};
+  for (const s of orig) { const k = `${s[0]}:${s[1]}`; have[k] = Math.min(have[k] ?? Infinity, s[2] - 1); }
+  if (live) Object.assign(have, live);
+  const lvl = k => have[k] ?? Infinity;
+  const nm = (k, id) => (k === 'b' ? W?.B : W?.R)?.[id]?.n || id;
+  const errs = [];
+  steps.forEach((s, i) => {
+    if (s[0] === 's') return;
+    const k = `${s[0]}:${s[1]}`;
+    if (lvl(k) >= s[2]) return;
+    if (lvl(k) < s[2] - 1) errs.push({ i, text: `#${i + 1} ${s[5]}: Stufe ${s[2] - 1} fehlt davor` });
+    for (const [rk, rid, rl] of reqsOf(W, s[0], s[1], s[2])) {
+      if (lvl(`${rk}:${rid}`) >= rl) continue;
+      const j = steps.findIndex((x, n) => n > i && x[0] === rk && x[1] === rid && x[2] >= rl);
+      errs.push({ i, text: `#${i + 1} ${s[5]}: braucht ${nm(rk, rid)} ${rl}${j >= 0 ? ` – kommt erst #${j + 1}` : ' – fehlt im Plan'}` });
+    }
+    have[k] = s[2];
+  });
+  return errs;
+}
+// Live-Stufen aus dem neuesten Live-Stand {'b:typ': Stufe} (Titel zeigt bei laufendem Auftrag schon die Zielstufe)
+async function liveLevels() {
+  const r = (await Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live',
+    select: 'collected_at,b:data->buildings->items,r:data->research->items' }).catch(() => []))[0];
+  if (!r) return null;
+  const out = {};
+  for (const k of ['b', 'r']) for (const o of r[k] || []) if (o?.type && Number.isInteger(o.level)) out[`${k}:${o.type}`] = o.level;
+  return { at: r.collected_at, lv: out };
+}
+async function planId(x) {
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(x)));
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 10);
+}
+// Neuer Plan aus dem Editor-Zustand: Schritte, Haltepunkte (neue Nummern)
+function editedPlan(E) {
+  const keep = E.rows.filter(r => !r.skip && !(E.dropDone && r.done));
+  const steps = keep.map(r => r.s);
+  const halts = keep.map((r, i) => r.halt ? i + 1 : null).filter(Boolean);
+  const changed = E.rows.some(r => r.skip || r.moved || r.halt !== r.halt0) || E.dropDone && E.rows.some(r => r.done)
+    || JSON.stringify(E.limits) !== JSON.stringify(E.orig.limits || {});
+  return { keep, steps, halts, changed };
+}
+async function viewPlanEdit(id) {
+  if (!S.ed || S.ed.id !== id) {
+    const [src] = await Cloud.q('plans', { id: `eq.${id}`, account_id: `eq.${S.acc}`, select: 'id,kind,status,title,plan_hash,payload' });
+    if (!src || src.kind !== 'build' || !Array.isArray(src.payload?.steps)) throw new Error('Bauplan nicht gefunden');
+    const [W, L] = await Promise.all([loadWissen().catch(() => null), liveLevels()]);
+    const orig = src.payload, lv = L?.lv;
+    S.ed = { id, src, orig, W, L, dropDone: false, limits: { ...(orig.limits || {}) }, note: '',
+      rows: orig.steps.map((s, i) => {
+        const halt = (orig.halts || []).includes(i + 1);
+        return { s, n0: i + 1, halt, halt0: halt, done: !!lv && s[0] !== 's' && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };
+      }) };
+  }
+  renderPlanEdit(isOwner());
+}
+function renderPlanEdit(own) {
+  const E = S.ed, { W, L, orig } = E;
+  const P = editedPlan(E);
+  const errs = checkOrder(P.steps, orig.steps, L?.lv, W);
+  const bad = new Set(errs.map(e => e.i));
+  const nm = t => W?.B?.[t]?.n || t;
+  // Gebäude mit Faktor: aus dem Plan und den Grenzen
+  const types = [...new Set([...(orig.factors || []).flatMap(f => Object.keys(f[1] || {})), ...Object.keys(E.limits)])]
+    .sort((a, b) => nm(a).localeCompare(nm(b), 'de'));
+  let n = 0;
+  const rows = E.rows.map((r, i) => {
+    const out = r.skip || E.dropDone && r.done;
+    const no = out ? 0 : ++n;
+    return `${r.halt && !out ? `<tr class="halt"><td></td><td colspan="2">⏸ Haltepunkt: Autobuilder hält vor #${no} an</td></tr>` : ''}
+      <tr class="step${out ? ' skip' : ''}${!out && bad.has(no - 1) ? ' bad' : ''}" data-i="${i}">
+      <td class="num">${out ? '–' : '#' + no}</td>
+      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}<div class="small muted">war #${r.n0}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
+      <td class="acts">${own ? `<button data-a="up" title="nach oben"${i ? '' : ' disabled'}>↑</button><button data-a="down" title="nach unten"${i < E.rows.length - 1 ? '' : ' disabled'}>↓</button><button data-a="halt" title="Haltepunkt davor"${r.halt ? ' class="on"' : ''}>⏸</button><button data-a="skip" title="überspringen"${r.skip ? ' class="on"' : ''}>✕</button>` : ''}</td></tr>`;
+  }).join('');
+  const lim = Object.entries(E.limits).map(([t, [a, b]]) => `<div class="row between small"><span>${esc(nm(t))}: ${a}–${b} %</span>${own ? `<button class="link" data-lim-del="${esc(t)}">entfernen</button>` : ''}</div>`).join('');
+  const pctOpts = sel => Array.from({ length: 11 }, (_, k) => k * 10).map(v => `<option value="${v}"${v === sel ? ' selected' : ''}>${v} %</option>`).join('');
+  $('#view').innerHTML = `<div class="card"><div class="row between"><h2>Plan neu starten / ändern</h2><a href="#/plaene" class="small">zurück</a></div>
+    <p class="small">Vorlage: <b>${esc(E.src.title)}</b> <span class="tag ${esc(E.src.status)}">${esc(E.src.status)}</span> · Plan-id ${esc(orig.id)} · ${orig.steps.length} Schritte</p>
+    <p class="muted small">Es entsteht ein <b>neuer Entwurf</b> mit neuer Plan-id und neuen Schrittnummern; die Vorlage bleibt unverändert. Freigeben und auf ein Gerät übernehmen danach wie gewohnt, „bis #“ neu wählen. Haltepunkte und Faktor-Grenzen wirken ab Autobuilder 0.5.10.</p>
+    <p class="small">${L ? `Live-Stand ${esc(dt(L.at))}: ${E.rows.filter(r => r.done).length} Schritte schon erreicht.` : '<span class="warn">Kein Live-Stand – Prüfung nur gegen den Ursprungsplan.</span>'}</p>
+    ${L ? `<label class="small"><input type="checkbox" id="edDone"${E.dropDone ? ' checked' : ''}${own ? '' : ' disabled'}> live erreichte Schritte weglassen (Nummern beginnen beim ersten offenen)</label>` : ''}
+  </div>
+  <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Prüfung der Voraussetzungen</h3>
+    ${errs.length ? `<ul class="small err">${errs.slice(0, 30).map(e => `<li>${esc(e.text)}</li>`).join('')}${errs.length > 30 ? `<li>… ${errs.length - 30} weitere</li>` : ''}</ul>`
+      : '<p class="small ok">Reihenfolge passt (Stufenfolge und Voraussetzungen laut Datenbank Runde 7).</p>'}
+  </div>
+  <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Faktor-Grenzen je Gebäude</h3>
+    ${lim || '<p class="muted small">Keine – der Autobuilder regelt nach dem Live-Zustand (Risiko-Grenzen laut Wiki gelten immer).</p>'}
+    ${own ? `<div class="row wrap" style="margin-top:6px"><select id="limT">${types.map(t => `<option value="${esc(t)}">${esc(nm(t))}</option>`).join('')}</select>
+      min <select id="limA">${pctOpts(0)}</select> max <select id="limB">${pctOpts(100)}</select> <button id="limAdd">setzen</button></div>` : ''}
+  </div>
+  <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Planschritte (${P.steps.length})</h3>
+    <div class="scroll"><table class="small edsteps">${rows}</table></div>
+  </div>
+  ${own ? `<div class="card" style="margin-top:12px"><label class="f"><span>Notiz zum Entwurf</span><input id="edNote" maxlength="500" value="${esc(E.note)}"></label>
+    <div class="row"><button class="primary" id="edGo"${P.steps.length ? '' : ' disabled'}>${P.changed ? 'Geänderten Plan als Entwurf anlegen' : 'Plan neu starten (neuer Entwurf)'}</button>
+    <button id="edReset">Änderungen verwerfen</button></div></div>` : ''}`;
+  if (!own) return;
+  $('#edDone')?.addEventListener('change', e => { E.dropDone = e.target.checked; renderPlanEdit(own); });
+  $('#edNote').addEventListener('input', e => { E.note = e.target.value; });
+  $('#edReset').addEventListener('click', () => { S.ed = null; viewPlanEdit(E.id); });
+  $('#limAdd').addEventListener('click', () => {
+    const t = $('#limT').value, a = +$('#limA').value, b = +$('#limB').value;
+    if (!t) return;
+    if (a > b) return toast('min darf nicht über max liegen');
+    E.limits[t] = [a, b]; renderPlanEdit(own);
+  });
+  $('#view').querySelectorAll('[data-lim-del]').forEach(b => b.addEventListener('click', () => { delete E.limits[b.dataset.limDel]; renderPlanEdit(own); }));
+  $('#view').querySelector('.edsteps').addEventListener('click', e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const i = +b.closest('tr').dataset.i, r = E.rows[i];
+    if (b.dataset.a === 'skip') r.skip = !r.skip;
+    else if (b.dataset.a === 'halt') r.halt = !r.halt;
+    else {
+      const j = b.dataset.a === 'up' ? i - 1 : i + 1;
+      if (j < 0 || j >= E.rows.length) return;
+      [E.rows[i], E.rows[j]] = [E.rows[j], E.rows[i]];
+      retime(E.rows, j);
+    }
+    renderPlanEdit(own);
+  });
+  $('#edGo').addEventListener('click', () => createEdited(E, P, errs));
+}
+// Verschobener Schritt: Startzeit zwischen die neuen Nachbarn legen (Dauer bleibt), damit Planzeiten und Anzeige stimmen
+function retime(rows, j) {
+  const r = rows[j], s = r.s, lo = rows[j - 1]?.s[3] ?? 0, hi = rows[j + 1]?.s[3] ?? Infinity;
+  r.moved = true;
+  if (s[3] >= lo && s[3] <= hi) return;
+  const t = isFinite(hi) ? (lo + hi) / 2 : lo, d = s[4] - s[3];
+  r.s = [...s.slice(0, 3), +t.toFixed(4), +(t + d).toFixed(4), ...s.slice(5)];
+}
+async function createEdited(E, P, errs) {
+  if (errs.length && !confirm(`${errs.length} Probleme bei den Voraussetzungen (erstes: ${errs[0].text}).\nDer Autobuilder würde dort warten oder anhalten. Trotzdem anlegen?`)) return;
+  const o = E.orig, now = new Date();
+  const when = now.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const hours = +o.hours || +(String(o.created || '').match(/([\d.]+) h$/) || [])[1] || undefined;
+  const payload = { ...o, steps: P.steps, halts: P.halts, limits: E.limits, parent: o.id,
+    created: `${String(o.created || '').replace(/ · (neu|geändert) .*$/, '')} · ${P.changed ? 'geändert' : 'neu'} ${when}`, hours };
+  delete payload.agreed;
+  if (!P.halts.length) delete payload.halts;
+  if (!Object.keys(E.limits).length) delete payload.limits;
+  // Planet je Schritt (Kolonien, plan.stepPlanet {Nr: Koordinaten}) auf die neuen Nummern umschreiben
+  if (o.stepPlanet) payload.stepPlanet = Object.fromEntries(P.keep.map((r, i) => [i + 1, o.stepPlanet[r.n0]]).filter(x => x[1]));
+  payload.id = await planId([payload.startTime, payload.steps, payload.factors, payload.halts || [], payload.limits || {}, o.id, now.toISOString()]);
+  const sk = E.rows.filter(r => r.skip).map(r => '#' + r.n0), mv = E.rows.filter(r => r.moved && !r.skip).map(r => '#' + r.n0);
+  const note = [`${P.changed ? 'Geändert' : 'Neu gestartet'} aus ${o.id} (${E.src.status}) im Cockpit: ${P.steps.length} Schritte`,
+    E.dropDone ? `live erreichte weggelassen (${E.rows.filter(r => r.done && !r.skip).length})` : '',
+    sk.length ? `übersprungen ${sk.join(' ')}` : '', mv.length ? `verschoben ${mv.join(' ')}` : '',
+    P.halts.length ? `Haltepunkte vor #${P.halts.join(', #')}` : '',
+    Object.keys(E.limits).length ? `Faktor-Grenzen ${Object.entries(E.limits).map(([t, [a, b]]) => `${t} ${a}–${b} %`).join(', ')}` : '',
+    errs.length ? `${errs.length} Voraussetzungs-Hinweise` : '', E.note.trim()].filter(Boolean).join(' · ');
+  if (!confirm(`Neuen Entwurf anlegen?\n${note}\nPlan-id ${payload.id}. Freigeben danach unter Pläne.`)) return;
+  try {
+    await Cloud.rest('plans', { method: 'POST', prefer: 'return=minimal', body: { account_id: S.acc, kind: 'build', source: 'user',
+      title: `Bauplan ${payload.created}`.slice(0, 200), note: note.slice(0, 4000), payload, plan_hash: payload.id, parent_id: E.src.id } });
+    S.ed = null;
+    toast('Entwurf angelegt – freigeben unter Pläne');
+    location.hash = '#/plaene';
+  } catch (e) { toast(e.message); }
 }
 
 /* ---------- Wissen (Gebäude und Forschung, Datenbank Runde 7) ---------- */
