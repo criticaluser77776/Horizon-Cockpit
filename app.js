@@ -505,6 +505,19 @@ async function loadSessions() {
   devs.sort((a, b) => (b.holds - a.holds) || String(b.last).localeCompare(String(a.last)));
   return { run, devs };
 }
+// Zustand des Laufs (wer baut gerade, bis #, schläft/verloren, Status der letzten Prüfung)
+function runBody(sess) {
+  const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
+  if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
+  let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis #${esc(r.until ?? '–')}
+    auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}</p>`;
+  if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(r.reason)}</p>`;
+  if (['laeuft', 'schlaeft'].includes(r.state) && h?.ab) {
+    html += `<p class="small muted">${s.planInfo ? esc(s.planInfo) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
+      · Lebenszeichen ${esc(ago(h.ab.at))}</p>${s.status ? `<p class="small">${esc(s.status)}</p>` : ''}`;
+  }
+  return html;
+}
 // Versionen vergleichen ('0.5.10' > '0.5.9')
 const verCmp = (a, b) => {
   const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
