@@ -227,67 +227,61 @@ async function viewLage() {
   const d = head ? S.snap?.data : null;
   // jüngster Stand des Autobuilders (laufende Aufträge, Rohstoffe aus seiner letzten Prüfung)
   const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
-  let html = notfallCard(sess, nf, d) + runCard(sess) + sessionsCard(sess) + bannerCard(sess);
-  if (!d) {
-    html += `<div class="card warn"><h2>Noch kein Live-Stand</h2><p class="muted">Sobald der Collector (ab Version 0.2) mit diesem Account
-      verbunden ist, erscheint hier der Spielstand. Bis dahin: Mehr → Geräte &amp; Rechte → Firefox-Gerät als „Skript“ freigeben.</p></div>`;
-  } else {
-    const st = d.start || {}, prod = d.prod || {};
-    const at = new Date(live.collected_at);
-    const age = (Date.now() - at) / 3600e3;
-    html += `<div class="card${age > 3 ? ' warn' : ''}"><div class="row between"><h2>${esc(st.planet || '')} <span class="muted">${esc(st.coords || '')}</span></h2>
-      <span class="muted small">Stand ${esc(dt(live.collected_at))} (${esc(ago(live.collected_at))})</span></div>
-      <div class="muted small">${esc(st.player || '')} · Rang ${esc(st.rank ?? '–')} · ${fmt(st.points)} Punkte · ${esc(st.status || '')}</div></div>`;
-    html += '<div class="grid">';
-    // Rohstoffe: Bestand hochgerechnet auf jetzt
-    const stock = prod['Aktueller Lagerbestand'] || {}, rate = prod['Förderung'] || {}, use = prod['Verbrauch'] || {};
-    const cap = prod['Maximal stabile Menge'] || {};
-    const hrs = (Date.now() - at) / 3600e3;
-    html += `<div class="card"><h2>Rohstoffe</h2><table><tr><th></th><th class="num">jetzt ca.</th><th class="num">/h</th><th class="num">stabil bis</th><th class="num">voll in</th></tr>${
-      RES.map(r => {
-        const net = (rate[r] || 0) - (use[r] || 0);
-        const now = Math.min((stock[r] || 0) + net * hrs, cap[r] || Infinity);
-        const full = net > 0 && cap[r] ? (cap[r] - now) / net * 3600 : null;
-        return `<tr><td>${r}</td><td class="num">${fmt(now)}</td><td class="num">${fmt(net)}</td><td class="num">${fmt(cap[r])}</td><td class="num">${full == null ? '–' : dur(full)}</td></tr>`;
-      }).join('')}</table>`;
-    const avail = prod['Aktuelle Verfügbarkeit'] || {}, need = prod['Benötigte Kapazitäten'] || {};
-    html += `<h3>Arbeiter und Energie</h3><table>${['Arbeiter', 'Energie'].map(k => {
-      const ratio = need[k] ? Math.min(1, (avail[k] || 0) / need[k]) : 1;
-      return `<tr><td>${k}</td><td class="num">${fmt(avail[k])} / ${fmt(need[k])}</td><td style="width:40%"><div class="bar"><i style="width:${Math.round(ratio * 100)}%"></i></div></td><td class="num">${fmt(ratio * 100)} %</td></tr>`;
-    }).join('')}</table></div>`;
-    // laufende Aufträge: aus der letzten Prüfung des Autobuilders, wenn die neuer ist als der Live-Stand (Starts des
-    // Autobuilders erscheinen sofort, nicht erst nach dem nächsten Login)
-    const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
-    const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-    const fromAb = abLive && abLive.liveAt > at.getTime();
-    const jobs = fromAb
-      ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', type: j.t, name: W?.[j.k === 'b' ? 'B' : 'R']?.[j.t]?.n, level: j.l, end: new Date(j.end) }))
-      : [...(d.buildings?.items || []).map(i => ({ ...i, k: 'Bau' })), ...(d.research?.items || []).map(i => ({ ...i, k: 'Forschung' }))]
-        .filter(i => i.inProgress).map(j => ({ ...j, end: j.remaining != null ? new Date(at.getTime() + j.remaining * 1000) : null }));
-    html += `<div class="card"><div class="row between"><h2>Laufende Aufträge</h2><span class="muted small">${fromAb
-      ? `Autobuilder ${esc(ago(abLive.liveAt))}` : `Live-Stand ${esc(ago(live.collected_at))}`}</span></div>${jobs.length ? `<table>${jobs.map(j => {
-      const left = j.end ? (j.end - Date.now()) / 1000 : null;
-      const pct = j.totalTime && left != null ? Math.min(100, Math.max(0, 100 - left / j.totalTime * 100)) : null;
-      return `<tr><td><span class="tag">${j.k}</span> ${esc(j.name || j.type)} → ${esc(j.level)}
-        ${pct == null ? '' : `<div class="bar"><i style="width:${pct.toFixed(0)}%"></i></div>`}</td>
-        <td class="num">${j.end ? `${left > 0 ? dur(left) : 'fertig'}<div class="muted small">${esc(dt(j.end))}</div>` : '–'}</td></tr>`;
-    }).join('')}</table>` : '<p class="muted">Keine – Baustelle/Labor frei.</p>'}</div>`;
+  // B10 (Nutzer 13.10.2026): oben nur das Nötigste – Überblick, Steuerung, Banner, Ereignisse; Details eingeklappt
+  const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
+  const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
+  let html = overviewCard(sess, d, live, abLive, nm) + notfallCard(sess, nf, d) + bannerCard(sess);
+  html += `<div class="card"><div class="row between"><h2>Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.slice(0, 4).map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
+  if (d) {
     const lv = (items, set) => items.map(i => `<tr><td>${esc(nm(i, set))}</td><td class="num">${esc(i.levelDone ?? i.level)}${i.inProgress ? ` → ${esc(i.level)}` : ''}</td></tr>`).join('');
-    html += `<div class="card"><h2>Gebäude</h2><table>${lv(d.buildings?.items || [], "B")}</table>
-      ${d.buildings?.space ? `<p class="muted small">Bauplatz frei ${fmt(d.buildings.space.free)} von ${fmt(d.buildings.space.total)}</p>` : ''}</div>`;
-    html += `<div class="card"><h2>Forschung</h2><table>${lv(d.research?.items || [], "R") || '<tr><td class="muted">–</td></tr>'}</table></div>`;
-    html += '</div>';
+    const st = d.start || {};
+    html += `<details class="card"><summary><b>Details</b> <span class="muted small">${esc(st.planet || '')} ${esc(st.coords || '')} · Rang ${esc(st.rank ?? '–')} · ${fmt(st.points)} Punkte · Gebäude, Forschung, Funktionen</span></summary>
+      <div class="grid" style="margin-top:8px"><div><h3>Gebäude</h3><table>${lv(d.buildings?.items || [], 'B')}</table>
+      ${d.buildings?.space ? `<p class="muted small">Bauplatz frei ${fmt(d.buildings.space.free)} von ${fmt(d.buildings.space.total)}</p>` : ''}</div>
+      <div><h3>Forschung</h3><table>${lv(d.research?.items || [], 'R') || '<tr><td class="muted">–</td></tr>'}</table></div>
+      <div><h3>Funktionen</h3>${feats.length ? `<table>${feats.map(f => `<tr><td>${esc(f.label || f.key)}${f.unlocked_at ? '' : ' <span class="muted small">(gesperrt)</span>'}</td>
+        <td title="${esc(STAGES[f.stage])}"><span class="stage">${STAGES.map((_, i) => `<i class="${i <= f.stage ? 'on' : ''}"></i>`).join('')}</span></td></tr>`).join('')}</table>` : '<p class="muted small">Noch keine erfasst.</p>'}</div></div></details>`;
   }
-  html += '<div class="grid" style="margin-top:12px">';
-  html += `<div class="card"><div class="row between"><h2>Letzte Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
-  html += `<div class="card"><h2>Funktionen</h2>${feats.length ? `<table>${feats.map(f => `<tr><td>${esc(f.label || f.key)}${f.unlocked_at ? '' : ' <span class="muted small">(gesperrt)</span>'}</td>
-    <td title="${esc(STAGES[f.stage])}"><span class="stage">${STAGES.map((_, i) => `<i class="${i <= f.stage ? 'on' : ''}"></i>`).join('')}</span> <span class="small muted">${esc(STAGES[f.stage])}</span></td></tr>`).join('')}</table>`
-    : '<p class="muted">Noch keine erfasst. Der Collector trägt Freischaltungen ein (Werft, Raumhafen, Flotte …).</p>'}</div>`;
-  html += '</div>';
   $('#view').innerHTML = html;
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
   bindNotfall(sess, nf);
   swipeEvents($('#view'));
+}
+
+/* ---------- Überblick (B10): Lauf, Rohstoffe, Arbeiter/Energie, laufende Aufträge in wenigen Zeilen ---------- */
+function overviewCard(sess, d, live, abLive, nm) {
+  const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
+  const runTxt = !r ? 'kein Lauf'
+    : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis #${esc(r.until ?? '–')} · ${esc(r.name || '?')}`
+      + (r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : '')
+      + (['laeuft', 'schlaeft'].includes(r.state) && s.ahead != null ? ` · Vorlauf ${esc(fmt(s.ahead, 1))} h` : '');
+  let html = `<div class="card${r?.state === 'verloren' || !d ? ' warn' : ''}"><div class="row between"><h2>Überblick</h2>
+    <span class="muted small">${live ? `Stand ${esc(ago(live.collected_at))}` : 'noch kein Live-Stand'}</span></div><p>${runTxt}</p>`;
+  if (r && ['angehalten', 'verloren'].includes(r.state) && r.reason) html += `<p class="small muted">${esc(r.reason)}</p>`;
+  if (d) {
+    const prod = d.prod || {}, at = new Date(live.collected_at), hrs = (Date.now() - at) / 3600e3;
+    const stock = prod['Aktueller Lagerbestand'] || {}, rate = prod['Förderung'] || {}, use = prod['Verbrauch'] || {}, cap = prod['Maximal stabile Menge'] || {};
+    html += `<table class="small">${RES.map(x => {
+      const net = (rate[x] || 0) - (use[x] || 0), now = Math.min((stock[x] || 0) + net * hrs, cap[x] || Infinity);
+      const full = net > 0 && cap[x] ? (cap[x] - now) / net * 3600 : null;
+      return `<tr><td>${x}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td><td class="num muted">${full == null ? '' : 'voll in ' + dur(full)}</td></tr>`;
+    }).join('')}</table>`;
+    const avail = prod['Aktuelle Verfügbarkeit'] || {}, need = prod['Benötigte Kapazitäten'] || {};
+    html += `<div class="row small" style="margin:4px 0">${['Arbeiter', 'Energie'].map(k => {
+      const ratio = need[k] ? Math.min(1, (avail[k] || 0) / need[k]) : 1;
+      return `<span class="${ratio < 1 ? 'err' : 'muted'}">${k} ${ratio < 1 ? fmt(Math.floor(ratio * 1000) / 10, 1) : 100} %</span>`;
+    }).join(' · ')}</div>`;
+    const fromAb = abLive && abLive.liveAt > at.getTime();
+    const jobs = fromAb
+      ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', name: nm({ type: j.t }, j.k === 'b' ? 'B' : 'R'), level: j.l, end: new Date(j.end) }))
+      : [...(d.buildings?.items || []).map(i => ({ ...i, k: 'Bau', name: nm(i, 'B') })), ...(d.research?.items || []).map(i => ({ ...i, k: 'Forschung', name: nm(i, 'R') }))]
+        .filter(i => i.inProgress).map(j => ({ ...j, end: j.remaining != null ? new Date(at.getTime() + j.remaining * 1000) : null }));
+    html += jobs.length ? `<table class="small">${jobs.map(j => {
+      const left = j.end ? (j.end - Date.now()) / 1000 : null;
+      return `<tr><td><span class="tag">${j.k}</span> ${esc(j.name)} ${esc(j.level)}</td><td class="num">${left == null ? '–' : left > 0 ? `${dur(left)} <span class="muted">${esc(clockT(j.end))}</span>` : 'fertig'}</td></tr>`;
+    }).join('')}</table>` : '<p class="small muted">Baustelle und Labor frei.</p>';
+  }
+  return html + '</div>';
 }
 
 /* ---------- Notfallzentrale (Paket F3, 13.10.2026) ----------
@@ -318,47 +312,51 @@ const hbAge = t => t ? (Date.now() - new Date(t)) / 60e3 : Infinity;
 function nfDevRow(x, nf) {
   const age = hbAge(x.last), abAge = hbAge(x.ab?.at), colAge = hbAge(x.col?.at), s = x.ab?.state || {};
   const hang = age >= HANG_MIN;
-  let txt = hang ? `hängt / Browser zu – letztes Lebenszeichen ${ago(x.last)}`
-    : abAge >= 3 && colAge < HANG_MIN ? `Autobuilder antwortet nicht (zuletzt ${ago(x.ab?.at)}), Collector lebt – „Neu laden“ hilft`
-    : `${s.page === 'login' ? 'ausgeloggt (Login-Seite)' : 'im Spiel'} · ${s.running ? `${s.mode === 'live' ? 'baut' : 'Probelauf'} bis #${s.until}` : 'angehalten'} · Lebenszeichen ${ago(x.last)}`;
+  let txt = hang ? `hängt / Browser zu (${ago(x.last)})`
+    : abAge >= 3 && colAge < HANG_MIN ? `Autobuilder antwortet nicht – „Neu laden“`
+    : `${s.page === 'login' ? 'ausgeloggt' : 'im Spiel'} · ${s.running ? `${s.mode === 'live' ? 'baut' : 'Probe'} bis #${s.until}` : 'angehalten'}`;
   // Plan des Geräts gegen den Plan im Cockpit
   let plan = '';
   if (s.plan && !hang) {
     const k = nf.known[s.plan], act = nf.active;
     if (!act || act.plan_hash !== s.plan) {
-      plan = `Gerät nutzt Plan ${s.plan}${k ? ` (${k.title || ''}, im Cockpit ${k.status})` : ' (im Cockpit unbekannt)'}, Cockpit: ${act ? `${act.title} (${act.plan_hash}, ${act.status})` : 'kein freigegebener Plan'}`;
+      plan = `nutzt Plan ${s.plan}${k ? ` (Cockpit: ${k.status})` : ' (im Cockpit unbekannt)'} ≠ aktiv ${act ? act.plan_hash : '–'}`;
     }
   }
-  return `<tr><td>${x.holds ? '★ ' : ''}<b>${esc(x.name)}</b><div class="small ${hang ? 'err' : abAge >= 3 ? 'err' : ''}">${esc(txt)}</div>
+  // Skript-Stände; älter als der neueste unter den Geräten = rot (Tampermonkey holt Updates selbst)
+  const top = S.verTop || {}, old = [['ab', 'AB'], ['col', 'C']].some(([k]) => x[k] && verCmp(x[k].version, top[k]) < 0);
+  const ver = [x.ab && `AB ${x.ab.version}`, x.col && `C ${x.col.version}`].filter(Boolean).join(' · ') + (old ? ' ↓ veraltet' : '');
+  return `<tr><td>${x.holds ? '★ ' : ''}<b>${esc(x.name)}</b> <span class="small ${hang || abAge >= 3 ? 'err' : 'muted'}">${esc(txt)}</span>
     ${plan ? `<div class="small err">${esc(plan)}</div>` : ''}</td>
-    <td class="num small ${hang ? 'err' : 'muted'}">${Number.isFinite(age) ? esc(age < 1.5 ? 'jetzt' : `${Math.round(age)} min`) : '–'}</td></tr>`;
+    <td class="num small ${hang ? 'err' : 'muted'}" title="${esc(ver)}">${Number.isFinite(age) ? esc(age < 1.5 ? 'jetzt' : `${Math.round(age)} min`) : '–'}<div class="${old ? 'err' : ''}">${esc(ver)}</div></td></tr>`;
 }
 function notfallCard(sess, nf, snap) {
   const shown = sess.devs.filter(x => x.holds || hbAge(x.last) < 7 * 24 * 60);
   const reach = shown.filter(x => hbAge(x.last) < HANG_MIN);
+  S.verTop = {};
+  for (const x of shown) for (const k of ['ab', 'col']) if (x[k] && verCmp(x[k].version, S.verTop[k]) > 0) S.verTop[k] = x[k].version;
   const own = isOwner();
   const sel = reach.find(x => x.device === S.nfDev) || reach.find(x => x.holds) || reach.find(x => x.ab?.state?.page === 'game') || reach[0] || null;
   const facts = (snap?.buildings?.items || []).filter(i => i.factor && i.factor.set != null);
   const W = S.wissen;
   const nm = i => i.name || W?.B?.[i.type]?.n || i.type;
   const anyBad = shown.some(x => hbAge(x.last) >= HANG_MIN || hbAge(x.ab?.at) >= 3);
-  let html = `<div class="card${anyBad ? ' warn' : ''}" id="notfall"><div class="row between"><h2>Notfallzentrale</h2><span class="muted small">Geräte und Sofort-Kommandos</span></div>`;
+  let html = `<div class="card${anyBad ? ' warn' : ''}" id="notfall"><div class="row between"><h2>Steuerung</h2><span class="muted small">★ hält den Lauf</span></div>`;
   html += shown.length ? `<table>${shown.map(x => nfDevRow(x, nf)).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>';
   if (own) {
-    html += `<div class="row" style="margin:8px 0;flex-wrap:wrap;gap:6px"><button class="danger" id="nfStopAll">Alles anhalten</button></div>`;
+    html += `<div class="row" style="margin:8px 0;gap:6px"><button class="danger" id="nfStopAll" title="Stopp an alle Geräte">Alles anhalten</button></div>`;
     if (reach.length) {
-      html += `<div class="row" style="margin:8px 0;flex-wrap:wrap;gap:6px">Gerät <select id="nfDev">${reach.map(x => `<option value="${esc(x.device)}"${x === sel ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)}</option>`).join('')}</select>
-        <button data-nf="factors" title="Minen und Lieferanten laufender Aufträge auf 100 %, Rest gibt bei Mangel ab (Regel F1, ohne Lauf)">Faktoren sichern</button>
+      html += `<div class="row" style="margin:8px 0;gap:6px"><select id="nfDev" title="Gerät für die Knöpfe daneben">${reach.map(x => `<option value="${esc(x.device)}"${x === sel ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)}</option>`).join('')}</select>
+        <button data-nf="snapshot" title="Live-Stand sofort erfassen und hochladen">Lage lesen</button>
         <button data-nf="reload" title="Spiel-Tab neu laden (ein laufender Lauf geht danach weiter)">Neu laden</button>
-        <button data-nf="snapshot" title="Live-Stand sofort erfassen und hochladen">Lage jetzt lesen</button></div>`;
+        <button data-nf="factors" title="Faktor-Regel einmal anwenden (Minen und Lieferanten laufender Aufträge zuerst), ohne Lauf">Faktoren sichern</button></div>`;
       if (facts.length) {
         const curT = facts.find(i => i.type === S.nfType) || facts[0];
-        html += `<div class="row small" style="margin:8px 0;flex-wrap:wrap;gap:6px">Faktor von Hand <select id="nfType">${facts.map(i => `<option value="${esc(i.type)}"${i === curT ? ' selected' : ''}>${esc(nm(i))} (${esc(i.factor.set)} %)</option>`).join('')}</select>
-          auf <select id="nfTo">${[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(v => `<option${v === (S.nfTo ?? curT.factor.set) ? ' selected' : ''}>${v}</option>`).join('')}</select> %
-          <button data-nf="factor">Setzen</button></div>
-          <p class="muted small">Faktoren laut Live-Stand ${esc(ago(S.snap?.at))}. Risiko-Grenzen gelten (Fusionskraftwerk höchstens 20 %, Stufe 9/10: 10 %; Waffentestgelände mindestens 10 %). Ein laufender Lauf wendet in der nächsten Prüfung wieder die Faktor-Regel an.</p>`;
+        html += `<details${S.nfType ? ' open' : ''}><summary class="small muted">Faktor von Hand</summary><div class="row small" style="margin:6px 0;gap:6px"><select id="nfType">${facts.map(i => `<option value="${esc(i.type)}"${i === curT ? ' selected' : ''}>${esc(nm(i))} (${esc(i.factor.set)} %)</option>`).join('')}</select>
+          <select id="nfTo">${[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(v => `<option${v === (S.nfTo ?? curT.factor.set) ? ' selected' : ''}>${v}</option>`).join('')}</select> %
+          <button data-nf="factor" title="Risiko-Grenzen gelten (Fusionskraftwerk ≤ 20 %, Waffentestgelände ≥ 10 %); ein laufender Lauf wendet danach wieder die Faktor-Regel an">Setzen</button></div></details>`;
       }
-    } else html += '<p class="err small">Kein Gerät erreichbar (alle Lebenszeichen älter als 10 min) – Browser bzw. PC prüfen.</p>';
+    } else html += '<p class="err small">Kein Gerät erreichbar – Browser bzw. PC prüfen.</p>';
   }
   html += `<div id="nfCmds">${cmdTable(nf.cmds)}</div></div>`;
   return html;
@@ -507,61 +505,12 @@ async function loadSessions() {
   devs.sort((a, b) => (b.holds - a.holds) || String(b.last).localeCompare(String(a.last)));
   return { run, devs };
 }
-// Text zum Zustand eines Geräts (Seite, Autobuilder)
-function devState(x) {
-  const s = x.ab?.state || {};
-  if (!x.ab || !isFresh(x.ab.at)) return { on: false, txt: `kein Lebenszeichen ${x.last ? ago(x.last) : ''}`.trim() };
-  const page = s.page === 'login' ? 'Login-Seite (ausgeloggt)' : 'im Spiel eingeloggt';
-  const ab = s.running ? `${s.mode === 'live' ? 'baut' : 'Probelauf'} bis #${s.until}${s.sleeping ? `, Login ${clockT(s.wakeAt)}` : ''}${s.claim ? ' · meldet sich an' : ''}`
-    : `angehalten${s.stopReason ? ': ' + s.stopReason : ''}`;
-  return { on: true, page: s.page, txt: `${page} · ${ab}` };
-}
-function runCard(sess) {
-  const r = sess.run;
-  return `<div class="card${r?.state === 'verloren' ? ' warn' : ''}"><div class="row between"><h2>Autobuilder</h2>
-    <span class="muted small">${r ? `seit ${esc(dt(r.since))}` : ''}</span></div>${runBody(sess)}</div>`;
-}
-// Zustand des Laufs (wer baut gerade, bis #, schläft/verloren, Status der letzten Prüfung)
-function runBody(sess) {
-  const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
-  if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
-  let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis #${esc(r.until ?? '–')}
-    auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}</p>`;
-  if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(r.reason)}</p>`;
-  if (['laeuft', 'schlaeft'].includes(r.state) && h?.ab) {
-    html += `<p class="small muted">${s.planInfo ? esc(s.planInfo) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
-      · Lebenszeichen ${esc(ago(h.ab.at))}</p>${s.status ? `<p class="small">${esc(s.status)}</p>` : ''}`;
-  }
-  return html;
-}
 // Versionen vergleichen ('0.5.10' > '0.5.9')
 const verCmp = (a, b) => {
   const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
   return 0;
 };
-function sessionsCard(sess) {
-  const shown = sess.devs.filter(x => x.holds || isFresh(x.last, 7 * 24 * 60));
-  const hidden = sess.devs.length - shown.length;
-  // neueste Version je Skript unter den gezeigten Geräten; ältere Stände markieren (Tampermonkey holt Updates selbst)
-  const top = { ab: '', col: '' };
-  for (const x of shown) for (const k of ['ab', 'col']) if (x[k] && verCmp(x[k].version, top[k]) > 0) top[k] = x[k].version;
-  const ver = (x, k, label) => {
-    if (!x[k]) return '';
-    const old = verCmp(x[k].version, top[k]) < 0;
-    return `<span class="${old ? 'err' : ''}" title="${old ? `veraltet, neueste ${esc(top[k])}` : ''}">${label} ${esc(x[k].version)}${old ? ' ↓' : ''}</span>`;
-  };
-  const stale = shown.some(x => ['ab', 'col'].some(k => x[k] && verCmp(x[k].version, top[k]) < 0));
-  return `<div class="card"><h2>Sitzungen</h2>${shown.length ? `<table>${shown.map(x => {
-    const st = devState(x);
-    return `<tr><td>${x.holds ? '★ ' : ''}<b>${esc(x.name)}</b><div class="small ${st.on ? '' : 'muted'}">${esc(st.txt)}</div></td>
-      <td class="num small muted">${ver(x, 'ab', 'AB')}${x.ab && x.col ? '<br>' : ''}${ver(x, 'col', 'C')}</td></tr>`;
-  }).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>'}
-    ${stale ? '<p class="small err">Die PCs haben verschiedene Skript-Stände (↓ = veraltet). Tampermonkey holt Updates selbst, sobald das Skript einmal über die Update-Adresse installiert ist; sonst dort „Nach Updates suchen“.</p>' : ''}
-    <p class="muted small">★ = hält den Lauf. Nur ein PC kann im Spiel eingeloggt sein; ein eingeloggter PC übernimmt den Lauf
-    (Option im Autobuilder).${hidden ? ` ${hidden} ältere Geräte ausgeblendet.` : ''}</p></div>`;
-}
-
 /* ---------- Ereignisse ---------- */
 
 async function viewEvents() {
