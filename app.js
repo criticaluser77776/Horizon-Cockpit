@@ -210,11 +210,12 @@ const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, evs, feats] = await Promise.all([
+  const [heads, sess, evs, feats, nf] = await Promise.all([
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     Cloud.q('events', { account_id: acc, dismissed_at: 'is.null', order: 't.desc', limit: 6 }),
     Cloud.q('features', { account_id: acc, order: 'key' }),
+    loadNotfall(),
   ]);
   // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
   const head = heads[0];
@@ -226,7 +227,7 @@ async function viewLage() {
   const d = head ? S.snap?.data : null;
   // jüngster Stand des Autobuilders (laufende Aufträge, Rohstoffe aus seiner letzten Prüfung)
   const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
-  let html = runCard(sess) + sessionsCard(sess) + bannerCard(sess);
+  let html = notfallCard(sess, nf, d) + runCard(sess) + sessionsCard(sess) + bannerCard(sess);
   if (!d) {
     html += `<div class="card warn"><h2>Noch kein Live-Stand</h2><p class="muted">Sobald der Collector (ab Version 0.2) mit diesem Account
       verbunden ist, erscheint hier der Spielstand. Bis dahin: Mehr → Geräte &amp; Rechte → Firefox-Gerät als „Skript“ freigeben.</p></div>`;
@@ -285,7 +286,125 @@ async function viewLage() {
   html += '</div>';
   $('#view').innerHTML = html;
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
+  bindNotfall(sess, nf);
   swipeEvents($('#view'));
+}
+
+/* ---------- Notfallzentrale (Paket F3, 13.10.2026) ----------
+   Immer sichtbar, auch ohne freigegebenen Plan (vorher gab es dann keinen Stopp-Knopf). Kommandos gehen an ein Gerät;
+   antwortet dort der Autobuilder nicht, führt der Collector (ab 0.4.3) „Neu laden“, „Lage jetzt lesen“ und „Stopp“ selbst
+   aus. „Faktoren sichern“ und „Faktor von Hand“ braucht den Autobuilder (ab 0.5.9). Nur der Owner sieht die Knöpfe. */
+const NF_CMDS = ['stop', 'reload', 'snapshot', 'factors', 'factor'];
+const HANG_MIN = 10;
+async function loadNotfall() {
+  const acc = `eq.${S.acc}`;
+  const [act, cmds] = await Promise.all([
+    Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
+      select: 'id,status,title,plan_hash' }),
+    Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', cmd: `in.(${NF_CMDS.join(',')})`, order: 'id.desc', limit: 5 }),
+  ]);
+  return { active: act[0] || null, cmds, known: {} };
+}
+// Pläne, mit denen die Geräte arbeiten (Status im Cockpit), für den Hinweis „Gerät nutzt Plan X“
+async function devPlans(sess, nf) {
+  const ids = [...new Set(sess.devs.map(x => x.ab?.state?.plan).filter(v => /^[\w-]{4,40}$/.test(v || '')))];
+  if (!ids.length) return;
+  const rows = await Cloud.q('plans', { account_id: `eq.${S.acc}`, kind: 'eq.build', plan_hash: `in.(${ids.join(',')})`,
+    select: 'plan_hash,status,title,created_at', order: 'created_at.desc' }).catch(() => []);
+  for (const r of rows) nf.known[r.plan_hash] ||= r;
+}
+// Alter des jüngsten Lebenszeichens (Autobuilder oder Collector) in Minuten
+const hbAge = t => t ? (Date.now() - new Date(t)) / 60e3 : Infinity;
+function nfDevRow(x, nf) {
+  const age = hbAge(x.last), abAge = hbAge(x.ab?.at), colAge = hbAge(x.col?.at), s = x.ab?.state || {};
+  const hang = age >= HANG_MIN;
+  let txt = hang ? `hängt / Browser zu – letztes Lebenszeichen ${ago(x.last)}`
+    : abAge >= 3 && colAge < HANG_MIN ? `Autobuilder antwortet nicht (zuletzt ${ago(x.ab?.at)}), Collector lebt – „Neu laden“ hilft`
+    : `${s.page === 'login' ? 'ausgeloggt (Login-Seite)' : 'im Spiel'} · ${s.running ? `${s.mode === 'live' ? 'baut' : 'Probelauf'} bis #${s.until}` : 'angehalten'} · Lebenszeichen ${ago(x.last)}`;
+  // Plan des Geräts gegen den Plan im Cockpit
+  let plan = '';
+  if (s.plan && !hang) {
+    const k = nf.known[s.plan], act = nf.active;
+    if (!act || act.plan_hash !== s.plan) {
+      plan = `Gerät nutzt Plan ${s.plan}${k ? ` (${k.title || ''}, im Cockpit ${k.status})` : ' (im Cockpit unbekannt)'}, Cockpit: ${act ? `${act.title} (${act.plan_hash}, ${act.status})` : 'kein freigegebener Plan'}`;
+    }
+  }
+  return `<tr><td>${x.holds ? '★ ' : ''}<b>${esc(x.name)}</b><div class="small ${hang ? 'err' : abAge >= 3 ? 'err' : ''}">${esc(txt)}</div>
+    ${plan ? `<div class="small err">${esc(plan)}</div>` : ''}</td>
+    <td class="num small ${hang ? 'err' : 'muted'}">${Number.isFinite(age) ? esc(age < 1.5 ? 'jetzt' : `${Math.round(age)} min`) : '–'}</td></tr>`;
+}
+function notfallCard(sess, nf, snap) {
+  const shown = sess.devs.filter(x => x.holds || hbAge(x.last) < 7 * 24 * 60);
+  const reach = shown.filter(x => hbAge(x.last) < HANG_MIN);
+  const own = isOwner();
+  const sel = reach.find(x => x.device === S.nfDev) || reach.find(x => x.holds) || reach.find(x => x.ab?.state?.page === 'game') || reach[0] || null;
+  const facts = (snap?.buildings?.items || []).filter(i => i.factor && i.factor.set != null);
+  const W = S.wissen;
+  const nm = i => i.name || W?.B?.[i.type]?.n || i.type;
+  const anyBad = shown.some(x => hbAge(x.last) >= HANG_MIN || hbAge(x.ab?.at) >= 3);
+  let html = `<div class="card${anyBad ? ' warn' : ''}" id="notfall"><div class="row between"><h2>Notfallzentrale</h2><span class="muted small">Geräte und Sofort-Kommandos</span></div>`;
+  html += shown.length ? `<table>${shown.map(x => nfDevRow(x, nf)).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>';
+  if (own) {
+    html += `<div class="row" style="margin:8px 0;flex-wrap:wrap;gap:6px"><button class="danger" id="nfStopAll">Alles anhalten</button></div>`;
+    if (reach.length) {
+      html += `<div class="row" style="margin:8px 0;flex-wrap:wrap;gap:6px">Gerät <select id="nfDev">${reach.map(x => `<option value="${esc(x.device)}"${x === sel ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)}</option>`).join('')}</select>
+        <button data-nf="factors" title="Minen und Lieferanten laufender Aufträge auf 100 %, Rest gibt bei Mangel ab (Regel F1, ohne Lauf)">Faktoren sichern</button>
+        <button data-nf="reload" title="Spiel-Tab neu laden (ein laufender Lauf geht danach weiter)">Neu laden</button>
+        <button data-nf="snapshot" title="Live-Stand sofort erfassen und hochladen">Lage jetzt lesen</button></div>`;
+      if (facts.length) {
+        const curT = facts.find(i => i.type === S.nfType) || facts[0];
+        html += `<div class="row small" style="margin:8px 0;flex-wrap:wrap;gap:6px">Faktor von Hand <select id="nfType">${facts.map(i => `<option value="${esc(i.type)}"${i === curT ? ' selected' : ''}>${esc(nm(i))} (${esc(i.factor.set)} %)</option>`).join('')}</select>
+          auf <select id="nfTo">${[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(v => `<option${v === (S.nfTo ?? curT.factor.set) ? ' selected' : ''}>${v}</option>`).join('')}</select> %
+          <button data-nf="factor">Setzen</button></div>
+          <p class="muted small">Faktoren laut Live-Stand ${esc(ago(S.snap?.at))}. Risiko-Grenzen gelten (Fusionskraftwerk höchstens 20 %, Stufe 9/10: 10 %; Waffentestgelände mindestens 10 %). Ein laufender Lauf wendet in der nächsten Prüfung wieder die Faktor-Regel an.</p>`;
+      }
+    } else html += '<p class="err small">Kein Gerät erreichbar (alle Lebenszeichen älter als 10 min) – Browser bzw. PC prüfen.</p>';
+  }
+  html += `<div id="nfCmds">${cmdTable(nf.cmds)}</div></div>`;
+  return html;
+}
+async function postCmd(dev, cmd, args = {}, planId = null) {
+  await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
+    body: { account_id: S.acc, script: 'autobuilder', cmd, args, plan_id: planId, target_device: dev.device } });
+}
+function bindNotfall(sess, nf) {
+  const v = $('#view');
+  if (!v.querySelector('#notfall')) return;
+  devPlans(sess, nf).then(() => {   // Plan-Hinweise nachladen (kleine Abfrage), ohne die Seite neu aufzubauen
+    const box = v.querySelector('#notfall table');
+    const shown = sess.devs.filter(x => x.holds || hbAge(x.last) < 7 * 24 * 60);
+    if (box && Object.keys(nf.known).length) box.innerHTML = shown.map(x => nfDevRow(x, nf)).join('');
+  }).catch(() => { });
+  $('#nfDev')?.addEventListener('change', e => { S.nfDev = e.target.value; });
+  $('#nfType')?.addEventListener('change', e => { S.nfType = e.target.value; S.nfTo = null; route(true); });
+  $('#nfTo')?.addEventListener('change', e => { S.nfTo = +e.target.value; });
+  $('#nfStopAll')?.addEventListener('click', async () => {
+    // an jedes Gerät, das in den letzten 24 h ein Lebenszeichen hatte (ältere Kommandos verfallen nach 15 min)
+    const all = sess.devs.filter(x => hbAge(x.last) < 24 * 60);
+    if (!all.length) return toast('Kein Gerät bekannt');
+    if (!confirm(`Autobuilder auf allen Geräten anhalten (${all.map(x => x.name).join(', ')})?`)) return;
+    const res = await Promise.allSettled(all.map(x => postCmd(x, 'stop', { reason: 'Alles anhalten (Notfallzentrale)' })));
+    const bad = res.filter(r => r.status === 'rejected');
+    toast(bad.length ? `Stopp an ${all.length - bad.length} von ${all.length} Geräten: ${bad[0].reason?.message || ''}` : `Stopp an ${all.length} Geräte gesendet`);
+    setTimeout(() => route(true), 1500);
+  });
+  v.querySelectorAll('button[data-nf]').forEach(b => b.addEventListener('click', async () => {
+    const dev = sess.devs.find(x => x.device === ($('#nfDev')?.value || ''));
+    if (!dev) return toast('Kein Gerät gewählt');
+    const cmd = b.dataset.nf;
+    let args = {};
+    if (cmd === 'factor') {
+      args = { type: $('#nfType').value, to: +$('#nfTo').value };
+      if (!confirm(`Faktor ${$('#nfType').selectedOptions[0].textContent} auf ${args.to} % setzen (${dev.name})?`)) return;
+    } else if (!confirm({ factors: `Faktoren auf ${dev.name} jetzt sichern (Regel F1: Minen und Lieferanten laufender Aufträge auf 100 %, andere geben bei Mangel ab)?`,
+      reload: `Spiel-Tab auf ${dev.name} neu laden?`, snapshot: `Live-Stand auf ${dev.name} jetzt lesen?` }[cmd])) return;
+    try {
+      await postCmd(dev, cmd, args);
+      toast(`Kommando an ${dev.name} gesendet – Ergebnis in 15–60 s`);
+      setTimeout(() => route(true), 1500);
+    } catch (e) { toast(e.message); }
+  }));
+  watchCmds(nf.cmds, Date.now(), '#nfCmds', { cmd: `in.(${NF_CMDS.join(',')})` });
 }
 
 /* ---------- Werbebanner (Autobuilder ab 0.5.1) ----------
@@ -537,7 +656,7 @@ function abCard(active, sess, cmds, own, execs, W) {
   const st = target?.ab?.state || {};
   let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2><span class="muted small">${run ? `seit ${esc(dt(run.since))}` : ''}</span></div>`;
   html += runBody(sess);
-  if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben.</p>' + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
+  if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Faktoren gehen jederzeit unter <a href="#/lage">Lage → Notfallzentrale</a>.</p>' + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
   html += `<p class="small">Freigegeben: <b>${esc(active.title)}</b> (Plan-id ${esc(plan?.id)}, ${esc(active.status)})</p>`;
   if (!live.length) html += '<p class="err small">Kein Autobuilder erreichbar (Browser zu oder Skripte aus).</p>';
   else {
@@ -545,7 +664,7 @@ function abCard(active, sess, cmds, own, execs, W) {
     if (st.plan !== plan?.id) {
       html += st.offered === plan?.id
         ? `<p class="warn small">${esc(target.name)} hat den freigegebenen Plan angeboten bekommen, arbeitet aber noch mit ${esc(st.plan)}.</p>
-           ${own ? `<button class="primary" data-cmd="adopt"${st.running || st.page === 'login' ? ' disabled title="erst stoppen bzw. einloggen"' : ''}>Plan auf ${esc(target.name)} übernehmen</button>` : ''}`
+           ${own ? `<button class="primary" data-cmd="adopt"${st.running ? ' disabled title="erst stoppen"' : ''}>Plan auf ${esc(target.name)} übernehmen</button>` : ''}`
         : '<p class="muted small">Der Collector bietet den Plan beim nächsten Abgleich an (bis 1 min).</p>';
     } else if (own) {
       html += `<div class="row" style="margin:8px 0">bis # <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(S.abSel?.until || st.until || run?.until || 10)}" style="width:5em">
@@ -568,22 +687,22 @@ function abCard(active, sess, cmds, own, execs, W) {
 }
 
 const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3><table class="small">${cmds.map(c => `<tr><td>${esc(dt(c.created_at))}</td>
-    <td>${esc(c.cmd)}${c.args?.mode ? ' ' + esc(c.args.mode) : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</td>
+    <td>${esc(c.cmd)}${c.args?.mode ? ' ' + esc(c.args.mode) : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</td>
     <td><span class="tag">${esc(c.status)}</span></td><td class="muted">${esc(c.result)}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</td></tr>`).join('')}</table>`;
 
 // Offene Kommandos (neu/angenommen) alle 5 s nachsehen, ohne die Seite neu aufzubauen; fertig → einmal neu laden
 const OPEN_CMD = c => ['neu', 'angenommen'].includes(c.status);
-function watchCmds(cmds, since = Date.now()) {
+function watchCmds(cmds, since = Date.now(), el = '#abCmds', filter = {}) {
   clearTimeout(watchCmds.t);
   if (!cmds.some(OPEN_CMD)) return;
   watchCmds.t = setTimeout(async () => {
-    if (!$('#abCmds') || Date.now() - since > 5 * 60e3) return;
+    if (!$(el) || Date.now() - since > 5 * 60e3) return;
     try {
-      const fresh = await Cloud.q('commands', { account_id: `eq.${S.acc}`, script: 'eq.autobuilder', order: 'id.desc', limit: 8 });
-      if (!$('#abCmds')) return;
-      $('#abCmds').innerHTML = cmdTable(fresh);
-      if (fresh.some(OPEN_CMD)) watchCmds(fresh, since); else route(true);
-    } catch { watchCmds(cmds, since); }
+      const fresh = await Cloud.q('commands', { account_id: `eq.${S.acc}`, script: 'eq.autobuilder', order: 'id.desc', limit: el === '#abCmds' ? 8 : 5, ...filter });
+      if (!$(el)) return;
+      $(el).innerHTML = cmdTable(fresh);
+      if (fresh.some(OPEN_CMD)) watchCmds(fresh, since, el, filter); else route(true);
+    } catch { watchCmds(cmds, since, el, filter); }
   }, 5000);
 }
 
@@ -642,11 +761,18 @@ async function takeNewPlan(o, sess) {
   if (!confirm(`Plan „${o.draft.title}“ freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.`)) return;
   try {
     await Cloud.rpc('plan_status', { p_id: o.draft.id, p_status: 'freigegeben' });
-    // Der Collector bietet den freigegebenen Plan binnen 1 min an; dann erscheint unter Autobuilder „Plan übernehmen“
-    const busy = sess.devs.some(x => x.ab && isFresh(x.ab.at) && x.ab.state?.running);
-    toast(busy ? 'Freigegeben – der Autobuilder läuft noch: erst stoppen, dann unter Autobuilder übernehmen'
-      : 'Freigegeben – in bis zu 1 min erscheint unter Autobuilder „Plan übernehmen“, danach „bis #“ wählen');
     S.planCache = null;
+    // F2 (13.10.): direkt „Übernehmen auf <Gerät>“ anbieten. Der Collector legt den Plan im selben Abgleich als Angebot ab,
+    // in dem er das Kommando abholt; der Autobuilder übernimmt auch ausgeloggt (ab 0.5.8), aber nicht während eines Laufs.
+    const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
+    const tgt = live.find(x => x.holds) || live.find(x => x.ab.state?.page === 'game') || live[0];
+    if (tgt && o.draft.plan_hash && !tgt.ab.state?.running) {
+      if (confirm(`Freigegeben. Plan jetzt auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen (neue Schrittnummern).`)) {
+        await postCmd(tgt, 'adopt', { plan: o.draft.plan_hash }, o.draft.id);
+        toast(`Übernehmen an ${tgt.name} gesendet – Ergebnis unter Autobuilder`);
+      } else toast('Freigegeben – übernehmen unter Autobuilder');
+    } else toast(tgt ? `Freigegeben – ${tgt.name} läuft noch: erst stoppen, dann unter Autobuilder übernehmen`
+      : 'Freigegeben – kein Autobuilder erreichbar; übernehmen unter Autobuilder, sobald ein Gerät da ist');
     setTimeout(() => route(true), 1500);
   } catch (e) { toast(e.message); }
 }
