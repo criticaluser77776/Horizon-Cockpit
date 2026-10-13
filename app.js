@@ -739,10 +739,30 @@ async function takeNewPlan(o, sess) {
   } catch (e) { toast(e.message); }
 }
 
+/* ---------- Neuen Plan vorschlagen (B3, 13.10.) ----------
+   Auftrag „optimierer“ → Supabase (pg_net) startet den Workflow sim-optimize.yml in GitHub Actions: neuester Snapshot →
+   Optimierer → Ergebnis-PR → Entwurf hier unter Pläne. Läuft zusätzlich täglich 05:17. Dauer etwa 30–90 min. */
+const OPT_ST = { neu: 'angefordert', in_arbeit: 'rechnet', beantwortet: 'fertig', abgelehnt: 'nicht gelaufen', zurueckgezogen: 'zurückgezogen' };
+function optCard(req, own) {
+  const busy = req && ['neu', 'in_arbeit'].includes(req.status) && Date.now() - new Date(req.created_at) < 3 * 3600e3;
+  return `<div class="card"><div class="row between"><h2>Neuer Plan</h2>${req ? `<span class="tag">${esc(OPT_ST[req.status] || req.status)}</span>` : ''}</div>
+    <p class="muted small">Optimierer-Lauf in GitHub Actions ab dem neuesten Snapshot (täglich 05:17 und auf Knopfdruck); das Ergebnis erscheint hier als Entwurf.</p>
+    ${req ? `<div class="small">Zuletzt ${esc(dt(req.created_at))}${req.answer ? `: ${esc(req.answer)}` : ''}</div>` : ''}
+    ${own ? `<div class="row" style="margin-top:6px"><button id="optGo"${busy ? ' disabled' : ''}>${busy ? 'Lauf angefordert …' : 'Neuen Plan vorschlagen'}</button></div>` : ''}</div>`;
+}
+async function askPlan() {
+  if (!confirm('Optimierer-Lauf in GitHub Actions starten? Dauer etwa 30–90 min, das Ergebnis kommt als Entwurf (Freigabe weiter nur durch dich).')) return;
+  try {
+    const r = await Cloud.rpc('plan_vorschlagen', { p_account: S.acc });
+    toast(r.ok ? 'Lauf angefordert – Ergebnis als Entwurf unter Pläne' : r.text);
+    setTimeout(() => route(true), 1000);
+  } catch (e) { toast(e.message); }
+}
+
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
-  const [plans, heads, sess, cmds, W, homes] = await Promise.all([
+  const [plans, heads, sess, cmds, W, homes, opt] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 50,
       select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
@@ -751,6 +771,8 @@ async function viewPlans(rest = []) {
     Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', order: 'id.desc', limit: 8 }),
     loadWissen().catch(() => null),
     S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
+    Cloud.q('requests', { account_id: acc, kind: 'eq.optimierer', order: 'created_at.desc', limit: 1,
+      select: 'id,status,answer,created_at' }).catch(() => []),
   ]);
   if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   // Plan-Inhalt (bis ca. 30 KB) nur einmal je Plan laden
@@ -760,7 +782,7 @@ async function viewPlans(rest = []) {
   const offer = await newPlanOffer(plans, active).catch(() => null);
   const execs = active ? await Cloud.q('executions', { account_id: acc, plan_id: `eq.${active.id}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }) : [];
   const own = isOwner();
-  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
@@ -784,6 +806,7 @@ async function viewPlans(rest = []) {
   $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
   $('#allSteps')?.addEventListener('click', () => { S.allSteps = !S.allSteps; route(true); });
   $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
+  $('#optGo')?.addEventListener('click', askPlan);
   $('#npNo')?.addEventListener('click', async () => {
     if (!confirm('Entwurf verwerfen?')) return;
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
