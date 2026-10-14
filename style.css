@@ -186,3 +186,12 @@ span.warn, p.warn { color: var(--warn); }
 .pill { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 0 5px; border-radius: 4px; white-space: nowrap; }
 .pill.req { background: var(--accent-2); color: var(--accent); }
 .pill.opt { border: 1px solid var(--line); color: var(--min); }
+/* Planabweichung (B4) */
+svg.drift { width: 100%; max-width: 640px; height: auto; margin-top: 8px; font-size: 14px; }
+svg.drift text { fill: var(--muted); }
+svg.drift .g { stroke: var(--line); }
+svg.drift .z { stroke: var(--muted); stroke-width: 1; }
+svg.drift .lim { stroke: var(--bad); stroke-dasharray: 5 4; stroke-width: 1; }
+svg.drift .ln { fill: none; stroke: var(--accent); stroke-width: 2; }
+svg.drift .pt { fill: var(--accent); }
+svg.drift .bad { fill: var(--bad); }

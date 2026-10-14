@@ -438,7 +438,7 @@ function evRow(e) {
   return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}${e.dismissed_at ? ' dismissed' : ''}" data-id="${esc(e.id)}"><div class="row between">
     <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
     <span class="muted small">${esc(dt(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
-    <div>${esc(e.text)}</div>${bannerSlots(e)}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+    <div>${esc(e.text)}</div>${bannerSlots(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? '<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>' : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
 }
 // Werbebanner (Autobuilder ab 0.5.1): Ziele nur als Text zeigen; ob und wie sie geöffnet werden, ist noch offen
 function bannerSlots(e) {
@@ -759,6 +759,48 @@ async function askPlan() {
   } catch (e) { toast(e.message); }
 }
 
+/* ---------- Planabweichung (B4, 14.10.) ----------
+   public.plan_abweichung rechnet je Schritt Plan-Start gegen echten Start (executions) und überfällige offene Schritte;
+   der Startverzug (erster Start nach dem Planstart, weil der Plan ab seinem Snapshot rechnet) ist abgezogen. Der Wächter in
+   Supabase meldet ab 2 h Rückstand „mittel“ (je weitere 2 h erneut) mit dem Angebot, neu zu planen. */
+const hrs = h => `${fmt(Math.abs(h), 1)} h`;
+const lagText = h => h == null ? '–' : h >= 0.05 ? `${hrs(h)} hinter dem Plan` : h <= -0.05 ? `${hrs(h)} Vorlauf` : 'genau im Plan';
+function driftSvg(d) {
+  const off = +d.offset || 0, now = Date.now();
+  const pts = (d.points || []).map(p => [Date.parse(p.t), p.lag - off]);
+  if (d.lag != null) pts.push([now, +d.lag]);
+  if (pts.length < 2) return '';
+  const W = 480, H = 160, L = 38, R = 8, T = 10, B = 22;
+  const x0 = pts[0][0], x1 = Math.max(now, pts[pts.length - 1][0]);
+  const ys = pts.map(p => p[1]), lo = Math.min(-0.5, ...ys), hi = Math.max(d.limit + 0.5, ...ys);
+  const X = t => L + (t - x0) / Math.max(1, x1 - x0) * (W - L - R), Y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('');
+  const tick = v => `<text x="${L - 4}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${fmt(v, 0)} h</text>`;
+  const days = [];
+  for (let t = new Date(x0).setHours(24, 0, 0, 0); t < x1; t += 864e5)
+    days.push(`<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${T}" y2="${H - B}" class="g"/><text x="${(X(t) + 3).toFixed(1)}" y="${H - 6}">${new Date(t).toLocaleDateString('de-DE', { weekday: 'short' })}</text>`);
+  return `<svg class="drift" viewBox="0 0 ${W} ${H}" role="img" aria-label="Rückstand gegen den Plan über die Zeit">
+    ${days.join('')}<line x1="${L}" x2="${W - R}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" class="z"/>
+    <line x1="${L}" x2="${W - R}" y1="${Y(d.limit).toFixed(1)}" y2="${Y(d.limit).toFixed(1)}" class="lim"/>${tick(0)}${tick(d.limit)}
+    <path d="${line}" class="ln"/>${pts.map((p, i) => `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="${i === pts.length - 1 && d.lag != null ? 4 : 2.5}" class="${p[1] >= d.limit ? 'bad' : 'pt'}"/>`).join('')}</svg>`;
+}
+function driftCard(d, own) {
+  if (!d) return '';
+  const head = `<div class="row between"><h2>Planabweichung</h2><span class="muted small">Plan-id ${esc(d.hash)}</span></div>`;
+  if (d.lag == null) return `<div class="card">${head}<p class="small">Noch kein Schritt dieses Plans gestartet. Der Plan rechnet ab seinem Snapshot (${esc(dt(d.start))});
+    der Verzug bis zum ersten Start zählt nicht als Rückstand.</p></div>`;
+  const cls = d.lag >= d.limit ? 'err' : d.lag >= 1 ? 'warn' : 'ok';
+  const end = d.hours ? Date.parse(d.start) + (+d.hours + (+d.offset || 0)) * 3600e3 : null;
+  return `<div class="card">${head}<p class="${cls}"><b>${esc(lagText(d.lag))}</b></p>
+    <div class="small">${d.last ? `Zuletzt #${esc(d.last.n)} ${esc(d.last.text)} gestartet ${esc(dt(d.last.t))} (${esc(lagText(d.last.lag))})` : ''}
+    ${d.due?.lag > 0 ? `<br>Überfällig: #${esc(d.due.n)} ${esc(d.due.text)} sollte ${esc(dt(d.due.at))} starten` : ''}
+    ${d.offset > 0.05 ? `<br><span class="muted">Startverzug ${esc(hrs(d.offset))} (Plan ab Snapshot ${esc(dt(d.start))}) ist abgezogen.</span>` : ''}
+    ${end ? `<br>Planende ${d.lag > 0.05 ? `etwa <b>${esc(dt(end + d.lag * 3600e3))}</b> statt ${esc(dt(end))}` : esc(dt(end))}` : ''}</div>
+    ${driftSvg(d)}<p class="muted small">Kurve: Rückstand je gestartetem Schritt (über 0 = hinter dem Plan), gestrichelt die Meldegrenze ${esc(d.limit)} h.
+      Ab da meldet Supabase „mittel“, je weitere ${esc(d.limit)} h erneut.</p>
+    ${own && d.lag >= d.limit ? '<div class="row" style="margin-top:6px"><button class="primary" id="driftGo">Neu planen (Neuen Plan vorschlagen)</button></div>' : ''}</div>`;
+}
+
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
@@ -780,9 +822,12 @@ async function viewPlans(rest = []) {
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
   const offer = await newPlanOffer(plans, active).catch(() => null);
-  const execs = active ? await Cloud.q('executions', { account_id: acc, plan_id: `eq.${active.id}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }) : [];
+  const [execs, drift] = active ? await Promise.all([
+    Cloud.q('executions', { account_id: acc, plan_id: `eq.${active.id}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }),
+    Cloud.rpc('plan_abweichung', { p_plan: active.id }).catch(() => null),
+  ]) : [[], null];
   const own = isOwner();
-  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + driftCard(drift, own) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
@@ -807,6 +852,7 @@ async function viewPlans(rest = []) {
   $('#allSteps')?.addEventListener('click', () => { S.allSteps = !S.allSteps; route(true); });
   $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
   $('#optGo')?.addEventListener('click', askPlan);
+  $('#driftGo')?.addEventListener('click', askPlan);
   $('#npNo')?.addEventListener('click', async () => {
     if (!confirm('Entwurf verwerfen?')) return;
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
