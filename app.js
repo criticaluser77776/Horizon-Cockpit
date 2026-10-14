@@ -558,12 +558,13 @@ function evRow(e) {
 const EFF_SRC = { datum: 'Ende laut Nachricht', text: 'Dauer laut Nachricht', typisch: 'typische Dauer (geschätzt)' };
 function msgBody(e) {
   const x = e.kind === 'bericht' ? e.data : null;
-  if (!x?.body && !x?.effect) return '';
+  if (!x?.body && !x?.effect && !x?.decision) return '';
+  const dec = Array.isArray(x.decision) && x.decision.length ? `<div class="small"><b>Entscheidung offen</b> – im Spiel antworten: ${x.decision.map(esc).join(' · ')}</div>` : '';
   const eff = x.effect?.until ? `<div class="small">Effekt bis <b>${esc(dt(x.effect.until))}</b>${Date.parse(x.effect.until) > Date.now()
     ? ` (noch ${esc(dur((Date.parse(x.effect.until) - Date.now()) / 1000))})` : ' (abgelaufen)'} <span class="muted">· ${esc(EFF_SRC[x.effect.src] || x.effect.src || '')}</span></div>` : '';
   const links = Array.isArray(x.links) && x.links.length ? `<div class="small muted">Links (nur Text, nicht aufrufen): ${x.links.map(l =>
     `${esc(l.text || 'ohne Text')} <code>${esc(l.href)}</code>`).join(' · ')}</div>` : '';
-  return eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(x.body)}</div>${links}</details>` : '');
+  return dec + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(x.body)}</div>${links}</details>` : '');
 }
 // Lage: aktive Effekte aus Berichten (Ende in der Zukunft), je Name nur der jüngste
 function effectsCard(effs) {
@@ -571,7 +572,7 @@ function effectsCard(effs) {
     .sort((a, b) => Date.parse(a.eff.until) - Date.parse(b.eff.until));
   if (!list.length) return '';
   return `<div class="card"><div class="row between"><h2>Aktive Effekte</h2><span class="muted small">aus Berichten</span></div><table class="small">${list.map(r => `<tr>
-    <td>${esc(r.eff.name)}</td><td class="num">noch ${esc(dur((Date.parse(r.eff.until) - Date.now()) / 1000))}</td>
+    <td>${esc(String(r.eff.name || '').split(/\s*·\s*/)[0])}</td><td class="num">noch ${esc(dur((Date.parse(r.eff.until) - Date.now()) / 1000))}</td>
     <td class="muted">bis ${esc(dt(r.eff.until))}${r.eff.src === 'typisch' ? ' (geschätzt)' : ''}</td></tr>`).join('')}</table></div>`;
 }
 // Werbebanner (Autobuilder ab 0.5.1): Ziele nur als Text zeigen; ob und wie sie geöffnet werden, ist noch offen
