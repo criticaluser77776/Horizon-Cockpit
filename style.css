@@ -181,3 +181,8 @@ span.warn, p.warn { color: var(--warn); }
 .kgantt rect.s, .klegend i.s { fill: var(--fuel); background: var(--fuel); }
 .klegend { display: flex; gap: 14px; flex-wrap: wrap; font-size: .82rem; color: var(--muted); margin: 6px 0; }
 .klegend i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.kgantt rect.req, .klegend i.req { fill: var(--accent); background: var(--accent); }
+.kgantt rect.opt, .klegend i.opt { fill: var(--min); background: var(--min); }
+.pill { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 0 5px; border-radius: 4px; white-space: nowrap; }
+.pill.req { background: var(--accent-2); color: var(--accent); }
+.pill.opt { border: 1px solid var(--line); color: var(--min); }

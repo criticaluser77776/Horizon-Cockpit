@@ -82,13 +82,16 @@
   }
 
   // ---------- Bauplan: Plan-Nutzlast → Modell ----------
-  // Nutzlast (build_autobuilder.js): steps [art, id, stufe, start h, ende h, name, [E, M, T]], factors [[t h, {typ: Anteil}]] (Änderungen)
+  // Nutzlast (build_autobuilder.js): steps [art, id, stufe, start h, ende h, name, [E, M, T]], factors [[t h, {typ: Anteil}]] (Änderungen);
+  // ab 14.10.2026 auch at100 (h mit festen 100 %), lb (Untergrenze h), pflicht ["art:typ:stufe"] – ältere Pläne ohne diese Felder
   function model(p) {
-    const s = p.steps.map((x, i) => ({ i, k: x[0], id: x[1], l: x[2], t0: x[3], t1: x[4], name: x[5] || '', c: x[6] || [0, 0, 0] }));
+    const req = Array.isArray(p.pflicht) ? new Set(p.pflicht) : null;
+    const s = p.steps.map((x, i) => ({ i, k: x[0], id: x[1], l: x[2], t0: x[3], t1: x[4], name: x[5] || '', c: x[6] || [0, 0, 0],
+      req: req && x[0] !== 's' ? req.has(`${x[0]}:${x[1]}:${x[2]}`) : null }));
     const hours = p.hours || Math.max(...s.map(x => x.t1));
     const f = []; let cur = {};
     (p.factors || []).forEach(([t, ch], j, a) => { cur = { ...cur, ...ch }; const to = j + 1 < a.length ? a[j + 1][0] : hours; if (to > t) f.push([t, to, { ...cur }]); });
-    return { startTime: p.startTime, hours, s, f, id: p.id, created: p.created };
+    return { startTime: p.startTime, hours, s, f, id: p.id, created: p.created, at100: p.at100, lb: p.lb, hasReq: !!req };
   }
   // Live-Stand: erledigte und laufende Schritte, Verschiebung in h (positiv = Verzug); wie liveState in build_page.js
   function liveOf(M, snap) {
@@ -174,7 +177,7 @@
       if (r.ch) { html += `<tr class="kfac"><td></td><td class="num">${tm}</td><td colspan="5">⚙ ${r.ch.map(([id, o, v]) => `${esc(bName(id))} ${pct(o)} → <b>${pct(v)}</b>`).join(', ')}</td></tr>`; continue; }
       const s = r.s;
       html += `<tr${LD.has(s.i) ? ' class="kdone"' : ''}><td class="num">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}
-        <div class="small muted">Dauer ${hrs(s.t1 - s.t0)}</div></td>${res3(s.c)}</tr>`;
+        <div class="small muted">Dauer ${hrs(s.t1 - s.t0)}${s.req == null ? '' : s.req ? ' · <span class="pill req">Pflicht</span>' : ' · <span class="pill opt">Investition</span>'}</div></td>${res3(s.c)}</tr>`;
     }
     const fb = (v, l) => `<button type="button" data-f="${v}" aria-pressed="${f === v}">${l}</button>`;
     return `<div class="card"><h2>Die nächsten 24 Stunden</h2>
@@ -196,13 +199,13 @@
     for (let d = 0; d <= M.hours; d += 24) svg += `<line class="grid" x1="${X(d)}" x2="${X(d)}" y1="${top - 4}" y2="${top + lanes.length * H}"/><text x="${X(d) + 3}" y="12">Tag ${d / 24 + 1}</text>`;
     lanes.forEach(([k, n], li) => {
       const y = top + li * H; svg += `<text class="lane" x="4" y="${y + H / 2 + 4}">${n}</text>`;
-      for (const s of M.s) if (s.k === k) { const x = X(s.t0), w = Math.max(1, X(s.t1) - x);
-        svg += `<rect class="${k}" x="${x}" y="${y + 3}" width="${w}" height="${H - 10}" rx="1"><title>${esc(stepName(s))}: ${esc(fmtT(at(s.t0)))} → ${esc(fmtT(at(s.t1)))} (${hrs(s.t1 - s.t0)})</title></rect>`; }
+      for (const s of M.s) if (s.k === k) { const x = X(s.t0), w = Math.max(1, X(s.t1) - x), cls = k === 's' ? 's' : !M.hasReq ? k : s.req ? 'req' : 'opt';
+        svg += `<rect class="${cls}" x="${x}" y="${y + 3}" width="${w}" height="${H - 10}" rx="1"><title>${esc(stepName(s))}: ${esc(fmtT(at(s.t0)))} → ${esc(fmtT(at(s.t1)))} (${hrs(s.t1 - s.t0)})</title></rect>`; }
     });
     return `<div class="card"><h2>Schnellster Weg zum ersten Kolonieschiff</h2>
       <p class="small muted">${esc(cur.title || '')} · Plan-id ${esc(M.id || cur.plan_hash || '')} · Optimierer-Lauf ab dem Live-Stand vom ${esc(fmtT(atPlan(M, 0)))}. Der Plan führt alle Voraussetzungen für Kolonieschiff, Raumhafen 1 und Hauptquartier 8 aus, dazu Investitionen in Produktion, Lager und Versorgung.</p>
-      <div class="ktots">${tile('Gesamtdauer', days(M.hours), hrs(M.hours))}${tile('Kolonieschiff fertig', esc(fmtT(at(ship ? ship.t1 : M.hours))), OFF ? `nach Live-Stand (${OFF >= 0 ? '+' : '−'}${hrs(Math.abs(OFF))})` : '')}${tile('Aufträge', `${nb} + ${nr}`, 'Gebäude + Forschung')}</div></div>
-      <div class="card"><h3>Zeitleiste</h3><div class="klegend"><span><i class="b"></i>Gebäude</span><span><i class="r"></i>Forschung</span><span><i class="s"></i>Kolonieschiff</span></div>
+      <div class="ktots">${tile('Gesamtdauer', days(M.hours), hrs(M.hours))}${tile('Kolonieschiff fertig', esc(fmtT(at(ship ? ship.t1 : M.hours))), OFF ? `nach Live-Stand (${OFF >= 0 ? '+' : '−'}${hrs(Math.abs(OFF))})` : '')}${M.at100 ? tile('Mit festen 100 %', hrs(M.at100), 'Faktoren sparen ' + hrs(M.at100 - M.hours)) : ''}${M.lb ? tile('Untergrenze', hrs(M.lb), 'Relaxation, nicht erreichbar') : ''}${tile('Aufträge', `${nb} + ${nr}`, 'Gebäude + Forschung')}${M.hasReq ? tile('Pflicht', `${M.s.filter(s => s.req).length} von ${nb + nr}`, 'Voraussetzung für SCOL / HQ 8') : ''}</div>${M.hasReq ? '' : '<p class="small muted">Pflicht/Investition, „mit festen 100 %“ und Untergrenze stehen erst in Plänen ab dem 14.10.2026 (neuer Export).</p>'}</div>
+      <div class="card"><h3>Zeitleiste</h3><div class="klegend">${M.hasReq ? '<span><i class="req"></i>Pflicht (Voraussetzung für SCOL / HQ 8)</span><span><i class="opt"></i>Investition (Produktion, Lager, Versorgung)</span>' : '<span><i class="b"></i>Gebäude</span><span><i class="r"></i>Forschung</span>'}<span><i class="s"></i>Kolonieschiff</span></div>
       <div class="kgantt">${svg}</svg></div><p class="small muted">Für Details auf einen Balken zeigen (am PC) oder die Tabelle unter „Aktuell“ → „ganzer Plan“ nutzen.</p></div>`;
   }
   function modell(M, OFF, T) {
