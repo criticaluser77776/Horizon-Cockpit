@@ -172,7 +172,7 @@ function renderNoAccount() {
 
 /* ---------- Navigation ---------- */
 
-const VIEWS = { lage: viewLage, ereignisse: viewEvents, plaene: viewPlans, wissen: viewKompendium, mehr: viewMore };
+const VIEWS = { lage: viewLage, ereignisse: viewEvents, plaene: viewPlans, claude: viewClaude, wissen: viewKompendium, mehr: viewMore };
 
 // soft = automatische Aktualisierung: ohne „Lädt …“, die Ansicht bleibt bis zum Neuaufbau stehen
 async function route(soft) {
@@ -1087,6 +1087,90 @@ async function loadWissen() {
 
 /* ---------- Mehr: Geräte & Rechte, Gruppe, Abmelden ---------- */
 
+/* ---------- Push (B6, 14.10.) ----------
+   Gerät meldet sich mit dem öffentlichen VAPID-Schlüssel aus Supabase (push_key) an; das Abo liegt in push_subs.
+   Supabase schickt über die Edge Function „push“: Ereignisse „hoch“, Werbebanner da, Antworten von Claude (an Owner/Lesen). */
+const b64u = s => { const b = atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+async function pushState() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window))
+    return { ok: false, why: 'Dieser Browser kann keine Push-Nachrichten (am Handy: Chrome oder Firefox; iPhone nur als installierte App).' };
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) return { ok: false, why: 'Service Worker nicht aktiv (nur über https; Seite neu laden).' };
+  const [sub, st] = await Promise.all([reg.pushManager.getSubscription(), Cloud.rpc('push_status').catch(() => ({}))]);
+  return { ok: true, sub, server: !!st.subscribed, perm: Notification.permission };
+}
+async function pushOn() {
+  const key = await Cloud.rpc('push_key');
+  if (!key) throw new Error('Supabase hat noch keinen Push-Schlüssel');
+  if (await Notification.requestPermission() !== 'granted') throw new Error('Benachrichtigungen sind für diese Seite nicht erlaubt');
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  const opts = { userVisibleOnly: true, applicationServerKey: b64u(key) };
+  try { if (!sub) sub = await reg.pushManager.subscribe(opts); }
+  catch { await sub?.unsubscribe(); sub = await reg.pushManager.subscribe(opts); }   // altes Abo mit anderem Schlüssel
+  const j = sub.toJSON();
+  await Cloud.rpc('push_subscribe', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth });
+}
+async function pushOff() {
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  await sub?.unsubscribe().catch(() => {});
+  await Cloud.rpc('push_unsubscribe');
+}
+async function fillPushCard() {
+  const el = $('#pushCard');
+  if (!el) return;
+  const st = await pushState().catch(e => ({ ok: false, why: e.message }));
+  const on = st.ok && st.sub && st.server && st.perm === 'granted';
+  const canRead = ['owner', 'viewer'].includes(account()?.role);
+  el.innerHTML = `<h2>Push</h2>
+    <p class="small">Meldet sich bei Ereignissen „hoch“, wenn Werbebanner da sind und wenn Claude einen Auftrag beantwortet – auch wenn kein PC läuft.</p>
+    ${!st.ok ? `<p class="warn small">${esc(st.why)}</p>` : `<p>Dieses Gerät: <b>${on ? 'angemeldet' : 'nicht angemeldet'}</b>${st.perm === 'denied' ? ' <span class="warn small">(Benachrichtigungen im Browser blockiert)</span>' : ''}</p>
+      ${!canRead ? '<p class="muted small">Push gibt es nur für Geräte mit Recht Owner oder Lesen.</p>' : ''}
+      <div class="row">${on ? '<button id="pushTest">Test-Push</button> <button id="pushOff">Abmelden</button>' : '<button class="primary" id="pushOn">Push einschalten</button>'}</div>`}`;
+  const act = (id, fn) => $('#' + id)?.addEventListener('click', async () => { try { await fn(); } catch (e) { toast(e.message); } fillPushCard(); });
+  act('pushOn', async () => { await pushOn(); toast('Push eingeschaltet'); });
+  act('pushOff', async () => { await pushOff(); toast('Push abgemeldet'); });
+  act('pushTest', async () => { const r = await Cloud.rpc('push_test', { p_account: S.acc }); toast(r.ok ? 'Test-Push gesendet – kommt in wenigen Sekunden' : r.text); });
+}
+
+/* ---------- Claude-Kanal (B6, 14.10.) ----------
+   Aufträge (requests) an Claude: Owner stellt sie hier, eine Claude-Sitzung mit Wächter (tools/watch.py) wird geweckt,
+   übernimmt (request_claim) und antwortet (request_answer, ggf. mit Planentwurf). Antworten kommen auch als Push. */
+const RQ_ST = { neu: 'neu', in_arbeit: 'in Arbeit', beantwortet: 'beantwortet', abgelehnt: 'abgelehnt', zurueckgezogen: 'zurückgezogen' };
+const RQ_TGT = { any: 'beliebige Claude-Sitzung', sim: 'Simulations-PC', remote: 'Remote-PC' };
+async function viewClaude() {
+  const rq = await Cloud.q('requests', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 40,
+    select: 'id,kind,target,text,status,answer,plan_ids,created_at,answered_at' });
+  const own = isOwner();
+  $('#view').innerHTML = `${own ? `<div class="card"><h2>Auftrag an Claude</h2>
+      <form id="rqForm"><textarea name="text" rows="4" maxlength="8000" placeholder="Frage oder Auftrag, z. B. „Rechne den Plan neu ab dem neuesten Snapshot“" style="width:100%"></textarea>
+      <div class="row" style="margin-top:6px">an <select name="target">${Object.entries(RQ_TGT).map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join('')}</select>
+      <button class="primary">Senden</button></div></form>
+      <p class="muted small">Claude sieht den Auftrag, sobald eine Sitzung mit Wächter läuft, und antwortet hier (mit Push). Pläne gibt Claude nie frei und schickt keine Kommandos an Skripte – das bleibt bei dir.</p></div>` : ''}
+    <div class="card"><h2>Aufträge</h2>${rq.length ? rq.map(r => `<div class="list-item"><div class="row between">
+      <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(r.kind)}</span> ` : ''}<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span></span>
+      <span class="muted small">${esc(dt(r.created_at))}</span></div>
+      <div style="white-space:pre-wrap">${esc(r.text)}</div>
+      ${r.answer ? `<div class="msgbody small"><b>Antwort</b>${r.answered_at ? ` <span class="muted">${esc(dt(r.answered_at))}</span>` : ''}<br>${esc(r.answer)}</div>` : ''}
+      ${r.plan_ids?.length ? `<div class="small"><a href="#/plaene">${r.plan_ids.length === 1 ? 'Planentwurf' : r.plan_ids.length + ' Planentwürfe'} unter Pläne →</a></div>` : ''}
+      ${own && ['neu', 'in_arbeit'].includes(r.status) ? `<div class="row" style="margin-top:4px"><button class="small" data-wd="${esc(r.id)}">Zurückziehen</button></div>` : ''}
+    </div>`).join('') : '<p class="muted">Noch keine Aufträge.</p>'}</div>`;
+  $('#rqForm')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const text = e.target.text.value.trim();
+    if (!text) return;
+    try {
+      await Cloud.rest('requests', { method: 'POST', prefer: 'return=minimal', body: { account_id: S.acc, kind: 'frage', target: e.target.target.value, text } });
+      toast('Auftrag gesendet'); route(true);
+    } catch (err) { toast(err.message); }
+  });
+  $('#view').querySelectorAll('button[data-wd]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Auftrag zurückziehen?')) return;
+    try { await Cloud.rpc('request_withdraw', { p_id: b.dataset.wd }); toast('Zurückgezogen'); route(true); } catch (e) { toast(e.message); }
+  }));
+}
+
 async function viewMore() {
   const a = Cloud.access();
   const info = await Cloud.rpc('group_info');
@@ -1109,6 +1193,7 @@ async function viewMore() {
       <form id="fName" class="row"><input name="name" value="${esc(a?.name)}" style="flex:1"><button>Umbenennen</button></form>
       ${info.role === 'admin' ? '<p><button id="newCode" class="danger">Neuen Gruppen-Code erzeugen</button></p><p class="muted small">Alle anderen Geräte müssen sich danach neu anmelden (auch Skripte und Claude).</p>' : ''}
       <p><button id="logout">Abmelden</button></p></div>
+    <div class="card" id="pushCard"><h2>Push</h2><p class="muted small">wird geprüft …</p></div>
     <div class="card"><h2>Über</h2><p class="small">Version ${esc(window.APP_VERSION?.number)} · ${esc(window.APP_VERSION?.built)}</p>
       <p class="small muted">Gerätekennung ${esc(Cloud.device.slice(0, 8))}…</p>
       <p class="small">Ansicht: <b>${isStandalone() ? 'als App (ohne Browserleiste)' : 'im Browser'}</b></p>
@@ -1116,6 +1201,7 @@ async function viewMore() {
         <p class="muted small" id="installHint">${installPrompt ? 'Chrome bietet die Installation an.'
           : 'Chrome bietet gerade keine Installation an (Seite neu laden; sonst Chrome-Menü ⋮ → „App installieren“, auf dem iPhone Safari → Teilen → „Zum Home-Bildschirm“).'}</p>` : ''}
       <p class="small muted">Plan und Stand: doku/stand/cockpit.md im Horizon-Repo.</p></div></div>`;
+  fillPushCard();
   $('#view').querySelectorAll('select[data-member]').forEach(s => s.addEventListener('change', async () => {
     try { await Cloud.rpc('account_grant', { p_account: S.acc, p_member: s.dataset.member, p_role: s.value }); toast('Recht gespeichert'); }
     catch (e) { toast(e.message); route(); }
