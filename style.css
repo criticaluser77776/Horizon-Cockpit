@@ -131,3 +131,53 @@ tr.step td { padding-top: 2px; padding-bottom: 2px; }
 .edsteps tr.halt td { color: var(--warn); font-weight: 600; border-top: 2px solid var(--warn); }
 .ok { color: var(--ok); }
 span.warn, p.warn { color: var(--warn); }
+/* Kompendium (kompendium.js) */
+.komp { --ore: #a8492a; --min: #17807f; --fuel: #a8720a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .komp { --ore: #e58360; --min: #52c4c2; --fuel: #e6b444; } }
+:root[data-theme="dark"] .komp { --ore: #e58360; --min: #52c4c2; --fuel: #e6b444; }
+.komp > * + *, #kbody > * + * { margin-top: var(--gap); }
+.komp .e { color: var(--ore); } .komp .m { color: var(--min); } .komp .t { color: var(--fuel); }
+.kseg { display: flex; gap: 6px; flex-wrap: wrap; }
+.kseg button, .komp button[aria-pressed] { padding: 5px 10px; font-size: .85rem; }
+.kseg button[aria-pressed="true"], .komp button[aria-pressed="true"] { background: var(--accent-2); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.ksub { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+.ksub button { white-space: nowrap; }
+.kind { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.kind.r { color: var(--accent); border-color: var(--accent); }
+.ktbl { font-size: .86rem; }
+.ktbl input { padding: 3px 5px; }
+.ktbl tr.kday td { background: var(--accent-2); font-weight: 600; font-size: .8rem; }
+.ktbl tr.know td { border-top: 2px solid var(--accent); color: var(--accent); font-weight: 600; font-size: .8rem; }
+.ktbl tr.kfac td { color: var(--muted); font-size: .82rem; }
+.ktbl tr.kdone td { opacity: .5; }
+.ktbl tr.ktier td { border-top: 2px solid var(--accent); }
+.ktots { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 8px; }
+.ktot { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--bg); min-width: 0; }
+.ktot span { display: block; font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.ktot b { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.kfacts { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.kfacts p { margin: 4px 0 0; }
+.kmech { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+@media (max-width: 420px) { .kmech { grid-template-columns: minmax(0, 1fr); } }
+.kul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 6px; }
+.kformula { font-family: ui-monospace, Consolas, monospace; font-size: .85rem; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; overflow-x: auto; white-space: nowrap; }
+.kreq { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.kreq:first-of-type { border-top: 0; }
+.kchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.kchip { display: inline-flex; gap: 5px; align-items: baseline; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 2px 7px; font-size: .85rem; }
+.kwissen .wlist h3 { margin: 10px 0 2px; }
+@media (min-width: 900px) { .kwissen { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--gap); align-items: start; } }
+@media (max-width: 899px) { .kwissen .wlist { max-height: 38vh; } .kwissen #kd { margin-top: var(--gap); } }
+#kd > * + * { margin-top: var(--gap); }
+.kplanbar label.f { margin: 4px 0; }
+.kplanbar select { max-width: 70vw; }
+.kgantt { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.kgantt svg { display: block; min-width: 720px; width: 100%; height: auto; }
+.kgantt text { font: 11px ui-monospace, Consolas, monospace; fill: var(--muted); }
+.kgantt .lane { font-weight: 600; fill: var(--text); }
+.kgantt .grid { stroke: var(--line); }
+.kgantt rect.b, .klegend i.b { fill: var(--min); background: var(--min); }
+.kgantt rect.r, .klegend i.r { fill: var(--accent); background: var(--accent); }
+.kgantt rect.s, .klegend i.s { fill: var(--fuel); background: var(--fuel); }
+.klegend { display: flex; gap: 14px; flex-wrap: wrap; font-size: .82rem; color: var(--muted); margin: 6px 0; }
+.klegend i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }

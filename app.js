@@ -1,5 +1,5 @@
 'use strict';
-/* Horizon-Cockpit – Gerüst (P1): Anmeldung, Account, Lage, Ereignisse, Pläne (Liste + Freigabe), Wissen, Geräte & Rechte.
+/* Horizon-Cockpit – Gerüst (P1): Anmeldung, Account, Lage, Ereignisse, Pläne (Liste + Freigabe), Kompendium (kompendium.js), Geräte & Rechte.
    Alle Daten aus Supabase (cloud.js); Texte aus der Datenbank werden immer escaped. */
 
 const $ = s => document.querySelector(s);
@@ -172,7 +172,7 @@ function renderNoAccount() {
 
 /* ---------- Navigation ---------- */
 
-const VIEWS = { lage: viewLage, ereignisse: viewEvents, plaene: viewPlans, wissen: viewWissen, mehr: viewMore };
+const VIEWS = { lage: viewLage, ereignisse: viewEvents, plaene: viewPlans, wissen: viewKompendium, mehr: viewMore };
 
 // soft = automatische Aktualisierung: ohne „Lädt …“, die Ansicht bleibt bis zum Neuaufbau stehen
 async function route(soft) {
@@ -1004,7 +1004,7 @@ async function createEdited(E, P, errs) {
   } catch (e) { toast(e.message); }
 }
 
-/* ---------- Wissen (Gebäude und Forschung, Datenbank Runde 7) ---------- */
+/* ---------- Spieldaten (Gebäude und Forschung, Datenbank Runde 7); Reiter Kompendium in kompendium.js ---------- */
 
 async function loadWissen() {
   if (S.wissen) return S.wissen;
@@ -1013,48 +1013,6 @@ async function loadWissen() {
   const d = await r.json();
   for (const o of Object.values(d.B)) o.L = Object.fromEntries(o.l.map(x => [x[0], x]));
   return (S.wissen = d);
-}
-
-async function viewWissen(rest) {
-  const { B, R } = await loadWissen();
-  const [sel = ''] = rest;
-  const all = [...Object.entries(B).map(([id, o]) => ({ k: 'b', id, o })), ...Object.entries(R).map(([id, o]) => ({ k: 'r', id, o }))]
-    .sort((a, b) => a.o.n.localeCompare(b.o.n, 'de'));
-  const filt = sessionStorage.getItem('hz.wq') || '';
-  $('#view').innerHTML = `<div class="wissen"><div class="card"><input class="search" id="wq" placeholder="Gebäude oder Forschung suchen" value="${esc(filt)}">
-    <div class="wlist" id="wl"></div></div><div class="card" id="wd"><p class="muted">Eintrag wählen. Werte aus der Datenbank von Runde 7 (100 % Betriebsfaktor); live gilt vorrangig.</p></div></div>`;
-  const list = q => {
-    const t = q.trim().toLowerCase();
-    $('#wl').innerHTML = all.filter(x => !t || x.o.n.toLowerCase().includes(t) || x.id.includes(t))
-      .map(x => `<button data-k="${x.k}" data-id="${esc(x.id)}" class="${x.k + ':' + x.id === sel ? 'on' : ''}">${esc(x.o.n)} <span class="tag">${x.k === 'b' ? 'Gebäude' : 'Forschung'}</span></button>`).join('');
-  };
-  list(filt);
-  $('#wq').oninput = e => { sessionStorage.setItem('hz.wq', e.target.value); list(e.target.value); };
-  $('#wl').onclick = e => { const b = e.target.closest('button'); if (b) location.hash = `#/wissen/${b.dataset.k}:${b.dataset.id}`; };
-  if (sel) showWissen(sel, B, R);
-}
-
-function showWissen(sel, B, R) {
-  const [k, id] = sel.split(':');
-  const o = (k === 'b' ? B : R)[id];
-  if (!o) return;
-  const name = (kk, i) => esc(((kk === 'b' ? B : R)[i] || {}).n || i);
-  const req = o.q.map(([a, b, rs]) => `<tr><td class="num">${a === b ? a : `${a}–${b}`}</td><td>${rs.map(([kk, i, l]) => `${name(kk, i)} ${l}`).join(', ') || '–'}</td></tr>`).join('');
-  let body = '';
-  if (k === 'b') {
-    body = `<div class="scroll"><table><tr><th class="num">Stufe</th><th>Name</th><th class="num">Erz</th><th class="num">Mineral</th><th class="num">Treibstoff</th><th class="num">Bauplatz</th><th>Bedarf</th><th>Wirkung</th></tr>${
-      o.l.map(([l, n, c, u, w]) => `<tr><td class="num">${l}</td><td>${esc(n)}</td><td class="num">${fmt(c.Eisenerz)}</td><td class="num">${fmt(c.Mineral)}</td><td class="num">${fmt(c.Treibstoff)}</td><td class="num">${fmt(c.Bauplatz)}</td>
-        <td class="small">${Object.entries(u || {}).map(([a, v]) => `${esc(a)} ${fmt(v)}`).join(' · ')}</td><td class="small">${Object.entries(w || {}).map(([a, v]) => `${esc(a)} ${fmt(v, 1)}`).join(' · ')}</td></tr>`).join('')}</table></div>`;
-  } else {
-    const m = o.c === 'Allianzforschung' ? 2.5 : 1.5;
-    const rows = Array.from({ length: Math.min(o.f || 20, 30) }, (_, i) => i + 1)
-      .map(l => `<tr><td class="num">${l}</td>${(o.k || [0, 0, 0]).map(x => `<td class="num">${fmt(Math.floor(x * Math.pow(m, l - 1)))}</td>`).join('')}</tr>`).join('');
-    body = `${o.w ? `<p>${esc(o.w)}</p>` : ''}<div class="scroll"><table><tr><th class="num">Stufe</th><th class="num">Erz</th><th class="num">Mineral</th><th class="num">Treibstoff</th></tr>${rows}</table></div>
-      <p class="muted small">Kosten ohne Spieler-Rabatt.</p>`;
-  }
-  $('#wd').innerHTML = `<h2>${esc(o.n)} <span class="muted small">${esc(o.c || '')} · max. ${esc(o.f ?? '–')}</span></h2>
-    <h3>Voraussetzungen</h3><table><tr><th class="num">für Stufe</th><th>benötigt</th></tr>${req || '<tr><td colspan="2">–</td></tr>'}</table>
-    <h3>${k === 'b' ? 'Stufen' : 'Kosten'}</h3>${body}`;
 }
 
 /* ---------- Mehr: Geräte & Rechte, Gruppe, Abmelden ---------- */
