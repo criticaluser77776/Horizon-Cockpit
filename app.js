@@ -232,7 +232,7 @@ async function viewLage() {
   // B10 (Nutzer 13.10.2026): oben nur das Nötigste – Überblick, Steuerung, Banner, Ereignisse; Details eingeklappt
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  let html = overviewCard(sess, d, live, abLive, nm) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
+  let html = overviewCard(sess, d, live, abLive, nm) + planetsCard(d, nm) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
   html += `<div class="card"><div class="row between"><h2>Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.slice(0, 4).map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
   if (d) {
     const lv = (items, set) => items.map(i => `<tr><td>${esc(nm(i, set))}</td><td class="num">${esc(i.levelDone ?? i.level)}${i.inProgress ? ` → ${esc(i.level)}` : ''}</td></tr>`).join('');
@@ -246,8 +246,118 @@ async function viewLage() {
   }
   $('#view').innerHTML = html;
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
+  bindPlanets(d, nm);
   bindNotfall(sess, nf);
   swipeEvents($('#view'));
+}
+
+/* ---------- Planeten + Statistik Imperium (B2, 14.10.2026; Collector ab 0.4.5 → d.empire) ----------
+   Alle Planeten ohne Planetenwechsel: Kurzinfo wie die Übersicht im Spiel (main.php?cmd=start), Stufen/Schiffe/Verteidigung
+   je Planet (stat_main.php?cmd=overview), Rohstoffe je Kolonie (cmd=emp_prod, Tageswerte). Verbrauch, Bauleistung und
+   Forschung gibt das Spiel (cmd=status) nur für den im Spiel gewählten Planeten → nur dort. */
+const EMP_RES = [['Eisenerz', 'Eisenerz'], ['Mineral', 'Minerale'], ['Treibstoff', 'T-Stoff']];
+function empirePlanets(d) {
+  const e = d?.empire;
+  if (!e || e.error) return [];
+  const list = (e.planets || []).map(p => ({ ...p }));
+  // Spalten der Übersicht (Koordinaten) und Zeilen von emp_prod (nur Name) den Planeten zuordnen
+  for (const p of list) {
+    for (const t of ['buildings', 'ships', 'defence']) {
+      const o = e[t], k = o?.planets ? o.planets.findIndex(x => x.coords === p.coords) : -1;
+      p[t] = k >= 0 ? o.items.map(i => ({ type: i.type, cat: i.cat, n: i.values[k], busy: (i.busy || []).includes(k) })).filter(i => i.n) : [];
+    }
+    for (const [t, v] of Object.entries(e.res || {})) p[t] = v?.planets?.find(x => x.name === p.name) || null;
+  }
+  return list;
+}
+function planetsCard(d, nm) {
+  if (!d) return '';
+  const pl = empirePlanets(d), e = d.empire;
+  if (!pl.length) {
+    return `<div class="card" id="planets"><h2>Planeten</h2><p class="small muted">${e?.error
+      ? `Imperium nicht gelesen: ${esc(e.error)}` : 'Kommt mit dem nächsten Live-Stand (Collector ab 0.4.5).'}</p></div>`;
+  }
+  const cur = d.start?.coords;      // im Spiel gewählter Planet beim Erfassen (nur für ihn gibt es cmd=status)
+  const all = pl.length > 1;
+  let sel = S.planet ?? (() => { try { return localStorage.getItem('hz-planet'); } catch { return null; } })();
+  if (sel !== 'alle' && !pl.some(p => p.coords === sel)) sel = all ? 'alle' : pl[0].coords;
+  if (sel === 'alle' && !all) sel = pl[0].coords;
+  const chip = p => {
+    const ab = p.Ausbau || [];
+    return `<button class="plchip${p.coords === sel ? ' on' : ''}" data-pl="${esc(p.coords)}"><span><b>${esc(p.name)}</b> <span class="muted small">${esc(p.coords)}${p.coords === cur ? ' ◉' : ''}</span></span>
+      <span class="small">${EMP_RES.map(([, k]) => fmt(p[k])).join(' · ')}</span>
+      <span class="small muted">Energie ${fmt(p.Energie)} · Arbeiter ${fmt(p.Population)}</span>
+      <span class="small muted">Bauplatz ${fmt(p.Bauplatz)}${ab.length ? ` · Ausbau ${ab.join('/')}` : ''}</span></button>`;
+  };
+  let html = `<div class="card" id="planets"><div class="row between"><h2>Planeten</h2><span class="muted small">◉ im Spiel gewählt</span></div>
+    <div class="plchips">${all ? `<button class="plchip${sel === 'alle' ? ' on' : ''}" data-pl="alle"><span><b>Imperium</b></span><span class="small muted">${pl.length} Planeten gesamt</span></button>` : ''}${pl.map(chip).join('')}</div>`;
+  const p = pl.find(x => x.coords === sel);
+  const prodRows = rows => `<table class="small"><tr><th></th><th class="num">/h</th><th class="num">/Tag</th><th class="num">Lager</th><th class="num">Kapazität</th></tr>${EMP_RES.map(([r]) => {
+    const day = rows.production?.[r];
+    return `<tr><td>${r}</td><td class="num">${day == null ? '–' : fmt(day / 24)}</td><td class="num">${fmt(day)}</td><td class="num muted">${fmt(rows.storage?.[r])}</td><td class="num muted">${fmt(rows.capacity?.[r])}</td></tr>`;
+  }).join('')}</table>`;
+  if (!p) {      // Imperium gesamt
+    const tot = Object.fromEntries(Object.entries(e.res || {}).map(([t, v]) => [t, v?.total || null]));
+    html += `<h3>Förderung gesamt</h3>${prodRows(tot)}<h3>Förderung je Planet /h</h3><table class="small"><tr><th></th>${EMP_RES.map(([r]) => `<th class="num">${r}</th>`).join("")}</tr>${pl.map(x => `<tr><td>${esc(x.name)}</td>${EMP_RES.map(([r]) =>
+      `<td class="num">${x.production?.[r] == null ? '–' : fmt(x.production[r] / 24)}</td>`).join('')}</tr>`).join('')}</table>`;
+    for (const [t, lbl] of [['ships', 'Schiffe'], ['defence', 'Verteidigung']]) {
+      const items = e[t]?.items?.filter(i => i.sum || i.values.some(Boolean)) || [];
+      if (items.length) html += `<h3>${lbl}</h3><table class="small">${items.map(i => `<tr><td>${esc(i.type)}</td><td class="num">${fmt(i.sum ?? i.values.reduce((a, b) => a + b, 0))}</td></tr>`).join('')}</table>`;
+    }
+    return html + '</div>';
+  }
+  html += `<h3>Förderung ${esc(p.name)}</h3>${prodRows(p)}`;
+  const extra = ['spacemine', 'debris', 'recycle'].filter(t => p[t] && EMP_RES.some(([r]) => p[t][r]));
+  if (extra.length) html += `<p class="small muted">${extra.map(t => `${{ spacemine: 'Orbital', debris: 'Trümmer Orbit', recycle: 'Trümmer Planet' }[t]}: ${EMP_RES.map(([r]) => fmt(p[t][r])).join(' / ')}`).join(' · ')}</p>`;
+  html += p.coords === cur ? statDetails(d, nm)
+    : `<p class="small muted">Verbrauch und Bauleistung liefert das Spiel nur für den im Spiel gewählten Planeten (${esc(d.start?.planet || cur || '–')}).</p>`;
+  const lst = (items, set) => items.map(i => `<tr><td>${esc(set ? nm({ type: i.type.toLowerCase() }, set) : i.type)}</td><td class="num">${i.busy ? '<b>' : ''}${fmt(i.n)}${i.busy ? '</b> ⚒' : ''}</td></tr>`).join('');
+  const blds = p.buildings || [];
+  html += `<details class="sub" data-open="plb"${S.plOpen?.plb ? ' open' : ''}><summary class="small"><b>Gebäude</b> <span class="muted">${blds.length} gebaut</span></summary><table class="small">${lst(blds, 'B')}</table></details>`;
+  for (const [t, lbl] of [['ships', 'Schiffe'], ['defence', 'Verteidigung']]) {
+    if (p[t]?.length) html += `<details class="sub" data-open="pl${t}"${S.plOpen?.['pl' + t] ? ' open' : ''}><summary class="small"><b>${lbl}</b> <span class="muted">${fmt(p[t].reduce((a, i) => a + i.n, 0))}</span></summary><table class="small">${lst(p[t])}</table></details>`;
+  }
+  return html + '</div>';
+}
+// Verbrauch (Energie/Arbeiter je Gebäude, Rohstoffe), Bauleistung, Forschung aus cmd=status des gewählten Planeten
+function statDetails(d, nm) {
+  const t0 = k => d.status?.[k]?.tables?.[0] || null;
+  const res = t0('RESOURCES'), con = t0('CONSTRUCTION'), rs = t0('RESEARCH'), prod = d.prod || {};
+  const label = k => nm({ type: k }, 'B');
+  const bldRows = o => Object.entries(o || {}).filter(([k]) => k !== 'Summe');
+  let html = '';
+  if (res) {
+    const use = bldRows(res).filter(([, v]) => (v.Energie || 0) < 0 || (v.Arbeiter || 0) < 0).sort((a, b) => (a[1].Energie || 0) - (b[1].Energie || 0));
+    const gen = bldRows(res).filter(([, v]) => (v.Energie || 0) > 0 || (v.Arbeiter || 0) > 0);
+    const sum = res.Summe || {}, rv = prod['Verbrauch'] || {};
+    html += `<details class="sub" data-open="plv"${S.plOpen?.plv ? ' open' : ''}><summary class="small"><b>Verbrauch</b> <span class="muted">frei: Energie ${fmt(sum.Energie)} · Arbeiter ${fmt(sum.Arbeiter)}${RES.some(r => rv[r]) ? ` · Rohstoffe ${RES.map(r => fmt(rv[r])).join(' / ')} je h` : ''}</span></summary>
+      <table class="small"><tr><th></th><th class="num">Energie</th><th class="num">Arbeiter</th></tr>${use.map(([k, v]) => `<tr><td>${esc(label(k))} ${esc(v.level ?? '')}</td><td class="num">${fmt(v.Energie)}</td><td class="num">${fmt(v.Arbeiter)}</td></tr>`).join('')}
+      ${gen.map(([k, v]) => `<tr class="muted"><td>${esc(label(k))} ${esc(v.level ?? '')}</td><td class="num">${v.Energie > 0 ? '+' : ''}${fmt(v.Energie)}</td><td class="num">${v.Arbeiter > 0 ? '+' : ''}${fmt(v.Arbeiter)}</td></tr>`).join('')}</table></details>`;
+  }
+  if (con || rs) {
+    const cs = con?.Summe || {}, rsum = rs?.Summe || {};
+    const parts = [['Gebäude', cs['Gebäude']], ['Baustellen', cs.Baustellen], ['Schiffe', cs.Schiffe], ['Verteidigung', cs.Verteidigung], ['Forschung', rsum.Forschung]]
+      .filter(([, v]) => v != null);
+    const keys = [...new Set([...bldRows(con).map(x => x[0]), ...bldRows(rs).map(x => x[0])])];
+    html += `<details class="sub" data-open="plk"${S.plOpen?.plk ? ' open' : ''}><summary class="small"><b>Bauleistung</b> <span class="muted">${parts.map(([k, v]) => `${k} ${fmt(v, 2)}`).join(' · ')}</span></summary>
+      <div class="scrollx"><table class="small"><tr><th></th>${parts.map(([k]) => `<th class="num">${k}</th>`).join('')}</tr>${keys.map(k => {
+        const c = con?.[k] || {}, r = rs?.[k] || {};
+        return `<tr><td>${esc(label(k))} ${esc(c.level ?? r.level ?? '')}</td>${parts.map(([n]) => `<td class="num">${fmt(n === 'Forschung' ? r.Forschung : c[n], 2)}</td>`).join('')}</tr>`;
+      }).join('')}</table></div></details>`;
+  }
+  return html;
+}
+function bindPlanets(d, nm) {
+  const box = $('#planets');
+  if (!box) return;
+  box.querySelectorAll('button[data-pl]').forEach(b => b.addEventListener('click', () => {
+    S.planet = b.dataset.pl;
+    try { localStorage.setItem('hz-planet', S.planet); } catch { /* egal */ }
+    box.outerHTML = planetsCard(d, nm);
+    bindPlanets(d, nm);
+  }));
+  // aufgeklappte Abschnitte über die Auffrischung hinweg merken
+  box.querySelectorAll('details[data-open]').forEach(x => x.addEventListener('toggle', () => { (S.plOpen ||= {})[x.dataset.open] = x.open; }));
 }
 
 /* ---------- Überblick (B10): Lauf, Rohstoffe, Arbeiter/Energie, laufende Aufträge in wenigen Zeilen ---------- */
