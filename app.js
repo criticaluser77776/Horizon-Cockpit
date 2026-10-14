@@ -210,12 +210,14 @@ const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, evs, feats, nf] = await Promise.all([
+  const [heads, sess, evs, feats, nf, effs] = await Promise.all([
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     Cloud.q('events', { account_id: acc, dismissed_at: 'is.null', order: 't.desc', limit: 6 }),
     Cloud.q('features', { account_id: acc, order: 'key' }),
     loadNotfall(),
+    Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
+      select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
   ]);
   // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
   const head = heads[0];
@@ -230,7 +232,7 @@ async function viewLage() {
   // B10 (Nutzer 13.10.2026): oben nur das Nötigste – Überblick, Steuerung, Banner, Ereignisse; Details eingeklappt
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  let html = overviewCard(sess, d, live, abLive, nm) + notfallCard(sess, nf, d) + bannerCard(sess);
+  let html = overviewCard(sess, d, live, abLive, nm) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
   html += `<div class="card"><div class="row between"><h2>Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.slice(0, 4).map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
   if (d) {
     const lv = (items, set) => items.map(i => `<tr><td>${esc(nm(i, set))}</td><td class="num">${esc(i.levelDone ?? i.level)}${i.inProgress ? ` → ${esc(i.level)}` : ''}</td></tr>`).join('');
@@ -438,7 +440,29 @@ function evRow(e) {
   return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}${e.dismissed_at ? ' dismissed' : ''}" data-id="${esc(e.id)}"><div class="row between">
     <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
     <span class="muted small">${esc(dt(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
-    <div>${esc(e.text)}</div>${bannerSlots(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? '<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>' : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+    <div>${esc(e.text)}</div>${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? '<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>' : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+}
+/* Nachrichten (B1, Autobuilder ab 0.5.13): Inhalt, Links und Effekt stehen in data des Ereignisses „bericht“.
+   Links nur als Text – das Cockpit macht daraus keine klickbaren Verweise (Spiel-Links tragen Einmal-Token, fremde Ziele
+   ruft niemand automatisch auf). */
+const EFF_SRC = { datum: 'Ende laut Nachricht', text: 'Dauer laut Nachricht', typisch: 'typische Dauer (geschätzt)' };
+function msgBody(e) {
+  const x = e.kind === 'bericht' ? e.data : null;
+  if (!x?.body && !x?.effect) return '';
+  const eff = x.effect?.until ? `<div class="small">Effekt bis <b>${esc(dt(x.effect.until))}</b>${Date.parse(x.effect.until) > Date.now()
+    ? ` (noch ${esc(dur((Date.parse(x.effect.until) - Date.now()) / 1000))})` : ' (abgelaufen)'} <span class="muted">· ${esc(EFF_SRC[x.effect.src] || x.effect.src || '')}</span></div>` : '';
+  const links = Array.isArray(x.links) && x.links.length ? `<div class="small muted">Links (nur Text, nicht aufrufen): ${x.links.map(l =>
+    `${esc(l.text || 'ohne Text')} <code>${esc(l.href)}</code>`).join(' · ')}</div>` : '';
+  return eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(x.body)}</div>${links}</details>` : '');
+}
+// Lage: aktive Effekte aus Berichten (Ende in der Zukunft), je Name nur der jüngste
+function effectsCard(effs) {
+  const seen = new Set(), list = (effs || []).filter(r => r.eff?.until && !seen.has(r.eff.name) && seen.add(r.eff.name))
+    .sort((a, b) => Date.parse(a.eff.until) - Date.parse(b.eff.until));
+  if (!list.length) return '';
+  return `<div class="card"><div class="row between"><h2>Aktive Effekte</h2><span class="muted small">aus Berichten</span></div><table class="small">${list.map(r => `<tr>
+    <td>${esc(r.eff.name)}</td><td class="num">noch ${esc(dur((Date.parse(r.eff.until) - Date.now()) / 1000))}</td>
+    <td class="muted">bis ${esc(dt(r.eff.until))}${r.eff.src === 'typisch' ? ' (geschätzt)' : ''}</td></tr>`).join('')}</table></div>`;
 }
 // Werbebanner (Autobuilder ab 0.5.1): Ziele nur als Text zeigen; ob und wie sie geöffnet werden, ist noch offen
 function bannerSlots(e) {

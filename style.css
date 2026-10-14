@@ -195,3 +195,7 @@ svg.drift .lim { stroke: var(--bad); stroke-dasharray: 5 4; stroke-width: 1; }
 svg.drift .ln { fill: none; stroke: var(--accent); stroke-width: 2; }
 svg.drift .pt { fill: var(--accent); }
 svg.drift .bad { fill: var(--bad); }
+/* Nachrichten (B1) */
+details.msg summary { cursor: pointer; color: var(--accent); }
+.msgbody { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; padding: 6px 8px; border-left: 3px solid var(--line); }
+.ev code { overflow-wrap: anywhere; }
