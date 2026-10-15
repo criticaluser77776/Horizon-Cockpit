@@ -29,7 +29,9 @@
     const p = n => String(n).padStart(2, '0'); return `${d}:${p(Math.floor(s / 3600))}:${p(Math.floor(s % 3600 / 60))}:${p(s % 60)}`; };
   const hrs = h => h < 1 ? Math.round(h * 60) + ' min' : fmt(Math.round(h * 10) / 10, 1) + ' h';
   const days = h => fmt(Math.round(h / 24 * 10) / 10, 1) + ' Tage';
-  const res3 = c => `<td class="num e">${fmt(c[0])}</td><td class="num m">${fmt(c[1])}</td><td class="num t">${fmt(c[2])}</td>`;
+  // Rohstoffspalten; am Handy (≤ 600 px, B16) ausgeblendet und stattdessen als Zeile rmob unter dem Namen
+  const res3 = c => `<td class="num e rc">${fmt(c[0])}</td><td class="num m rc">${fmt(c[1])}</td><td class="num t rc">${fmt(c[2])}</td>`;
+  const rmob = (c, extra = '') => `<div class="rmob small"><span class="e">${fmt(c[0])}</span> · <span class="m">${fmt(c[1])}</span> · <span class="t">${fmt(c[2])}</span>${extra ? ` · ${extra}` : ''}</div>`;
 
   function reqsAt(o, lvl) {
     const m = new Map();
@@ -112,7 +114,7 @@
     return { at: snap.collectedAt, offset: late != null ? late : open != null ? snapH - open : 0, done, running };
   }
   const atPlan = (M, h) => new Date(Date.parse(M.startTime) + h * 3.6e6);
-  const fmtT = d => d.toLocaleString('de-DE', { ...TZ, weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const fmtT = d => dt(d);   // einheitliches Zeitformat aus app.js (B16)
   const stepName = (st) => st.k === 's' ? 'Kolonieschiff (SCOL)' : st.k === 'r' ? `${W.R[st.id]?.n || st.id} ${st.l}` : `${st.name.replace(/\s+\d+$/, '') || W.B[st.id]?.n || st.id} ${st.l}`;
   const stepLink = st => st.k === 's' ? '<b>Kolonieschiff (SCOL)</b>'
     : `<button class="link" type="button" data-open="${st.k}:${esc(st.id)}">${esc(stepName(st).replace(/\s+\d+$/, ''))}</button> <span class="num">${st.l}</span>`;
@@ -123,7 +125,7 @@
     if (!P[K.which]) K.which = P.aktiv ? 'aktiv' : 'entwurf';
     const cur = P[K.which];
     const pick = Object.entries(P).map(([w, p]) => `<button type="button" data-which="${w}" aria-pressed="${w === K.which}">${w === 'aktiv' ? 'Aktiver Plan' : 'Neuester Entwurf'}
-      <span class="small muted">${esc(p.plan_hash || '')} · ${hrs(p.M.hours)}</span></button>`).join('');
+      <span class="small muted">${esc(planLabel(p.id))} · ${hrs(p.M.hours)}</span></button>`).join('');
     const head = `<div class="card"><div class="row between"><div class="kseg" id="kWhich">${pick || ''}</div>
       <nav class="kseg" id="kPsub">${PSUBS.map(([v, l]) => `<button type="button" data-psub="${v}" aria-pressed="${v === K.psub}">${l}</button>`).join('')}</nav></div>
       <p class="small muted" id="kLive"></p></div>`;
@@ -177,7 +179,7 @@
       if (r.ch) { html += `<tr class="kfac"><td></td><td class="num">${tm}</td><td colspan="5">⚙ ${r.ch.map(([id, o, v]) => `${esc(bName(id))} ${pct(o)} → <b>${pct(v)}</b>`).join(', ')}</td></tr>`; continue; }
       const s = r.s;
       html += `<tr${LD.has(s.i) ? ' class="kdone"' : ''}><td class="num">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}
-        <div class="small muted">Dauer ${hrs(s.t1 - s.t0)}${s.req == null ? '' : s.req ? ' · <span class="pill req">Pflicht</span>' : ' · <span class="pill opt">Investition</span>'}</div></td>${res3(s.c)}</tr>`;
+        <div class="small muted">Dauer ${hrs(s.t1 - s.t0)}${s.req == null ? '' : s.req ? ' · <span class="pill req">Pflicht</span>' : ' · <span class="pill opt">Investition</span>'}</div>${rmob(s.c)}</td>${res3(s.c)}</tr>`;
     }
     const fb = (v, l) => `<button type="button" data-f="${v}" aria-pressed="${f === v}">${l}</button>`;
     return `<div class="card"><h2>Die nächsten 24 Stunden</h2>
@@ -185,7 +187,7 @@
       <div class="row"><div class="kseg" id="kFilter">${fb('all', 'Alle')}${fb('b', 'Gebäude')}${fb('r', 'Forschung')}</div>
       <button type="button" id="kDone" aria-pressed="${K.done}">${K.done ? 'Erledigte ausblenden' : `Erledigte zeigen (${hidden})`}</button>
       <button type="button" id="kAll" aria-pressed="${K.all}">${K.all ? 'nur 24 h' : `ganzer Plan (+${later})`}</button></div>
-      <div class="scroll"><table class="ktbl"><thead><tr><th class="num">#</th><th class="num">Start</th><th>Auftrag</th><th class="num e">Erz</th><th class="num m">Mineral</th><th class="num t">Treibst.</th></tr></thead>
+      <div class="scroll"><table class="ktbl"><thead><tr><th class="num">#</th><th class="num">Start</th><th>Auftrag</th><th class="num e rc">Erz</th><th class="num m rc">Mineral</th><th class="num t rc">Treibst.</th></tr></thead>
       <tbody>${html || '<tr><td colspan="6" class="muted">Nichts in diesem Zeitraum.</td></tr>'}</tbody></table></div></div>`;
   }
   // Ebene 2: Kennzahlen + Zeitleiste bis zum SCOL
@@ -203,7 +205,7 @@
         svg += `<rect class="${cls}" x="${x}" y="${y + 3}" width="${w}" height="${H - 10}" rx="1"><title>${esc(stepName(s))}: ${esc(fmtT(at(s.t0)))} → ${esc(fmtT(at(s.t1)))} (${hrs(s.t1 - s.t0)})</title></rect>`; }
     });
     return `<div class="card"><h2>Schnellster Weg zum ersten Kolonieschiff</h2>
-      <p class="small muted">${esc(cur.title || '')} · Plan-id ${esc(M.id || cur.plan_hash || '')} · Optimierer-Lauf ab dem Live-Stand vom ${esc(fmtT(atPlan(M, 0)))}. Der Plan führt alle Voraussetzungen für Kolonieschiff, Raumhafen 1 und Hauptquartier 8 aus, dazu Investitionen in Produktion, Lager und Versorgung.</p>
+      <p class="small muted">${esc(planLabel(cur.id))} · ${esc(tidy(cur.title || ''))} · Optimierer-Lauf ab dem Live-Stand vom ${esc(fmtT(atPlan(M, 0)))}. Der Plan führt alle Voraussetzungen für Kolonieschiff, Raumhafen 1 und Hauptquartier 8 aus, dazu Investitionen in Produktion, Lager und Versorgung.</p>
       <div class="ktots">${tile('Gesamtdauer', days(M.hours), hrs(M.hours))}${tile('Kolonieschiff fertig', esc(fmtT(at(ship ? ship.t1 : M.hours))), OFF ? `nach Live-Stand (${OFF >= 0 ? '+' : '−'}${hrs(Math.abs(OFF))})` : '')}${M.at100 ? tile('Mit festen 100 %', hrs(M.at100), 'Faktoren sparen ' + hrs(M.at100 - M.hours)) : ''}${M.lb ? tile('Untergrenze', hrs(M.lb), 'Relaxation, nicht erreichbar') : ''}${tile('Aufträge', `${nb} + ${nr}`, 'Gebäude + Forschung')}${M.hasReq ? tile('Pflicht', `${M.s.filter(s => s.req).length} von ${nb + nr}`, 'Voraussetzung für SCOL / HQ 8') : ''}</div>${M.hasReq ? '' : '<p class="small muted">Pflicht/Investition, „mit festen 100 %“ und Untergrenze stehen erst in Plänen ab dem 14.10.2026 (neuer Export).</p>'}</div>
       <div class="card"><h3>Zeitleiste</h3><div class="klegend">${M.hasReq ? '<span><i class="req"></i>Pflicht (Voraussetzung für SCOL / HQ 8)</span><span><i class="opt"></i>Investition (Produktion, Lager, Versorgung)</span>' : '<span><i class="b"></i>Gebäude</span><span><i class="r"></i>Forschung</span>'}<span><i class="s"></i>Kolonieschiff</span></div>
       <div class="kgantt">${svg}</svg></div><p class="small muted">Für Details auf einen Balken zeigen (am PC) oder die Tabelle unter „Aktuell“ → „ganzer Plan“ nutzen.</p></div>`;
@@ -212,8 +214,8 @@
     const at = h => atPlan(M, h + OFF);
     const fr = M.f.filter(f => Object.values(f[2]).some(v => v < 1));
     return `<div class="card"><h2>Betriebsfaktoren</h2>${T ? `<p class="small muted">${rich(T.faktoren)}</p>` : ''}
-      <div class="scroll"><table class="ktbl"><thead><tr><th>Von</th><th>Bis</th><th class="num">Dauer</th><th>Einstellung (alles andere 100 %)</th></tr></thead><tbody>
-      ${fr.map(f => `<tr><td class="num">${esc(fmtT(at(f[0])))}</td><td class="num">${esc(fmtT(at(f[1])))}</td><td class="num">${hrs(f[1] - f[0])}</td>
+      <div class="scroll"><table class="ktbl"><thead><tr><th>Von</th><th class="rc">Bis</th><th class="num rc">Dauer</th><th>Einstellung (alles andere 100 %)</th></tr></thead><tbody>
+      ${fr.map(f => `<tr><td class="nowrap">${esc(fmtT(at(f[0])))}<div class="rmob small muted">bis ${esc(fmtT(at(f[1])))} · ${hrs(f[1] - f[0])}</div></td><td class="nowrap rc">${esc(fmtT(at(f[1])))}</td><td class="num rc">${hrs(f[1] - f[0])}</td>
         <td>${Object.entries(f[2]).filter(([, v]) => v < 1).map(([id, v]) => `${esc(bName(id))} <b>${Math.round(v * 100)} %</b>`).join(', ')}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Keine Drosselung im Plan.</td></tr>'}
       </tbody></table></div></div>
       ${T ? `<div class="card"><h2>Modell und Annahmen</h2><ul class="kul">${T.assume.map(a => `<li>${rich(a)}</li>`).join('')}</ul></div>` : noTexts()}`;
@@ -276,14 +278,14 @@
       const tile = (l, v, cls = '') => `<div class="ktot"><span class="${cls}">${l}</span><b>${v}</b></div>`;
       $('#kptot').innerHTML = tile('Offene Einträge', `${open} / ${rows.length}`) + tile('Ausbauschritte', fmt(steps)) + tile('Eisenerz', fmt(tot[0]), 'e') + tile('Minerale', fmt(tot[1]), 'm')
         + tile('Treibstoff', fmt(tot[2]), 't') + tile('Bauzeit', hDur(time.b)) + tile('Forschungszeit', hDur(time.r));
-      let html = '<thead><tr><th>Name</th><th class="num">Habe</th><th class="num">Ziel</th><th class="num e">Erz</th><th class="num m">Mineral</th><th class="num t">Treibst.</th><th class="num">Dauer</th></tr></thead><tbody>';
+      let html = '<thead><tr><th>Name</th><th class="num">Habe</th><th class="num">Ziel</th><th class="num e rc">Erz</th><th class="num m rc">Mineral</th><th class="num t rc">Treibst.</th><th class="num rc">Dauer</th></tr></thead><tbody>';
       let grp = null;
       for (const r of rows) {
         const g = r.done ? 'Erledigt' : 'Ebene ' + r.d + (r.d === 0 ? ' · sofort möglich' : '');
         if (g !== grp) { grp = g; html += `<tr class="kday"><td colspan="7">${g}</td></tr>`; }
-        html += `<tr${r.done ? ' class="kdone"' : ''}><td>${kindTag(r.k)} ${nameLink(r.k, r.id)}${r.key === k + ':' + id ? ' <span class="small muted">(Ziel)</span>' : ''}</td>
+        html += `<tr${r.done ? ' class="kdone"' : ''}><td>${kindTag(r.k)} ${nameLink(r.k, r.id)}${r.key === k + ':' + id ? ' <span class="small muted">(Ziel)</span>' : ''}${rmob(r.c, hDur(r.h))}</td>
           <td class="num"><input type="number" min="0" max="${obj(r.k, r.id).f}" value="${HAVE[r.key] || 0}" data-have="${r.key}" style="width:4.5em" aria-label="Habe ${esc(obj(r.k, r.id).n)}"></td>
-          <td class="num">${r.l}</td>${res3(r.c)}<td class="num">${hDur(r.h)}</td></tr>`;
+          <td class="num">${r.l}</td>${res3(r.c)}<td class="num rc">${hDur(r.h)}</td></tr>`;
       }
       $('#kptable').innerHTML = html + '</tbody>';
     };
@@ -330,24 +332,24 @@
     const o = set[cur];
     if (k === 'b') {
       const tiers = new Set(o.q.map(x => x[0])), pb = power('b');
-      const rows = o.l.map(([lv, name, c, u, w]) => `<tr${tiers.has(lv) && lv > 1 ? ' class="ktier"' : ''}><td class="num">${lv}</td><td>${esc(name)}</td>${res3([c.Eisenerz || 0, c.Mineral || 0, c.Treibstoff || 0])}
-        <td class="num">${hDur(((c.Eisenerz || 0) + (c.Mineral || 0) + (c.Treibstoff || 0)) / pb)}</td><td class="num">${fmt(c.Bauplatz || 0)}</td><td class="small">${kv(u)}</td><td class="small">${kv(w)}</td></tr>`).join('');
+      const rows = o.l.map(([lv, name, c, u, w]) => `<tr${tiers.has(lv) && lv > 1 ? ' class="ktier"' : ''}><td class="num">${lv}</td><td>${esc(name)}${rmob([c.Eisenerz || 0, c.Mineral || 0, c.Treibstoff || 0], `${hDur(((c.Eisenerz || 0) + (c.Mineral || 0) + (c.Treibstoff || 0)) / pb)} · Platz ${fmt(c.Bauplatz || 0)}<br>Bedarf ${kv(u)}`)}</td>${res3([c.Eisenerz || 0, c.Mineral || 0, c.Treibstoff || 0])}
+        <td class="num rc">${hDur(((c.Eisenerz || 0) + (c.Mineral || 0) + (c.Treibstoff || 0)) / pb)}</td><td class="num rc">${fmt(c.Bauplatz || 0)}</td><td class="small rc">${kv(u)}</td><td class="small">${kv(w)}</td></tr>`).join('');
       $('#kd').innerHTML = `<div class="card"><h2>${esc(o.n)} <span class="small muted">${esc(o.c)} · Endstufe ${esc(o.f)}</span></h2>${planBtn('b:' + cur, o.f)}</div>
         <div class="card"><h3>Voraussetzungen</h3>${reqBlocks(o)}</div>
         <div class="card"><h3>Stufen</h3>${o.l.length ? `<p class="small muted">Blaue Linie = ab dieser Stufe gelten neue Voraussetzungen. Bauplatz = Änderung zur vorigen Stufe. Bauzeit bei ${fmt(pb)} Bauleistung/h (im Planer einstellbar). Werte bei 100 % Betriebsfaktor.</p>
-          <div class="scroll"><table class="ktbl"><thead><tr><th class="num">Stufe</th><th>Name</th><th class="num e">Erz</th><th class="num m">Mineral</th><th class="num t">Treibst.</th><th class="num">Bauzeit</th><th class="num">Platz</th><th>Bedarf</th><th>Wirkung</th></tr></thead><tbody>${rows}</tbody></table></div>`
+          <div class="scroll"><table class="ktbl"><thead><tr><th class="num">Stufe</th><th>Name</th><th class="num e rc">Erz</th><th class="num m rc">Mineral</th><th class="num t rc">Treibst.</th><th class="num rc">Bauzeit</th><th class="num rc">Platz</th><th class="rc">Bedarf</th><th>Wirkung</th></tr></thead><tbody>${rows}</tbody></table></div>`
           : '<p class="small muted">Keine Kostendaten.</p>'}</div>
         <div class="card"><h3>Schaltet frei</h3>${unlocks('b:' + cur)}</div>`;
     } else {
       const tiers = new Set(o.q.map(x => x[0])), pr = power('r'); let cum = 0;
       const rows = Array.from({ length: o.f || 0 }, (_, i) => { const l = i + 1, c = rCost(cur, l); cum += c[0] + c[1] + c[2];
-        return `<tr${tiers.has(l) && l > 1 ? ' class="ktier"' : ''}><td class="num">${l}</td>${res3(c)}<td class="num">${hDur((c[0] + c[1] + c[2]) / pr)}</td><td class="num">${fmt(cum)}</td></tr>`; }).join('');
+        return `<tr${tiers.has(l) && l > 1 ? ' class="ktier"' : ''}><td class="num">${l}</td>${res3(c)}<td class="num">${hDur((c[0] + c[1] + c[2]) / pr)}${rmob(c)}</td><td class="num rc">${fmt(cum)}</td></tr>`; }).join('');
       $('#kd').innerHTML = `<div class="card"><h2>${esc(o.n)} <span class="small muted">${esc(o.c)} · Endstufe ${esc(o.f)}</span></h2>${planBtn('r:' + cur, o.f)}</div>
         <div class="card"><h3>Wirkung</h3><p>${o.w ? esc(o.w) : 'Im Wiki ist keine Wirkung beschrieben.'}</p>${o.c === 'Allianzforschung' ? '' : '<p class="small muted">Stufe 1 hat noch keine Wirkung, die Boni zählen ab Stufe 2.</p>'}</div>
         <div class="card"><h3>Voraussetzungen</h3>${reqBlocks(o)}</div>
         <div class="card"><h3>Schaltet frei</h3>${unlocks('r:' + cur)}</div>
         <div class="card"><h3>Kosten je Stufe</h3><p class="small muted">Ohne Spieler-Rabatt. Dauer bei ${fmt(pr)} Forschungsleistung/h (im Planer einstellbar). Summe = alle drei Rohstoffe von Stufe 1 bis hier.</p>
-          <div class="scroll"><table class="ktbl"><thead><tr><th class="num">Stufe</th><th class="num e">Erz</th><th class="num m">Mineral</th><th class="num t">Treibst.</th><th class="num">Dauer</th><th class="num">Summe</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+          <div class="scroll"><table class="ktbl"><thead><tr><th class="num">Stufe</th><th class="num e rc">Erz</th><th class="num m rc">Mineral</th><th class="num t rc">Treibst.</th><th class="num">Dauer</th><th class="num rc">Summe</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
     }
   }
 

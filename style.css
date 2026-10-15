@@ -208,3 +208,34 @@ details.msg summary { cursor: pointer; color: var(--accent); }
 details.sub { margin-top: 6px; }
 details.sub summary { cursor: pointer; padding: 4px 0; }
 .scrollx { overflow-x: auto; }
+
+/* Handy (B16, 15.10.2026: Galaxy S20 = 360 × 800 CSS-px): kein seitliches Scrollen, fingergroße Knöpfe, lange Texte umbrechen */
+.nowrap { white-space: nowrap; }
+.wrapall, .msgbody, .list-item code { overflow-wrap: anywhere; }
+.rmob { display: none; }
+details.sub > summary { padding: 6px 0; }
+@media (max-width: 600px) {
+  main { padding: 10px 10px; }
+  .card { padding: 10px 11px; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  button:not(.link), .btn, select, input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; }
+  button.link.evx { min-width: 36px; min-height: 32px; text-decoration: none; font-size: 1rem; }
+  th, td { padding: 5px 4px; }
+  .acc select { max-width: 52vw; }
+  /* Kompendium: Rohstoff- und Nebenspalten als Zeile unter dem Namen */
+  .ktbl .rc { display: none; }
+  .rmob { display: block; }
+  .ksub { flex-wrap: wrap; overflow-x: visible; }
+  .kformula { white-space: normal; overflow-wrap: anywhere; }
+  .kplanbar select { max-width: 100%; }
+  .kplanbar label.f { flex: 1 1 140px; }
+  .kplanbar label.f input { width: 100% !important; }
+  .kreq { grid-template-columns: 4.5em minmax(0, 1fr); }
+  /* Plan-Editor: Pfeile, Halt, Überspringen fingergroß, darunter statt daneben */
+  .edsteps td.acts { white-space: normal; width: 84px; }
+  .edsteps td.acts button { min-width: 40px; min-height: 36px; margin: 1px; padding: 2px; }
+  .plchip { min-width: 0; flex: 1 1 100%; }
+  .plchips { flex-wrap: wrap; overflow-x: visible; }
+}
+.kchip { max-width: 100%; flex-wrap: wrap; }
+.kchip .link { white-space: normal; text-align: left; }

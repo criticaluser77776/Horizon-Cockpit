@@ -6,14 +6,99 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n, d = 0) => n == null || n === '' || !isFinite(n) ? '–'
   : Number(n).toLocaleString('de-DE', { maximumFractionDigits: d, minimumFractionDigits: 0 });
-const dt = t => t ? new Date(t).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '–';
+/* Zeiten (B16, 15.10.2026): überall dasselbe Format „Do 15.10. 15:02“, Ortszeit Berlin (MESZ/MEZ), nie rohe ISO-Zeiten.
+   dt = Wochentag Datum Uhrzeit · when = „vor 12 min“ / „in 20 min“ bis 1 h Abstand, sonst dt · clockT = nur Uhrzeit, wenn heute
+   ago = immer relativ (Alter eines Stands) · tidy = Zeiten, Snapshot-Namen und IDs in Texten aus der Datenbank lesbar machen */
+const TZ = 'Europe/Berlin';
+const WD = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+const dtParts = d => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('de-DE', { timeZone: TZ, weekday: 'short', day: '2-digit', month: '2-digit',
+    year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d).map(x => [x.type, x.value]));
+  return { wd: p.weekday.replace('.', ''), day: `${p.day}.${p.month}.`, time: `${p.hour}:${p.minute}`, ymd: `${p.year}${p.month}${p.day}` };
+};
+const toDate = t => t == null || t === '' ? null : t instanceof Date ? t : new Date(typeof t === 'string' && /^\d+$/.test(t) ? +t : t);
+function dt(t) {
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const p = dtParts(d);
+  return `${p.wd} ${p.day} ${p.time}`;
+}
+const clockT = t => {
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const p = dtParts(d);
+  return p.ymd === dtParts(new Date()).ymd ? p.time : `${p.wd} ${p.day} ${p.time}`;
+};
 function ago(t) {
-  if (!t) return '–';
-  const s = Math.round((Date.now() - new Date(t)) / 1000);
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const s = Math.round((Date.now() - d) / 1000);
   if (s < 90) return 'gerade eben';
   if (s < 5400) return `vor ${Math.round(s / 60)} min`;
   if (s < 172800) return `vor ${fmt(s / 3600, 1)} h`;
   return `vor ${Math.round(s / 86400)} Tagen`;
+}
+function when(t) {
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const m = (d - Date.now()) / 60e3;
+  if (Math.abs(m) < 1.5) return 'gerade eben';
+  if (Math.abs(m) < 60) return m < 0 ? `vor ${Math.round(-m)} min` : `in ${Math.round(m)} min`;
+  return dt(d);
+}
+
+/* Anzeigenummern (B16): Pläne „Plan 1, 2, 3 …“ in der Reihenfolge ihres Anlegens, Optimierer-Läufe „Lauf 1, 2 …“ nach Datum.
+   Technische Kennungen (Plan-id/Hash, UUID, Lauf-id) nur im Klapper „Details“. Werden alte Pläne gelöscht (B15), rücken die
+   Nummern nach – sie sind nur Anzeige, gespeichert bleibt immer die Kennung. */
+const NUMS = { acc: null, at: 0, plan: {}, run: {} };
+const RUN_RE = /\bauto-(\d{2})(\d{2})T(\d{2})(\d{2})\b/g;
+async function loadNums(force) {
+  if (!force && NUMS.acc === S.acc && Date.now() - NUMS.at < 30e3) return NUMS;
+  const rows = await Cloud.q('plans', { account_id: `eq.${S.acc}`, order: 'created_at.asc', limit: 1000, select: 'id,plan_hash,created_at,note' }).catch(() => null);
+  if (!rows) return NUMS;
+  const plan = {}, runs = new Set();
+  rows.forEach((r, i) => {
+    plan[r.id] = i + 1;
+    if (r.plan_hash && !plan[r.plan_hash]) plan[r.plan_hash] = i + 1;
+    for (const m of String(r.note || '').matchAll(RUN_RE)) runs.add(m[0]);
+  });
+  const run = Object.fromEntries([...runs].sort().map((k, i) => [k, i + 1]));
+  Object.assign(NUMS, { acc: S.acc, at: Date.now(), plan, run });
+  return NUMS;
+}
+const planNo = key => NUMS.plan[key] || null;
+const planLabel = key => !key ? '–' : planNo(key) ? `Plan ${planNo(key)}` : 'unbekannter Plan';
+// Lauf-id „auto-MMTTThhmm“ (UTC): Nummer, sonst Datum des Laufs
+function runLabel(id) {
+  if (NUMS.run[id]) return `Lauf ${NUMS.run[id]}`;
+  const m = /auto-(\d{2})(\d{2})T(\d{2})(\d{2})/.exec(id);
+  if (!m) return 'Lauf';
+  const y = new Date().getUTCFullYear(), d = new Date(Date.UTC(y, m[1] - 1, +m[2], +m[3], +m[4]));
+  return `Lauf vom ${dt(d > Date.now() + 30 * 864e5 ? new Date(Date.UTC(y - 1, m[1] - 1, +m[2], +m[3], +m[4])) : d)}`;
+}
+// Texte aus der Datenbank (Ereignisse, Notizen, Antworten): ISO-Zeiten, „15.10.2026 15:05:44“, Snapshot-Namen, Lauf-ids,
+// Plan-Hashes und UUIDs in die Anzeigeform bringen. Ergebnis ist Klartext (danach escapen).
+const WD_BEFORE = '(?<!\\b(?:Mo|Di|Mi|Do|Fr|Sa|So)\\.?,?\\s)';
+function tidy(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/\bsnapshot-(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})\.json\b/g, (_, y, mo, d, h, mi) => `Snapshot ${dt(new Date(Date.UTC(+y, mo - 1, +d, +h, +mi)))}`)
+    .replace(/\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)?/g, (all, y, mo, d, h, mi, z) => {
+      const x = z ? new Date(all.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00')) : new Date(Date.UTC(+y, mo - 1, +d, +h, +mi));   // ohne Zone = UTC (Snapshots)
+      return isNaN(x) ? all : dt(x);
+    })
+    .replace(new RegExp(`${WD_BEFORE}\\b(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})?,?\\s+(\\d{1,2}):(\\d{2})(?::\\d{2})?\\b`, 'g'), (all, d, mo, y, h, mi) => {
+      const now = new Date(), yy = +y || now.getFullYear();
+      let x = new Date(yy, mo - 1, +d, +h, +mi);
+      if (!y && x - now > 60 * 864e5) x = new Date(yy - 1, mo - 1, +d, +h, +mi);
+      return isNaN(x) ? all : dt(x);
+    })
+    .replace(/\b(?:(automatischer\s+|Optimierer-)?Lauf\s+)?auto-\d{4}T\d{4}\b/g, (m, pre) => (pre && !/Optimierer/.test(pre) ? pre : '') + runLabel(m.match(/auto-\d{4}T\d{4}/)[0]))
+    .replace(/\b(?:(Lauf|Plan(?:-id)?|id)\s+)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{10})\b/g, (all, w, k) => {
+      const n = planNo(k);
+      if (w === 'Lauf') return n ? `Lauf mit Plan ${n}` : 'Lauf';
+      return n ? `Plan ${n}` : w && /^Plan/.test(w) ? 'unbekannter Plan' : w === 'id' ? 'Plan ?' : '…';
+    });
 }
 function dur(sec) {
   if (sec == null || !isFinite(sec)) return '–';
@@ -181,7 +266,7 @@ async function route(soft) {
   const fn = VIEWS[tab] || viewLage;
   document.querySelectorAll('nav.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === (VIEWS[tab] ? tab : 'lage')));
   if (soft !== true) $('#view').innerHTML = '<p class="muted pad">Lädt …</p>';
-  try { await fn(rest); } catch (e) {
+  try { await loadNums(); await fn(rest); } catch (e) {
     if (e instanceof LoginNeeded) return renderLogin(e.message);
     $('#view').innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p><button onclick="route()">Erneut versuchen</button></div>`;
   }
@@ -340,10 +425,11 @@ function statDetails(d, nm) {
       .filter(([, v]) => v != null);
     const keys = [...new Set([...bldRows(con).map(x => x[0]), ...bldRows(rs).map(x => x[0])])];
     html += `<details class="sub" data-open="plk"${S.plOpen?.plk ? ' open' : ''}><summary class="small"><b>Bauleistung</b> <span class="muted">${parts.map(([k, v]) => `${k} ${fmt(v, 2)}`).join(' · ')}</span></summary>
-      <div class="scrollx"><table class="small"><tr><th></th>${parts.map(([k]) => `<th class="num">${k}</th>`).join('')}</tr>${keys.map(k => {
+      <table class="small">${keys.map(k => {   // B16: je Gebäude nur die Beiträge ungleich 0 als Text (passt aufs Handy)
         const c = con?.[k] || {}, r = rs?.[k] || {};
-        return `<tr><td>${esc(label(k))} ${esc(c.level ?? r.level ?? '')}</td>${parts.map(([n]) => `<td class="num">${fmt(n === 'Forschung' ? r.Forschung : c[n], 2)}</td>`).join('')}</tr>`;
-      }).join('')}</table></div></details>`;
+        const v = parts.map(([n]) => [n, n === 'Forschung' ? r.Forschung : c[n]]).filter(([, x]) => x);
+        return `<tr><td>${esc(label(k))} ${esc(c.level ?? r.level ?? '')}</td><td class="muted">${v.map(([n, x]) => `${n} ${fmt(x, 2)}`).join(' · ') || '–'}</td></tr>`;
+      }).join('')}</table></details>`;
   }
   return html;
 }
@@ -369,14 +455,14 @@ function overviewCard(sess, d, live, abLive, nm) {
       + (['laeuft', 'schlaeft'].includes(r.state) && s.ahead != null ? ` · Vorlauf ${esc(fmt(s.ahead, 1))} h` : '');
   let html = `<div class="card${r?.state === 'verloren' || !d ? ' warn' : ''}"><div class="row between"><h2>Überblick</h2>
     <span class="muted small">${live ? `Stand ${esc(ago(live.collected_at))}` : 'noch kein Live-Stand'}</span></div><p>${runTxt}</p>`;
-  if (r && ['angehalten', 'verloren'].includes(r.state) && r.reason) html += `<p class="small muted">${esc(r.reason)}</p>`;
+  if (r && ['angehalten', 'verloren'].includes(r.state) && r.reason) html += `<p class="small muted">${esc(tidy(r.reason))}</p>`;
   if (d) {
     const prod = d.prod || {}, at = new Date(live.collected_at), hrs = (Date.now() - at) / 3600e3;
     const stock = prod['Aktueller Lagerbestand'] || {}, rate = prod['Förderung'] || {}, use = prod['Verbrauch'] || {}, cap = prod['Maximal stabile Menge'] || {};
     html += `<table class="small">${RES.map(x => {
       const net = (rate[x] || 0) - (use[x] || 0), now = Math.min((stock[x] || 0) + net * hrs, cap[x] || Infinity);
       const full = net > 0 && cap[x] ? (cap[x] - now) / net * 3600 : null;
-      return `<tr><td>${x}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td><td class="num muted">${full == null ? '' : 'voll in ' + dur(full)}</td></tr>`;
+      return `<tr><td>${x}${full == null ? '' : `<div class="muted">voll in ${dur(full)}</div>`}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td></tr>`;
     }).join('')}</table>`;
     const avail = prod['Aktuelle Verfügbarkeit'] || {}, need = prod['Benötigte Kapazitäten'] || {};
     html += `<div class="row small" style="margin:4px 0">${['Arbeiter', 'Energie'].map(k => {
@@ -434,7 +520,7 @@ function nfDevRow(x, nf) {
   if (s.plan && !hang) {
     const k = nf.known[s.plan], act = nf.active;
     if (!act || act.plan_hash !== s.plan) {
-      plan = `nutzt Plan ${s.plan}${k ? ` (Cockpit: ${k.status})` : ' (im Cockpit unbekannt)'} ≠ aktiv ${act ? act.plan_hash : '–'}`;
+      plan = `nutzt ${planNo(s.plan) ? `Plan ${planNo(s.plan)}${k ? ` (${k.status})` : ''}` : 'einen im Cockpit unbekannten Plan'} ≠ aktiv ${act ? planLabel(act.plan_hash) : '–'}`;
     }
   }
   // Skript-Stände; älter als der neueste unter den Geräten = rot (Tampermonkey holt Updates selbst)
@@ -560,9 +646,9 @@ function bannerCard(sess) {
     return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">keine offen</span></div>
       <p class="small">Nächste erwartet ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(dt(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).</p></div>` : '';
   }
-  return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(dt(b.since))}</span></div>
-    <p>${esc(b.n)} von 3 Votes offen auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Vote ${esc(s.slot)}: ${esc(s.host || 'Ziel unbekannt')}
-    <span class="muted">${esc(s.url || s.href || s.src || '')}</span>`).join('<br>')}</div>
+  return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(when(b.since))}</span></div>
+    <p>${esc(b.n)} von 3 Votes offen auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Vote ${esc(s.slot)}: ${esc(s.host || 'Ziel unbekannt')}`).join('<br>')}</div>
+    ${(b.slots || []).some(s => s.url || s.href || s.src) ? `<details class="sub"><summary class="small muted">Details</summary><div class="small muted wrapall">${(b.slots || []).map(s => esc(s.url || s.href || s.src || '')).join('<br>')}</div></details>` : ''}
     ${isOwner() ? '<div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Banner jetzt öffnen</button></div>' : ''}</div>`;
 }
 async function sendBanner(sess) {
@@ -582,8 +668,8 @@ function evRow(e) {
   const can = ['owner', 'viewer'].includes(account()?.role);
   return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}${e.dismissed_at ? ' dismissed' : ''}" data-id="${esc(e.id)}"><div class="row between">
     <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
-    <span class="muted small">${esc(dt(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
-    <div>${esc(e.text)}</div>${e.kind === 'anflug' && e.level === 'hoch' && isOwner() && Date.now() - new Date(e.t) < 6 * 3600e3
+    <span class="muted small nowrap">${esc(when(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}" aria-label="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
+    <div class="wrapall">${esc(tidy(e.text))}</div>${e.kind === 'anflug' && e.level === 'hoch' && isOwner() && Date.now() - new Date(e.t) < 6 * 3600e3
       ? '<div class="row" style="margin:4px 0"><button class="danger small nfgo">Notfall verbauen</button></div>' : ''}${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? '<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>' : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
 }
 /* Nachrichten (B1, Autobuilder ab 0.5.13): Inhalt, Links und Effekt stehen in data des Ereignisses „bericht“.
@@ -598,7 +684,7 @@ function msgBody(e) {
     ? ` (noch ${esc(dur((Date.parse(x.effect.until) - Date.now()) / 1000))})` : ' (abgelaufen)'} <span class="muted">· ${esc(EFF_SRC[x.effect.src] || x.effect.src || '')}</span></div>` : '';
   const links = Array.isArray(x.links) && x.links.length ? `<div class="small muted">Links (nur Text, nicht aufrufen): ${x.links.map(l =>
     `${esc(l.text || 'ohne Text')} <code>${esc(l.href)}</code>`).join(' · ')}</div>` : '';
-  return dec + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(x.body)}</div>${links}</details>` : '');
+  return dec + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(tidy(x.body))}</div>${links}</details>` : '');
 }
 // Lage: aktive Effekte aus Berichten (Ende in der Zukunft), je Name nur der jüngste
 function effectsCard(effs) {
@@ -612,8 +698,8 @@ function effectsCard(effs) {
 // Werbebanner (Autobuilder ab 0.5.1): Ziele nur als Text zeigen; ob und wie sie geöffnet werden, ist noch offen
 function bannerSlots(e) {
   const s = e.kind === 'banner' && Array.isArray(e.data?.slots) ? e.data.slots : [];
-  return s.length ? `<div class="small">${s.map(x => `${x.url !== undefined ? 'Vote' : 'Monitor'} ${esc(x.slot)}: ${esc(x.host || (x.href ? 'intern' : 'ohne Link'))}
-    <span class="muted">${esc(x.url || x.href || x.onclick || x.src || '')}</span>`).join('<br>')}</div>` : '';
+  return s.length ? `<div class="small">${s.map(x => `${x.url !== undefined ? 'Vote' : 'Monitor'} ${esc(x.slot)}: ${esc(x.host || (x.href ? 'intern' : 'ohne Link'))}`).join('<br>')}</div>
+    <details class="sub"><summary class="small muted">Details</summary><div class="small muted wrapall">${s.map(x => esc(x.url || x.href || x.onclick || x.src || '–')).join('<br>')}</div></details>` : '';
 }
 // Ereignis ausblenden: nach rechts wischen (Handy) oder ✕ (Rechner); Rückgängig im Toast. Nur Owner/Lesen (wie „gesehen“).
 async function setDismissed(id, on) {
@@ -656,7 +742,6 @@ function swipeEvents(root) {
    Seite Spiel/Login) und Collector. „verloren“ setzt Supabase selbst (pg_cron), wenn der Halter 3 min schweigt. */
 const RUNST = { laeuft: 'läuft', schlaeft: 'schläft (ausgeloggt)', angehalten: 'angehalten', verloren: 'verloren' };
 const isFresh = (t, min = 3) => !!t && (Date.now() - new Date(t)) / 60e3 < min;
-const clockT = t => t ? new Date(t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '–';
 async function loadSessions() {
   const acc = `eq.${S.acc}`;
   const [runs, hbs] = await Promise.all([
@@ -670,7 +755,7 @@ async function loadSessions() {
     if (h.name && !x.name) x.name = h.name;
   }
   const run = runs[0] || null;
-  const devs = Object.values(by).map(x => ({ ...x, name: x.name || `Gerät ${x.device.slice(0, 6)}`, holds: run?.device === x.device,
+  const devs = Object.values(by).map(x => ({ ...x, name: x.name || 'Gerät ohne Namen', holds: run?.device === x.device,
     last: [x.ab?.at, x.col?.at].filter(Boolean).sort().pop() }));
   devs.sort((a, b) => (b.holds - a.holds) || String(b.last).localeCompare(String(a.last)));
   return { run, devs };
@@ -681,10 +766,10 @@ function runBody(sess) {
   if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
   let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis #${esc(r.until ?? '–')}
     auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}</p>`;
-  if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(r.reason)}</p>`;
+  if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(tidy(r.reason))}</p>`;
   if (['laeuft', 'schlaeft'].includes(r.state) && h?.ab) {
-    html += `<p class="small muted">${s.planInfo ? esc(s.planInfo) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
-      · Lebenszeichen ${esc(ago(h.ab.at))}</p>${s.status ? `<p class="small">${esc(s.status)}</p>` : ''}`;
+    html += `<p class="small muted">${s.planInfo ? esc(tidy(s.planInfo)) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
+      · Lebenszeichen ${esc(ago(h.ab.at))}</p>${s.status ? `<p class="small">${esc(tidy(s.status))}</p>` : ''}`;
   }
   return html;
 }
@@ -789,13 +874,13 @@ function abCard(active, sess, cmds, own, execs, W) {
   let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2><span class="muted small">${run ? `seit ${esc(dt(run.since))}` : ''}</span></div>`;
   html += runBody(sess);
   if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Faktoren gehen jederzeit unter <a href="#/lage">Lage → Notfallzentrale</a>.</p>' + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
-  html += `<p class="small">Freigegeben: <b>${esc(active.title)}</b> (Plan-id ${esc(plan?.id)}, ${esc(active.status)})</p>`;
+  html += `<p class="small">Freigegeben: <b>${esc(planLabel(active.id))}</b> · ${esc(tidy(active.title))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span></p>`;
   if (!live.length) html += '<p class="err small">Kein Autobuilder erreichbar (Browser zu oder Skripte aus).</p>';
   else {
     html += `<div class="row" style="margin:8px 0">Gerät <select id="abDev">${live.map(x => `<option value="${esc(x.device)}"${x === target ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)} – ${x.ab.state.page === 'login' ? 'ausgeloggt' : 'eingeloggt'}</option>`).join('')}</select></div>`;
     if (st.plan !== plan?.id) {
       html += st.offered === plan?.id
-        ? `<p class="warn small">${esc(target.name)} hat den freigegebenen Plan angeboten bekommen, arbeitet aber noch mit ${esc(st.plan)}.</p>
+        ? `<p class="warn small">${esc(target.name)} hat den freigegebenen Plan angeboten bekommen, arbeitet aber noch mit ${esc(planLabel(st.plan))}.</p>
            ${own ? `<button class="primary" data-cmd="adopt"${st.running ? ' disabled title="erst stoppen"' : ''}>Plan auf ${esc(target.name)} übernehmen</button>` : ''}`
         : '<p class="muted small">Der Collector bietet den Plan beim nächsten Abgleich an (bis 1 min).</p>';
     } else if (own) {
@@ -818,9 +903,13 @@ function abCard(active, sess, cmds, own, execs, W) {
   return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
 }
 
-const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3><table class="small">${cmds.map(c => `<tr><td>${esc(dt(c.created_at))}</td>
-    <td>${esc(c.cmd)}${c.args?.mode ? ' ' + esc(c.args.mode) : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</td>
-    <td><span class="tag">${esc(c.status)}</span></td><td class="muted">${esc(c.result)}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</td></tr>`).join('')}</table>`;
+// Kommandos als zweizeilige Liste (B16: passt aufs Handy): Was → Gerät, Zeit; darunter Status und Ergebnis
+const CMD_DE = { start: 'Start', stop: 'Stopp', adopt: 'Plan übernehmen', reload: 'Neu laden', snapshot: 'Lage lesen', factors: 'Faktoren sichern',
+  factor: 'Faktor', banner: 'Werbebanner', pause: 'Pause', weiter: 'Weiter' };
+const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3>${cmds.map(c => `<div class="list-item small"><div class="row between">
+    <span><b>${esc(c.cmd === 'start' && c.args?.mode === 'dry' ? 'Probelauf' : CMD_DE[c.cmd] || c.cmd)}</b>${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</span>
+    <span class="muted nowrap">${esc(when(c.created_at))}</span></div>
+    <div><span class="tag">${esc(c.status)}</span> <span class="muted">${esc(tidy(c.result))}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</span></div></div>`).join('')}`;
 
 // Offene Kommandos (neu/angenommen) alle 5 s nachsehen, ohne die Seite neu aufzubauen; fertig → einmal neu laden
 const OPEN_CMD = c => ['neu', 'angenommen'].includes(c.status);
@@ -859,7 +948,7 @@ async function sendCmd(active, cmd, sess) {
     if (!confirm(`${cmd === 'live' ? 'LIVE-Start' : 'Probelauf'} bis #${until} (${step[5]}) auf ${tgt.name}?`
       + (login ? `\n${tgt.name} ist ausgeloggt: Mit Auto-Login meldet es sich jetzt im Spiel an – ein anderer eingeloggter PC fliegt dabei raus.` : '')
       + (cmd === 'live' ? '\nDer Autobuilder baut danach selbständig im Spiel.' : ''))) return;
-  } else if (!confirm(cmd === 'stop' ? `Autobuilder auf ${tgt.name} anhalten?` : `Plan ${plan.id} auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen.`)) return;
+  } else if (!confirm(cmd === 'stop' ? `Autobuilder auf ${tgt.name} anhalten?` : `${planLabel(plan.id)} auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen.`)) return;
   try {
     await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
       body: { account_id: S.acc, script: 'autobuilder', cmd: cmd === 'live' || cmd === 'dry' ? 'start' : cmd, args, plan_id: active.id, target_device: tgt.device } });
@@ -909,17 +998,24 @@ function newPlanOffer(plans, active, gains) {
   if (!g.agreed && !(g.gain > PLAN_GAIN_MIN) && active) return null;
   return { draft, ...g };
 }
+// Herkunft und Klapper „Details“ eines Plans (B16): Notiz in Anzeigeform, darunter die technischen Kennungen
+const SRC = { optimizer: 'Optimierer', user: 'eigener Entwurf', claude: 'Claude' };
+function planDetails(p) {
+  if (!p.note && !p.plan_hash && !p.id) return '';
+  return `<details class="sub"><summary class="small muted">Details</summary>${p.note ? `<div class="small wrapall" style="white-space:pre-wrap">${esc(tidy(p.note))}</div>` : ''}
+    <div class="small muted wrapall">Plan-id ${esc(p.plan_hash || '–')} · Datensatz ${esc(p.id)}${p.parent_id ? ` · Vorlage ${esc(p.parent_id)}` : ''}</div></details>`;
+}
 function newPlanCard(o, own) {
   if (!o) return '';
   const why = [o.agreed ? 'mit Claude im Chat abgestimmt' : '', gainText(o)].filter(Boolean).join(' · ');
-  return `<div class="card warn"><div class="row between"><h2>Neuer Plan verfügbar – starten?</h2><span class="muted small">${esc(dt(o.draft.created_at))}</span></div>
-    <p><b>${esc(o.draft.title || '')}</b>${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
-    ${o.draft.note ? `<div class="small muted" style="white-space:pre-wrap">${esc(o.draft.note)}</div>` : ''}
+  return `<div class="card warn"><div class="row between"><h2>Neuer Plan verfügbar – starten?</h2><span class="muted small">${esc(when(o.draft.created_at))}</span></div>
+    <p><b>${esc(planLabel(o.draft.id))}</b> · ${esc(tidy(o.draft.title || ''))}${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
+    ${planDetails(o.draft)}
     ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npNo">Verwerfen</button></div>
       <p class="muted small">Gestartet wird danach wie gewohnt unter Autobuilder („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
 }
 async function takeNewPlan(o, sess) {
-  if (!confirm(`Plan „${o.draft.title}“ freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.`)) return;
+  if (!confirm(`${planLabel(o.draft.id)} („${tidy(o.draft.title)}“) freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.`)) return;
   try {
     await Cloud.rpc('plan_status', { p_id: o.draft.id, p_status: 'freigegeben' });
     S.planCache = null;
@@ -946,7 +1042,7 @@ function optCard(req, own) {
   const busy = req && ['neu', 'in_arbeit'].includes(req.status) && Date.now() - new Date(req.created_at) < 3 * 3600e3;
   return `<div class="card"><div class="row between"><h2>Neuer Plan</h2>${req ? `<span class="tag">${esc(OPT_ST[req.status] || req.status)}</span>` : ''}</div>
     <p class="muted small">Optimierer-Lauf in GitHub Actions ab dem neuesten Snapshot (täglich 05:17 und auf Knopfdruck); das Ergebnis erscheint hier als Entwurf.</p>
-    ${req ? `<div class="small">Zuletzt ${esc(dt(req.created_at))}${req.answer ? `: ${esc(req.answer)}` : ''}</div>` : ''}
+    ${req ? `<div class="small wrapall">Zuletzt ${esc(when(req.created_at))}${req.answer ? `: ${esc(tidy(req.answer))}` : ''}</div>` : ''}
     ${own ? `<div class="row" style="margin-top:6px"><button id="optGo"${busy ? ' disabled' : ''}>${busy ? 'Lauf angefordert …' : 'Neuen Plan vorschlagen'}</button></div>` : ''}</div>`;
 }
 async function askPlan() {
@@ -977,7 +1073,7 @@ function driftSvg(d) {
   const tick = v => `<text x="${L - 4}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${fmt(v, 0)} h</text>`;
   const days = [];
   for (let t = new Date(x0).setHours(24, 0, 0, 0); t < x1; t += 864e5)
-    days.push(`<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${T}" y2="${H - B}" class="g"/><text x="${(X(t) + 3).toFixed(1)}" y="${H - 6}">${new Date(t).toLocaleDateString('de-DE', { weekday: 'short' })}</text>`);
+    days.push(`<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${T}" y2="${H - B}" class="g"/><text x="${(X(t) + 3).toFixed(1)}" y="${H - 6}">${dtParts(new Date(t)).wd}</text>`);
   return `<svg class="drift" viewBox="0 0 ${W} ${H}" role="img" aria-label="Rückstand gegen den Plan über die Zeit">
     ${days.join('')}<line x1="${L}" x2="${W - R}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" class="z"/>
     <line x1="${L}" x2="${W - R}" y1="${Y(d.limit).toFixed(1)}" y2="${Y(d.limit).toFixed(1)}" class="lim"/>${tick(0)}${tick(d.limit)}
@@ -985,13 +1081,13 @@ function driftSvg(d) {
 }
 function driftCard(d, own) {
   if (!d) return '';
-  const head = `<div class="row between"><h2>Planabweichung</h2><span class="muted small">Plan-id ${esc(d.hash)}</span></div>`;
+  const head = `<div class="row between"><h2>Planabweichung</h2><span class="muted small">${esc(planLabel(d.hash))}</span></div>`;
   if (d.lag == null) return `<div class="card">${head}<p class="small">Noch kein Schritt dieses Plans gestartet. Der Plan rechnet ab seinem Snapshot (${esc(dt(d.start))});
     der Verzug bis zum ersten Start zählt nicht als Rückstand.</p></div>`;
   const cls = d.lag >= d.limit ? 'err' : d.lag >= 1 ? 'warn' : 'ok';
   const end = d.hours ? Date.parse(d.start) + (+d.hours + (+d.offset || 0)) * 3600e3 : null;
   return `<div class="card">${head}<p class="${cls}"><b>${esc(lagText(d.lag))}</b></p>
-    <div class="small">${d.last ? `Zuletzt #${esc(d.last.n)} ${esc(d.last.text)} gestartet ${esc(dt(d.last.t))} (${esc(lagText(d.last.lag))})` : ''}
+    <div class="small">${d.last ? `Zuletzt #${esc(d.last.n)} ${esc(d.last.text)} gestartet ${esc(when(d.last.t))} (${esc(lagText(d.last.lag))})` : ''}
     ${d.due?.lag > 0 ? `<br>Überfällig: #${esc(d.due.n)} ${esc(d.due.text)} sollte ${esc(dt(d.due.at))} starten` : ''}
     ${d.offset > 0.05 ? `<br><span class="muted">Startverzug ${esc(hrs(d.offset))} (Plan ab Snapshot ${esc(dt(d.start))}) ist abgezogen.</span>` : ''}
     ${end ? `<br>Planende ${d.lag > 0.05 ? `etwa <b>${esc(dt(end + d.lag * 3600e3))}</b> statt ${esc(dt(end))}` : esc(dt(end))}` : ''}</div>
@@ -1007,7 +1103,7 @@ async function deletePlan(p) {
     const n = await Cloud.rpc('plan_delete', { p_id: p.id });
     const lost = [n.executions ? `${n.executions} Ausführungen` : '', n.commands ? `${n.commands} Kommandos` : '',
       n.children ? `${n.children} abgeleitete Pläne` : ''].filter(Boolean);
-    if (!confirm(`Plan „${p.title || p.plan_hash || 'ohne Titel'}“ (${p.status}) endgültig löschen?${lost.length
+    if (!confirm(`${planLabel(p.id)} („${tidy(p.title || 'ohne Titel')}“, ${p.status}) endgültig löschen?${lost.length
       ? `
 
 ${lost.join(', ')} bleiben erhalten, verlieren aber den Bezug zu diesem Plan. Die Planabweichung dieses Plans lässt sich danach nicht mehr ansehen.`
@@ -1015,6 +1111,7 @@ ${lost.join(', ')} bleiben erhalten, verlieren aber den Bezug zu diesem Plan. Di
 
 Das lässt sich nicht rückgängig machen.`)) return;
     await Cloud.rpc('plan_delete', { p_id: p.id, p_confirm: true });
+    NUMS.at = 0;   // Anzeigenummern neu zählen
     toast('Gelöscht'); route();
   } catch (e) { toast(e.message); }
 }
@@ -1035,6 +1132,7 @@ async function viewPlans(rest = []) {
       select: 'id,status,answer,created_at' }).catch(() => []),
   ]);
   if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
+  if (plans.some(p => !planNo(p.id))) await loadNums(true);   // neuer Plan seit dem letzten Zählen
   // Plan-Inhalt (bis ca. 30 KB) nur einmal je Plan laden
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
@@ -1058,11 +1156,12 @@ async function viewPlans(rest = []) {
   const cur = [...plans.filter(run), ...plans.filter(p => !run(p) && newest.has(p.id))];
   const old = plans.filter(p => !cur.includes(p));
   const item = p => `<div class="list-item"><div class="row between">
-      <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
+      <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span>
       <span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
+      <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
       ${gains[p.id]?.gain != null ? `<div class="small ${gains[p.id].gain > PLAN_GAIN_MIN ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
-      <div class="muted small">${esc(p.source)} · ${esc(dt(p.created_at))}${p.plan_hash ? ` · Plan-id ${esc(p.plan_hash)}` : ''}${p.parent_id ? ` · aus ${esc(plans.find(x => x.id === p.parent_id)?.plan_hash || 'älterem Plan')}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${old.includes(p) && p.status !== 'entwurf' ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
-      ${p.note ? `<div class="small" style="white-space:pre-wrap">${esc(p.note)}</div>` : ''}
+      <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${old.includes(p) && p.status !== 'entwurf' ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
+      ${planDetails(p)}
       ${own && p.status === 'entwurf' ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
       ${own && run(p) ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(p.id)}">Abbrechen</button></div>` : ''}
@@ -1202,9 +1301,9 @@ function renderPlanEdit(own) {
   const lim = Object.entries(E.limits).map(([t, [a, b]]) => `<div class="row between small"><span>${esc(nm(t))}: ${a}–${b} %</span>${own ? `<button class="link" data-lim-del="${esc(t)}">entfernen</button>` : ''}</div>`).join('');
   const pctOpts = sel => Array.from({ length: 11 }, (_, k) => k * 10).map(v => `<option value="${v}"${v === sel ? ' selected' : ''}>${v} %</option>`).join('');
   $('#view').innerHTML = `<div class="card"><div class="row between"><h2>Plan neu starten / ändern</h2><a href="#/plaene" class="small">zurück</a></div>
-    <p class="small">Vorlage: <b>${esc(E.src.title)}</b> <span class="tag ${esc(E.src.status)}">${esc(E.src.status)}</span> · Plan-id ${esc(orig.id)} · ${orig.steps.length} Schritte</p>
-    <p class="muted small">Es entsteht ein <b>neuer Entwurf</b> mit neuer Plan-id und neuen Schrittnummern; die Vorlage bleibt unverändert. Freigeben und auf ein Gerät übernehmen danach wie gewohnt, „bis #“ neu wählen. Haltepunkte und Faktor-Grenzen wirken ab Autobuilder 0.5.10.</p>
-    <p class="small">${L ? `Live-Stand ${esc(dt(L.at))}: ${E.rows.filter(r => r.done).length} Schritte schon erreicht.` : '<span class="warn">Kein Live-Stand – Prüfung nur gegen den Ursprungsplan.</span>'}</p>
+    <p class="small">Vorlage: <b>${esc(planLabel(E.src.id))}</b> · ${esc(tidy(E.src.title))} <span class="tag ${esc(E.src.status)}">${esc(E.src.status)}</span> · ${orig.steps.length} Schritte</p>
+    <p class="muted small">Es entsteht ein <b>neuer Entwurf</b> (neuer Plan mit eigener Nummer) mit neuen Schrittnummern; die Vorlage bleibt unverändert. Freigeben und auf ein Gerät übernehmen danach wie gewohnt, „bis #“ neu wählen. Haltepunkte und Faktor-Grenzen wirken ab Autobuilder 0.5.10.</p>
+    <p class="small">${L ? `Live-Stand ${esc(when(L.at))}: ${E.rows.filter(r => r.done).length} Schritte schon erreicht.` : '<span class="warn">Kein Live-Stand – Prüfung nur gegen den Ursprungsplan.</span>'}</p>
     ${L ? `<label class="small"><input type="checkbox" id="edDone"${E.dropDone ? ' checked' : ''}${own ? '' : ' disabled'}> live erreichte Schritte weglassen (Nummern beginnen beim ersten offenen)</label>` : ''}
   </div>
   <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Prüfung der Voraussetzungen</h3>
@@ -1259,10 +1358,10 @@ function retime(rows, j) {
 async function createEdited(E, P, errs) {
   if (errs.length && !confirm(`${errs.length} Probleme bei den Voraussetzungen (erstes: ${errs[0].text}).\nDer Autobuilder würde dort warten oder anhalten. Trotzdem anlegen?`)) return;
   const o = E.orig, now = new Date();
-  const when = now.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const stamp = now.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });   // gespeichert; Anzeige über tidy
   const hours = +o.hours || +(String(o.created || '').match(/([\d.]+) h$/) || [])[1] || undefined;
   const payload = { ...o, steps: P.steps, halts: P.halts, limits: E.limits, parent: o.id,
-    created: `${String(o.created || '').replace(/ · (neu|geändert) .*$/, '')} · ${P.changed ? 'geändert' : 'neu'} ${when}`, hours };
+    created: `${String(o.created || '').replace(/ · (neu|geändert) .*$/, '')} · ${P.changed ? 'geändert' : 'neu'} ${stamp}`, hours };
   delete payload.agreed;
   if (!P.halts.length) delete payload.halts;
   if (!Object.keys(E.limits).length) delete payload.limits;
@@ -1276,7 +1375,7 @@ async function createEdited(E, P, errs) {
     P.halts.length ? `Haltepunkte vor #${P.halts.join(', #')}` : '',
     Object.keys(E.limits).length ? `Faktor-Grenzen ${Object.entries(E.limits).map(([t, [a, b]]) => `${t} ${a}–${b} %`).join(', ')}` : '',
     errs.length ? `${errs.length} Voraussetzungs-Hinweise` : '', E.note.trim()].filter(Boolean).join(' · ');
-  if (!confirm(`Neuen Entwurf anlegen?\n${note}\nPlan-id ${payload.id}. Freigeben danach unter Pläne.`)) return;
+  if (!confirm(`Neuen Entwurf anlegen?\n${tidy(note)}\nFreigeben danach unter Pläne.`)) return;
   try {
     await Cloud.rest('plans', { method: 'POST', prefer: 'return=minimal', body: { account_id: S.acc, kind: 'build', source: 'user',
       title: `Bauplan ${payload.created}`.slice(0, 200), note: note.slice(0, 4000), payload, plan_hash: payload.id, parent_id: E.src.id } });
@@ -1386,9 +1485,9 @@ async function fillUseCard() {
   const maxMin = Math.max(1, ...cur.map(r => (r.actions_ms || 0) / 60000));
   const bars = cur.length ? `<svg viewBox="0 0 ${dim * 10} 40" width="100%" height="40" role="img" aria-label="Actions-Minuten je Tag">
     ${cur.map(r => { const d = +r.day.slice(8) - 1, h = Math.max(1, (r.actions_ms || 0) / 60000 / maxMin * 38);
-      return `<rect x="${d * 10 + 1}" y="${40 - h}" width="8" height="${h}" fill="var(--accent)"><title>${esc(r.day)}: ${fmt((r.actions_ms || 0) / 60000)} min, ${r.actions_runs || 0} Läufe</title></rect>`; }).join('')}
+      return `<rect x="${d * 10 + 1}" y="${40 - h}" width="8" height="${h}" fill="var(--accent)"><title>${esc(r.day.slice(8))}.${esc(r.day.slice(5, 7))}.: ${fmt((r.actions_ms || 0) / 60000)} min, ${r.actions_runs || 0} Läufe</title></rect>`; }).join('')}
     </svg><div class="small muted row between"><span>1.</span><span>Actions-Minuten je Tag (max. ${fmt(maxMin)})</span><span>${dim}.</span></div>` : '';
-  el.innerHTML = `<h2>Verbrauch <span class="muted small">${esc(month)}, Free-Grenzen</span></h2>
+  el.innerHTML = `<h2>Verbrauch <span class="muted small">${esc(now.toLocaleDateString('de-DE', { month: 'long', year: 'numeric', timeZone: 'UTC' }))}, Free-Grenzen</span></h2>
     ${!rows.length ? '<p class="muted small">Noch keine Messung (DB stündlich, Actions täglich 23:40 UTC).</p>' : ''}
     ${last ? useRow('Supabase-Datenbank', last.db_bytes, USE_LIMIT.db, `${mb(last.db_bytes)} von 500 MB${perDay > 0 ? ` · +${mb(perDay)}/Tag` : ''}`, dbProj) : ''}
     ${last ? useRow('Supabase-Dateispeicher', last.storage_bytes, USE_LIMIT.storage, `${mb(last.storage_bytes)} von 1 GB`, null) : ''}
@@ -1397,13 +1496,14 @@ async function fillUseCard() {
     ${bars}
     <p class="small">Supabase-Anfragen: ${req.length ? `<b>${fmt(reqSum)}</b> in ${req.length} Tagen (Ø ${fmt(reqSum / req.length)}/Tag)` : '<span class="muted">ohne Zugangstoken nicht erhoben (doku/stand/cockpit.md)</span>'}</p>
     <p class="small muted">Egress (Free 5 GB) gibt Supabase nicht per API heraus: <a href="https://supabase.com/dashboard/org/_/usage" target="_blank" rel="noopener">Usage im Dashboard</a>.
-      Stand ${esc(last ? dt(last.updated_at) : '–')}.</p>`;
+      Stand ${esc(last ? when(last.updated_at) : '–')}.</p>`;
 }
 
 /* ---------- Claude-Kanal (B6, 14.10.) ----------
    Aufträge (requests) an Claude: Owner stellt sie hier, eine Claude-Sitzung mit Wächter (tools/watch.py) wird geweckt,
    übernimmt (request_claim) und antwortet (request_answer, ggf. mit Planentwurf). Antworten kommen auch als Push. */
 const RQ_ST = { neu: 'neu', in_arbeit: 'in Arbeit', beantwortet: 'beantwortet', abgelehnt: 'abgelehnt', zurueckgezogen: 'zurückgezogen' };
+const RQ_KIND = { optimierer: 'Neuer Plan' };
 const RQ_TGT = { any: 'beliebige Claude-Sitzung', sim: 'Simulations-PC', remote: 'Remote-PC' };
 async function viewClaude() {
   const rq = await Cloud.q('requests', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 40,
@@ -1415,10 +1515,10 @@ async function viewClaude() {
       <button class="primary">Senden</button></div></form>
       <p class="muted small">Claude sieht den Auftrag, sobald eine Sitzung mit Wächter läuft, und antwortet hier (mit Push). Pläne gibt Claude nie frei und schickt keine Kommandos an Skripte – das bleibt bei dir.</p></div>` : ''}
     <div class="card"><h2>Aufträge</h2>${rq.length ? rq.map(r => `<div class="list-item"><div class="row between">
-      <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(r.kind)}</span> ` : ''}<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span></span>
-      <span class="muted small">${esc(dt(r.created_at))}</span></div>
-      <div style="white-space:pre-wrap">${esc(r.text)}</div>
-      ${r.answer ? `<div class="msgbody small"><b>Antwort</b>${r.answered_at ? ` <span class="muted">${esc(dt(r.answered_at))}</span>` : ''}<br>${esc(r.answer)}</div>` : ''}
+      <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(RQ_KIND[r.kind] || r.kind)}</span> ` : ''}<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span></span>
+      <span class="muted small nowrap">${esc(when(r.created_at))}</span></div>
+      <div class="wrapall" style="white-space:pre-wrap">${esc(tidy(r.text))}</div>
+      ${r.answer ? `<div class="msgbody small"><b>Antwort</b>${r.answered_at ? ` <span class="muted">${esc(when(r.answered_at))}</span>` : ''}<br>${esc(tidy(r.answer))}</div>` : ''}
       ${r.plan_ids?.length ? `<div class="small"><a href="#/plaene">${r.plan_ids.length === 1 ? 'Planentwurf' : r.plan_ids.length + ' Planentwürfe'} unter Pläne →</a></div>` : ''}
       ${own && ['neu', 'in_arbeit'].includes(r.status) ? `<div class="row" style="margin-top:4px"><button class="small" data-wd="${esc(r.id)}">Zurückziehen</button></div>` : ''}
     </div>`).join('') : '<p class="muted">Noch keine Aufträge.</p>'}</div>`;
@@ -1461,8 +1561,8 @@ async function viewMore() {
       <p><button id="logout">Abmelden</button></p></div>
     <div class="card" id="pushCard"><h2>Push</h2><p class="muted small">wird geprüft …</p></div>
     <div class="card" id="useCard"><h2>Verbrauch</h2><p class="muted small">wird geladen …</p></div>
-    <div class="card"><h2>Über</h2><p class="small">Version ${esc(window.APP_VERSION?.number)} · ${esc(window.APP_VERSION?.built)}</p>
-      <p class="small muted">Gerätekennung ${esc(Cloud.device.slice(0, 8))}…</p>
+    <div class="card"><h2>Über</h2><p class="small">Version ${esc(window.APP_VERSION?.number)}${window.APP_VERSION?.built && window.APP_VERSION.built !== 'lokal' ? ` vom ${esc(dt(window.APP_VERSION.built))}` : ' (lokal)'}</p>
+      <details class="sub"><summary class="small muted">Details</summary><p class="small muted wrapall">Gerätekennung ${esc(Cloud.device)}</p></details>
       <p class="small">Ansicht: <b>${isStandalone() ? 'als App (ohne Browserleiste)' : 'im Browser'}</b></p>
       ${!isStandalone() ? `<p><button id="install"${installPrompt ? '' : ' disabled'}>Als App installieren</button></p>
         <p class="muted small" id="installHint">${installPrompt ? 'Chrome bietet die Installation an.'
