@@ -816,6 +816,11 @@ async function sendCmd(active, cmd, sess) {
   const login = tgt.ab?.state?.page === 'login';
   if (cmd === 'live' || cmd === 'dry') {
     if (!step) return toast(`„bis #“ zwischen 1 und ${plan.steps.length}`);
+    // B11: Ein Probelauf darf keinen Live-Lauf eines anderen Geräts übernehmen (Autobuilder ab 0.5.16 und ab_sync lehnen ab)
+    const r = sess.run;
+    if (cmd === 'dry' && r && r.mode === 'live' && ['laeuft', 'schlaeft', 'verloren'].includes(r.state) && r.device !== tgt.device)
+      return alert(`Probelauf auf ${tgt.name} nicht möglich: Der Live-Lauf bis #${r.until ?? '?'} liegt bei ${r.name || 'einem anderen Gerät'} (${RUNST[r.state] || r.state}).\n`
+        + `Ein Probelauf würde ihn übernehmen und dort anhalten. Erst den Live-Lauf stoppen oder den Probelauf auf ${r.name || 'diesem Gerät'} starten.`);
     if (!confirm(`${cmd === 'live' ? 'LIVE-Start' : 'Probelauf'} bis #${until} (${step[5]}) auf ${tgt.name}?`
       + (login ? `\n${tgt.name} ist ausgeloggt: Mit Auto-Login meldet es sich jetzt im Spiel an – ein anderer eingeloggter PC fliegt dabei raus.` : '')
       + (cmd === 'live' ? '\nDer Autobuilder baut danach selbständig im Spiel.' : ''))) return;
