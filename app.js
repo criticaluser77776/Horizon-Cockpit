@@ -965,6 +965,25 @@ function driftCard(d, own) {
     ${own && d.lag >= d.limit ? '<div class="row" style="margin-top:6px"><button class="primary" id="driftGo">Neu planen (Neuen Plan vorschlagen)</button></div>' : ''}</div>`;
 }
 
+// B15: Plan endgültig löschen (nur Owner, nie freigegeben/aktiv; prüft auch die Datenbank). Erst zählen, was den Bezug verliert.
+async function deletePlan(p) {
+  if (!p) return;
+  try {
+    const n = await Cloud.rpc('plan_delete', { p_id: p.id });
+    const lost = [n.executions ? `${n.executions} Ausführungen` : '', n.commands ? `${n.commands} Kommandos` : '',
+      n.children ? `${n.children} abgeleitete Pläne` : ''].filter(Boolean);
+    if (!confirm(`Plan „${p.title || p.plan_hash || 'ohne Titel'}“ (${p.status}) endgültig löschen?${lost.length
+      ? `
+
+${lost.join(', ')} bleiben erhalten, verlieren aber den Bezug zu diesem Plan. Die Planabweichung dieses Plans lässt sich danach nicht mehr ansehen.`
+      : ''}
+
+Das lässt sich nicht rückgängig machen.`)) return;
+    await Cloud.rpc('plan_delete', { p_id: p.id, p_confirm: true });
+    toast('Gelöscht'); route();
+  } catch (e) { toast(e.message); }
+}
+
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
@@ -995,19 +1014,32 @@ async function viewPlans(rest = []) {
   const hidden = plans.filter(p => gains[p.id] && !gains[p.id].better);
   plans = plans.filter(p => !hidden.includes(p));
   const own = isOwner();
-  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + driftCard(drift, own) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
-    <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude; gezeigt werden nur Baupläne, die das Ziel früher erreichen als der aktive Plan${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
-    ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
+  // B15 (15.10.): oben nur der freigegebene/aktive Plan, der angebotene Entwurf („Neuer Plan verfügbar“) und je Art der neueste
+  // Entwurf; alles andere (verworfen, abgebrochen, erledigt, überholte Entwürfe) eingeklappt unter „Ältere Pläne“. Löschen dort
+  // nur der Owner (plan_delete), nie freigegebene/aktive Pläne.
+  const newest = new Set(offer ? [offer.draft.id] : []), kinds = new Set();   // plans ist nach created_at absteigend sortiert
+  for (const p of plans) if (p.status === 'entwurf' && !kinds.has(p.kind)) { kinds.add(p.kind); newest.add(p.id); }
+  const run = p => ['freigegeben', 'aktiv'].includes(p.status);
+  const cur = [...plans.filter(run), ...plans.filter(p => !run(p) && newest.has(p.id))];
+  const old = plans.filter(p => !cur.includes(p));
+  const item = p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
       <span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
       ${gains[p.id]?.gain != null ? `<div class="small ${gains[p.id].gain > PLAN_GAIN_MIN ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
-      <div class="muted small">${esc(p.source)} · ${esc(dt(p.created_at))}${p.plan_hash ? ` · Plan-id ${esc(p.plan_hash)}` : ''}${p.parent_id ? ` · aus ${esc(plans.find(x => x.id === p.parent_id)?.plan_hash || 'älterem Plan')}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}</div>
+      <div class="muted small">${esc(p.source)} · ${esc(dt(p.created_at))}${p.plan_hash ? ` · Plan-id ${esc(p.plan_hash)}` : ''}${p.parent_id ? ` · aus ${esc(plans.find(x => x.id === p.parent_id)?.plan_hash || 'älterem Plan')}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${old.includes(p) && p.status !== 'entwurf' ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
       ${p.note ? `<div class="small" style="white-space:pre-wrap">${esc(p.note)}</div>` : ''}
       ${own && p.status === 'entwurf' ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
-      ${own && ['freigegeben', 'aktiv'].includes(p.status) ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(p.id)}">Abbrechen</button></div>` : ''}
-      ${own && p.kind === 'build' && p.plan_hash ? `<div class="row" style="margin-top:6px"><a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a></div>` : ''}
-    </div>`).join('') : '<p class="muted">Noch keine Pläne. Ab P3 legt der Optimierer jeden neuen Bauplan hier als Entwurf ab.</p>'}</div>`;
+      ${own && run(p) ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(p.id)}">Abbrechen</button></div>` : ''}
+      ${own && (p.kind === 'build' && p.plan_hash || old.includes(p)) ? `<div class="row between" style="margin-top:6px">${p.kind === 'build' && p.plan_hash ? `<a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a>` : '<span></span>'}
+        ${old.includes(p) ? `<button class="danger small" data-del="${esc(p.id)}">Löschen</button>` : ''}</div>` : ''}
+    </div>`;
+  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + driftCard(drift, own) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+    <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude; gezeigt werden nur Baupläne, die das Ziel früher erreichen als der aktive Plan${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
+    ${cur.length ? cur.map(item).join('') : `<p class="muted">${old.length ? 'Kein freigegebener Plan und kein offener Entwurf.' : 'Noch keine Pläne. Der Optimierer legt jeden neuen Bauplan hier als Entwurf ab.'}</p>`}
+    ${old.length ? `<details id="oldPlans"${S.oldPlans ? ' open' : ''}><summary class="small"><b>Ältere Pläne (${old.length})</b> <span class="muted">verworfen, abgebrochen, erledigt, überholte Entwürfe</span></summary>${old.map(item).join('')}</details>` : ''}</div>`;
+  $('#oldPlans')?.addEventListener('toggle', e => { S.oldPlans = e.target.open; });
+  $('#view').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => deletePlan(plans.find(x => x.id === b.dataset.del))));
   $('#view').querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act, p = plans.find(x => x.id === b.dataset.id);
     if (act === 'freigegeben' && p?.kind === 'build') return takeNewPlan({ draft: p }, sess);   // F4: danach direkt übernehmen
