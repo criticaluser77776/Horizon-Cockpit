@@ -399,8 +399,10 @@ function overviewCard(sess, d, live, abLive, nm) {
 /* ---------- Notfallzentrale (Paket F3, 13.10.2026) ----------
    Immer sichtbar, auch ohne freigegebenen Plan (vorher gab es dann keinen Stopp-Knopf). Kommandos gehen an ein Gerät;
    antwortet dort der Autobuilder nicht, führt der Collector (ab 0.4.3) „Neu laden“, „Lage jetzt lesen“ und „Stopp“ selbst
-   aus. „Faktoren sichern“ und „Faktor von Hand“ braucht den Autobuilder (ab 0.5.9). Nur der Owner sieht die Knöpfe. */
-const NF_CMDS = ['stop', 'reload', 'snapshot', 'factors', 'factor'];
+   aus. „Faktoren sichern“ und „Faktor von Hand“ braucht den Autobuilder (ab 0.5.9). Nur der Owner sieht die Knöpfe.
+   „Notfall verbauen“ (B7, Autobuilder ab 0.5.18, nur auf Tippen): 2 h lang füllt der Autobuilder jede freie Schlange mit dem
+   teuersten startbaren Planschritt der nächsten 25 (auch außer der Reihe, nie Abbrechen); auch am Ereignis „anflug“. */
+const NF_CMDS = ['stop', 'reload', 'snapshot', 'factors', 'factor', 'notfall'];
 const HANG_MIN = 10;
 async function loadNotfall() {
   const acc = `eq.${S.acc}`;
@@ -455,13 +457,20 @@ function notfallCard(sess, nf, snap) {
   const anyBad = shown.some(x => hbAge(x.last) >= HANG_MIN || hbAge(x.ab?.at) >= 3);
   let html = `<div class="card${anyBad ? ' warn' : ''}" id="notfall"><div class="row between"><h2>Steuerung</h2><span class="muted small">★ hält den Lauf</span></div>`;
   html += shown.length ? `<table>${shown.map(x => nfDevRow(x, nf)).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>';
+  const nfx = nfActive(sess);
+  if (nfx) {
+    const n = nfx.ab.state.notfall;
+    html += `<div class="row between small" style="margin:6px 0;gap:6px"><span class="warn"><b>Notfall verbauen aktiv</b> auf ${esc(nfx.name)} bis ${esc(clockT(n.until))}
+      · ${esc(n.n || 0)} Schritt(e) vorgezogen${n.why ? ` · <span class="muted">${esc(n.why)}</span>` : ''}</span>${own ? '<button data-nf="notfall-off">Beenden</button>' : ''}</div>`;
+  }
   if (own) {
     html += `<div class="row" style="margin:8px 0;gap:6px"><button class="danger" id="nfStopAll" title="Stopp an alle Geräte">Alles anhalten</button></div>`;
     if (reach.length) {
       html += `<div class="row" style="margin:8px 0;gap:6px"><select id="nfDev" title="Gerät für die Knöpfe daneben">${reach.map(x => `<option value="${esc(x.device)}"${x === sel ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)}</option>`).join('')}</select>
         <button data-nf="snapshot" title="Live-Stand sofort erfassen und hochladen">Lage lesen</button>
         <button data-nf="reload" title="Spiel-Tab neu laden (ein laufender Lauf geht danach weiter)">Neu laden</button>
-        <button data-nf="factors" title="Faktor-Regel einmal anwenden (Minen und Lieferanten laufender Aufträge zuerst), ohne Lauf">Faktoren sichern</button></div>`;
+        <button data-nf="factors" title="Faktor-Regel einmal anwenden (Minen und Lieferanten laufender Aufträge zuerst), ohne Lauf">Faktoren sichern</button>
+        <button class="danger" data-nf="notfall" title="2 h lang freie Baustelle/Forschung sofort mit dem teuersten startbaren Planschritt (nächste 25) füllen – Rohstoffe vor einem Angriff verbauen">Notfall verbauen</button></div>`;
       if (facts.length) {
         const curT = facts.find(i => i.type === S.nfType) || facts[0];
         html += `<details${S.nfType ? ' open' : ''}><summary class="small muted">Faktor von Hand</summary><div class="row small" style="margin:6px 0;gap:6px"><select id="nfType">${facts.map(i => `<option value="${esc(i.type)}"${i === curT ? ' selected' : ''}>${esc(nm(i))} (${esc(i.factor.set)} %)</option>`).join('')}</select>
@@ -503,6 +512,12 @@ function bindNotfall(sess, nf) {
     if (!dev) return toast('Kein Gerät gewählt');
     const cmd = b.dataset.nf;
     let args = {};
+    if (cmd === 'notfall-off') {
+      const x = nfActive(sess);
+      if (!x || !confirm(`Notfall verbauen auf ${x.name} beenden?`)) return;
+      return sendNotfall(x, { off: true });
+    }
+    if (cmd === 'notfall') return confirm(NF_ASK(dev.name)) && sendNotfall(dev, { hours: 2 });
     if (cmd === 'factor') {
       args = { type: $('#nfType').value, to: +$('#nfTo').value };
       if (!confirm(`Faktor ${$('#nfType').selectedOptions[0].textContent} auf ${args.to} % setzen (${dev.name})?`)) return;
@@ -515,6 +530,24 @@ function bindNotfall(sess, nf) {
     } catch (e) { toast(e.message); }
   }));
   watchCmds(nf.cmds, Date.now(), '#nfCmds', { cmd: `in.(${NF_CMDS.join(',')})` });
+}
+
+// Notfall verbauen: Gerät mit offenem Fenster bzw. Ziel für den Knopf am Anflug (eingeloggter Autobuilder, Halter zuerst)
+const nfActive = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at, 10) && x.ab.state?.notfall?.until > Date.now()) || null;
+const nfTarget = sess => sess.devs.filter(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game').sort((a, b) => b.holds - a.holds)[0] || null;
+const NF_ASK = name => `Notfall verbauen auf ${name}? 2 Stunden lang startet der Autobuilder in jeder freien Schlange sofort den teuersten startbaren Planschritt der nächsten 25 – auch außer der Reihe, nichts außerhalb des Plans, kein Abbrechen. Das kann den Plan etwas verschieben.`;
+async function sendNotfall(dev, args) {
+  try {
+    await postCmd(dev, 'notfall', args);
+    toast(`Kommando an ${dev.name} gesendet – Ergebnis in 15–60 s`);
+    setTimeout(() => route(true), 1500);
+  } catch (e) { toast(e.message); }
+}
+async function anflugNotfall() {
+  const sess = await loadSessions().catch(() => null);
+  const dev = sess && nfTarget(sess);
+  if (!dev) return toast('Kein eingeloggter Autobuilder erreichbar – erst im Spiel einloggen');
+  if (confirm(NF_ASK(dev.name))) sendNotfall(dev, { hours: 2 });
 }
 
 /* ---------- Werbebanner (Autobuilder ab 0.5.1) ----------
@@ -550,7 +583,8 @@ function evRow(e) {
   return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}${e.dismissed_at ? ' dismissed' : ''}" data-id="${esc(e.id)}"><div class="row between">
     <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
     <span class="muted small">${esc(dt(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
-    <div>${esc(e.text)}</div>${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? '<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>' : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+    <div>${esc(e.text)}</div>${e.kind === 'anflug' && e.level === 'hoch' && isOwner() && Date.now() - new Date(e.t) < 6 * 3600e3
+      ? '<div class="row" style="margin:4px 0"><button class="danger small nfgo">Notfall verbauen</button></div>' : ''}${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? '<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>' : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
 }
 /* Nachrichten (B1, Autobuilder ab 0.5.13): Inhalt, Links und Effekt stehen in data des Ereignisses „bericht“.
    Links nur als Text – das Cockpit macht daraus keine klickbaren Verweise (Spiel-Links tragen Einmal-Token, fremde Ziele
@@ -597,6 +631,7 @@ async function dismissEvent(el) {
 }
 function swipeEvents(root) {
   if (!['owner', 'viewer'].includes(account()?.role)) return;
+  root.querySelectorAll('.ev .nfgo').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); anflugNotfall(); }));
   root.querySelectorAll('.ev .evx').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); dismissEvent(b.closest('.ev')); }));
   root.querySelectorAll('.ev:not(.dismissed)').forEach(el => {
     let x0 = null, y0 = 0, dx = 0;
