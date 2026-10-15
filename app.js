@@ -452,7 +452,7 @@ function overviewCard(sess, d, live, abLive, nm) {
   const runTxt = !r ? 'kein Lauf'
     : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis #${esc(r.until ?? '–')} · ${esc(r.name || '?')}`
       + (r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : '')
-      + (['laeuft', 'schlaeft'].includes(r.state) && s.ahead != null ? ` · Vorlauf ${esc(fmt(s.ahead, 1))} h` : '');
+      + (['laeuft', 'schlaeft'].includes(r.state) && s.ahead != null ? ` · Vorlauf ${esc(fmt(s.ahead, 1))} h` : '') + pauseTag(r);
   let html = `<div class="card${r?.state === 'verloren' || !d ? ' warn' : ''}"><div class="row between"><h2>Überblick</h2>
     <span class="muted small">${live ? `Stand ${esc(ago(live.collected_at))}` : 'noch kein Live-Stand'}</span></div><p>${runTxt}</p>`;
   if (r && ['angehalten', 'verloren'].includes(r.state) && r.reason) html += `<p class="small muted">${esc(tidy(r.reason))}</p>`;
@@ -741,6 +741,8 @@ function swipeEvents(root) {
    runs: genau ein Lauf je Account (Gerät, Plan, bis #, Zustand); heartbeats je Gerät: Autobuilder (voller Zustand inkl.
    Seite Spiel/Login) und Collector. „verloren“ setzt Supabase selbst (pg_cron), wenn der Halter 3 min schweigt. */
 const RUNST = { laeuft: 'läuft', schlaeft: 'schläft (ausgeloggt)', angehalten: 'angehalten', verloren: 'verloren' };
+// B13: Pause – der Lauf bleibt „läuft“/„schläft“, nur dieser Merker (runs.paused_at)
+const pauseTag = r => r?.paused_at && ['laeuft', 'schlaeft', 'verloren'].includes(r.state) ? ` · <b class="warn">⏸ pausiert seit ${esc(clockT(r.paused_at))}</b>` : '';
 const isFresh = (t, min = 3) => !!t && (Date.now() - new Date(t)) / 60e3 < min;
 async function loadSessions() {
   const acc = `eq.${S.acc}`;
@@ -765,7 +767,8 @@ function runBody(sess) {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
   let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis #${esc(r.until ?? '–')}
-    auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}</p>`;
+    auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}${pauseTag(r)}</p>`;
+  if (r.paused_at && s.hand) html += `<p class="small warn">In der Pause von Hand: ${esc(s.hand)}</p>`;
   if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(tidy(r.reason))}</p>`;
   if (['laeuft', 'schlaeft'].includes(r.state) && h?.ab) {
     html += `<p class="small muted">${s.planInfo ? esc(tidy(s.planInfo)) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
@@ -889,6 +892,13 @@ function abCard(active, sess, cmds, own, execs, W) {
         <div class="muted small" id="abStep"></div>`;
     }
   }
+  // B13: Pause/Weiter an den Halter des Laufs (Autobuilder ab 0.5.19)
+  if (own && run && ['laeuft', 'schlaeft'].includes(run.state) && holder) {
+    const hs = holder.ab?.state || {};
+    html += run.paused_at
+      ? `<div class="row" style="margin:4px 0;gap:6px">${hs.hand ? '<button class="primary" data-cmd="weiter_ok">Von Hand übernehmen und weiter</button>' : '<button class="primary" data-cmd="weiter">Weiter</button>'}</div>`
+      : `<div class="row" style="margin:4px 0;gap:6px"><button data-cmd="pause" title="Der Autobuilder startet nichts, loggt nicht aus/ein; der Lauf bleibt angemeldet">Pause</button></div>`;
+  }
   if (plan) {
     const hst = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
     const pls = planPlanets(plan, S.home);
@@ -907,7 +917,7 @@ function abCard(active, sess, cmds, own, execs, W) {
 const CMD_DE = { start: 'Start', stop: 'Stopp', adopt: 'Plan übernehmen', reload: 'Neu laden', snapshot: 'Lage lesen', factors: 'Faktoren sichern',
   factor: 'Faktor', banner: 'Werbebanner', pause: 'Pause', weiter: 'Weiter' };
 const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3>${cmds.map(c => `<div class="list-item small"><div class="row between">
-    <span><b>${esc(c.cmd === 'start' && c.args?.mode === 'dry' ? 'Probelauf' : CMD_DE[c.cmd] || c.cmd)}</b>${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</span>
+    <span><b>${esc(c.cmd === 'start' && c.args?.mode === 'dry' ? 'Probelauf' : CMD_DE[c.cmd] || c.cmd)}</b>${c.args?.accept ? ' (von Hand übernehmen)' : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</span>
     <span class="muted nowrap">${esc(when(c.created_at))}</span></div>
     <div><span class="tag">${esc(c.status)}</span> <span class="muted">${esc(tidy(c.result))}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</span></div></div>`).join('')}`;
 
@@ -934,9 +944,10 @@ async function sendCmd(active, cmd, sess) {
   const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
   // Stopp geht an den Halter eines laufenden Laufs, sonst an das gewählte Gerät
   const holder = sess.devs.find(x => x.holds && ['laeuft', 'schlaeft', 'verloren'].includes(sess.run?.state));
-  const tgt = cmd === 'stop' && holder ? holder : live.find(x => x.device === $('#abDev')?.value);
+  const PAUSE = ['pause', 'weiter', 'weiter_ok'];
+  const tgt = (cmd === 'stop' || PAUSE.includes(cmd)) && holder ? holder : PAUSE.includes(cmd) ? null : live.find(x => x.device === $('#abDev')?.value);
   if (!tgt) return toast('Kein Gerät erreichbar');
-  const args = cmd === 'stop' ? {} : cmd === 'adopt' ? { plan: plan.id } : { mode: cmd, until, plan: plan.id };
+  const args = cmd === 'stop' || cmd === 'pause' || cmd === 'weiter' ? {} : cmd === 'weiter_ok' ? { accept: true } : cmd === 'adopt' ? { plan: plan.id } : { mode: cmd, until, plan: plan.id };
   const login = tgt.ab?.state?.page === 'login';
   if (cmd === 'live' || cmd === 'dry') {
     if (!step) return toast(`„bis #“ zwischen 1 und ${plan.steps.length}`);
@@ -948,10 +959,15 @@ async function sendCmd(active, cmd, sess) {
     if (!confirm(`${cmd === 'live' ? 'LIVE-Start' : 'Probelauf'} bis #${until} (${step[5]}) auf ${tgt.name}?`
       + (login ? `\n${tgt.name} ist ausgeloggt: Mit Auto-Login meldet es sich jetzt im Spiel an – ein anderer eingeloggter PC fliegt dabei raus.` : '')
       + (cmd === 'live' ? '\nDer Autobuilder baut danach selbständig im Spiel.' : ''))) return;
-  } else if (!confirm(cmd === 'stop' ? `Autobuilder auf ${tgt.name} anhalten?` : `${planLabel(plan.id)} auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen.`)) return;
+  } else if (!confirm(cmd === 'stop' ? `Autobuilder auf ${tgt.name} anhalten?`
+    : cmd === 'pause' ? `Autobuilder auf ${tgt.name} pausieren? Er startet nichts mehr und loggt nicht aus oder ein; der Lauf bleibt angemeldet („bis #“ bleibt). Nach 2 h kommt eine Erinnerung.`
+    : cmd === 'weiter' ? `Autobuilder auf ${tgt.name} fortsetzen? Was in der Pause von Hand gebaut wurde, zeigt er erst an.`
+    : cmd === 'weiter_ok' ? `In der Pause von Hand Gebautes auf ${tgt.name} übernehmen und weitermachen?
+${tgt.ab?.state?.hand || ''}`
+    : `${planLabel(plan.id)} auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen.`)) return;
   try {
     await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
-      body: { account_id: S.acc, script: 'autobuilder', cmd: cmd === 'live' || cmd === 'dry' ? 'start' : cmd, args, plan_id: active.id, target_device: tgt.device } });
+      body: { account_id: S.acc, script: 'autobuilder', cmd: cmd === 'live' || cmd === 'dry' ? 'start' : cmd === 'weiter_ok' ? 'weiter' : cmd, args, plan_id: active.id, target_device: tgt.device } });
     toast(`Kommando an ${tgt.name} gesendet – Ergebnis in wenigen Sekunden`);
     setTimeout(() => route(true), 1500);
   } catch (e) { toast(e.message); }
@@ -1089,6 +1105,7 @@ function driftCard(d, own) {
   return `<div class="card">${head}<p class="${cls}"><b>${esc(lagText(d.lag))}</b></p>
     <div class="small">${d.last ? `Zuletzt #${esc(d.last.n)} ${esc(d.last.text)} gestartet ${esc(when(d.last.t))} (${esc(lagText(d.last.lag))})` : ''}
     ${d.due?.lag > 0 ? `<br>Überfällig: #${esc(d.due.n)} ${esc(d.due.text)} sollte ${esc(dt(d.due.at))} starten` : ''}
+    ${d.pause?.h >= 0.05 ? `<br>Davon Pause ${esc(hrs(d.pause.h))}${d.pause.since ? ` (pausiert seit ${esc(dt(d.pause.since))})` : ''}` : ''}
     ${d.offset > 0.05 ? `<br><span class="muted">Startverzug ${esc(hrs(d.offset))} (Plan ab Snapshot ${esc(dt(d.start))}) ist abgezogen.</span>` : ''}
     ${end ? `<br>Planende ${d.lag > 0.05 ? `etwa <b>${esc(dt(end + d.lag * 3600e3))}</b> statt ${esc(dt(end))}` : esc(dt(end))}` : ''}</div>
     ${driftSvg(d)}<p class="muted small">Kurve: Rückstand je gestartetem Schritt (über 0 = hinter dem Plan), gestrichelt die Meldegrenze ${esc(d.limit)} h.
