@@ -833,26 +833,50 @@ async function sendCmd(active, cmd, sess) {
   } catch (e) { toast(e.message); }
 }
 
-// „Neuer Plan verfügbar – starten?“: neuester Bauplan-Entwurf, der mit Claude im Chat abgestimmt ist (payload.agreed,
-// push_plan.py --abgestimmt) oder früher fertig wird als der aktive Plan (Planstart + hours; ältere Pläne: Stunden aus created)
+// „Neuer Plan verfügbar – starten?“ (B14, 15.10.): Im Cockpit erscheinen nur bessere Pläne. Ein Optimierer-Entwurf zählt,
+// wenn er mit Claude im Chat abgestimmt ist (payload.agreed, push_plan.py --abgestimmt), kein Plan aktiv ist oder er das SCOL
+// mehr als PLAN_GAIN_MIN h früher erreicht als der aktive Plan – verglichen mit dessen erwartetem Ende laut Live-Stand
+// (Planstart + hours + Startverzug + Rückstand bzw. − Vorlauf aus plan_abweichung, B4). Schlechtere Entwürfe sind ausgeblendet
+// (push_plan.py legt solche seit B14 gar nicht mehr an); eigene Entwürfe (source user, „Planschritte ändern“) bleiben sichtbar.
+const PLAN_GAIN_MIN = 0.5;   // h, wie SCHWELLE in tools/push_plan.py
 const planEnd = p => {
   const h = +p?.hours || +(String(p?.created || '').match(/([\d.]+) h$/) || [])[1];
   return p?.startTime && h ? Date.parse(p.startTime) + h * 3600e3 : null;
 };
-async function newPlanOffer(plans, active) {
-  const draft = plans.find(p => p.kind === 'build' && p.status === 'entwurf');
+const activeEnd = (active, drift) => {
+  const end = planEnd(active?.payload);
+  if (!end) return null;
+  const shift = drift?.lag != null ? (+drift.offset || 0) + +drift.lag : Math.max(+drift?.wait || 0, 0);
+  return end + shift * 3600e3;
+};
+// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), agreed, better }
+async function draftGains(plans, active, drift) {
+  const drafts = plans.filter(p => p.kind === 'build' && p.status === 'entwurf');
+  if (!drafts.length) return {};
+  const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
+    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed' });
+  const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
+  const out = {};
+  for (const d of rows) {
+    const p = drafts.find(x => x.id === d.id), end = planEnd(d);
+    // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
+    const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
+    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, agreed,
+      better: agreed || !active || gain == null || gain > PLAN_GAIN_MIN };
+  }
+  return out;
+}
+const gainText = g => g?.gain == null ? '' : `SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`;
+function newPlanOffer(plans, active, gains) {
+  const draft = plans.find(p => p.kind === 'build' && p.status === 'entwurf' && p.source !== 'user' && gains[p.id]?.better);
   if (!draft) return null;
-  const d = (await Cloud.q('plans', { id: `eq.${draft.id}`, select: 'startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed' }))[0] || {};
-  const end = planEnd(d), activeEnd = planEnd(active?.payload);
-  const gain = end && activeEnd ? (activeEnd - end) / 3600e3 : null;
-  const agreed = d.agreed === 'true';
-  if (!agreed && !(gain > 0.5) && active) return null;
-  return { draft, end, gain, agreed };
+  const g = gains[draft.id];
+  if (!g.agreed && !(g.gain > PLAN_GAIN_MIN) && active) return null;
+  return { draft, ...g };
 }
 function newPlanCard(o, own) {
   if (!o) return '';
-  const why = [o.agreed ? 'mit Claude im Chat abgestimmt' : '', o.gain > 0.5 ? `SCOL ${fmt(o.gain, 1)} h früher` : o.gain != null && o.gain < -0.5 ? `SCOL ${fmt(-o.gain, 1)} h später` : '']
-    .filter(Boolean).join(' · ');
+  const why = [o.agreed ? 'mit Claude im Chat abgestimmt' : '', gainText(o)].filter(Boolean).join(' · ');
   return `<div class="card warn"><div class="row between"><h2>Neuer Plan verfügbar – starten?</h2><span class="muted small">${esc(dt(o.draft.created_at))}</span></div>
     <p><b>${esc(o.draft.title || '')}</b>${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
     ${o.draft.note ? `<div class="small muted" style="white-space:pre-wrap">${esc(o.draft.note)}</div>` : ''}
@@ -944,7 +968,7 @@ function driftCard(d, own) {
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
-  const [plans, heads, sess, cmds, W, homes, opt] = await Promise.all([
+  let [plans, heads, sess, cmds, W, homes, opt] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 50,
       select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
@@ -961,17 +985,22 @@ async function viewPlans(rest = []) {
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
-  const offer = await newPlanOffer(plans, active).catch(() => null);
   const [execs, drift] = active ? await Promise.all([
     Cloud.q('executions', { account_id: acc, plan_id: `eq.${active.id}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }),
     Cloud.rpc('plan_abweichung', { p_plan: active.id }).catch(() => null),
   ]) : [[], null];
+  // B14: nur bessere Entwürfe zeigen (Karte und Liste); Gewinn gegen das erwartete Ende des aktiven Plans
+  const gains = await draftGains(plans, active, drift).catch(() => ({}));
+  const offer = newPlanOffer(plans, active, gains);
+  const hidden = plans.filter(p => gains[p.id] && !gains[p.id].better);
+  plans = plans.filter(p => !hidden.includes(p));
   const own = isOwner();
   $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + driftCard(drift, own) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
-    <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
+    <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude; gezeigt werden nur Baupläne, die das Ziel früher erreichen als der aktive Plan${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${plans.length ? plans.map(p => `<div class="list-item"><div class="row between">
       <span><span class="tag">${esc(KIND[p.kind] || p.kind)}</span> <b>${esc(p.title || '(ohne Titel)')}</b></span>
       <span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
+      ${gains[p.id]?.gain != null ? `<div class="small ${gains[p.id].gain > PLAN_GAIN_MIN ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
       <div class="muted small">${esc(p.source)} · ${esc(dt(p.created_at))}${p.plan_hash ? ` · Plan-id ${esc(p.plan_hash)}` : ''}${p.parent_id ? ` · aus ${esc(plans.find(x => x.id === p.parent_id)?.plan_hash || 'älterem Plan')}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}</div>
       ${p.note ? `<div class="small" style="white-space:pre-wrap">${esc(p.note)}</div>` : ''}
       ${own && p.status === 'entwurf' ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
