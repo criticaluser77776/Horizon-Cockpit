@@ -240,8 +240,20 @@ details.sub > summary { padding: 6px 0; }
 .kchip { max-width: 100%; flex-wrap: wrap; }
 .kchip .link { white-space: normal; text-align: left; }
 
-/* System-Karte (B9): Bahnen 1–14 mit Typ, Besitzer, zuletzt gesehen; SCOL-Hinweis; Verlauf */
-#sysCard > summary { cursor: pointer; }
+/* Galaxie (B9): Navigation, Bahnen 1–14 mit Typ, Besitzer, zuletzt gesehen; SCOL-Hinweis; Verlauf */
+.galnav { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: var(--gap); }
+.galnav .gbtn { min-width: 42px; min-height: 40px; font-size: 1.05rem; padding: 0 8px; }
+.galnav .gbtn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-2); }
+.galin { display: flex; align-items: center; gap: 3px; color: var(--muted); font-weight: 600; }
+.galin input { width: 4.4em; min-height: 40px; font: inherit; font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; text-align: center; }
+.galin input[name="g"] { width: 3.2em; }
+.galin .galok { margin-left: 3px; }
+@media (max-width: 600px) { .galin .galok { display: none; } .galnav { gap: 5px; } .galnav .gbtn { min-width: 40px; } }
+.galsum { flex: 1 1 100%; margin: 2px 0 0; }
+.galsum a.on { font-weight: 700; text-decoration: none; }
+.orb.own .oi > b { color: var(--accent); }
+.orb.home { background: var(--accent-2); border-radius: 6px; }
+.orb.home .ob { color: var(--accent); }
 .orbits { display: grid; margin-top: 8px; }
 .orb { display: grid; grid-template-columns: 1.8em 3.6em minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); }
 .orb:first-child { border-top: 0; }
