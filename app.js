@@ -1353,7 +1353,9 @@ async function viewPlans(rest = []) {
 /* ---------- Plan neu starten / Planschritte ändern (Paket F4, 13.10.) ----------
    Aus einem vorhandenen Bauplan (auch abgebrochen oder alt) entsteht ein neuer Entwurf: neue Plan-id (payload.id = plan_hash;
    mit der alten id böte der Collector ihn nicht an und der Autobuilder sähe ihn als abgebrochen), Verweis parent_id.
-   Ändern: Schritte überspringen und verschieben, Haltepunkte (payload.halts: der Autobuilder hält ab 0.5.10 vor diesem
+   Ändern: Schritte überspringen, verschieben und einfügen (B17, 16.10.: Gebäude/Forschung samt Stufe an eine Position; der
+   Autobuilder führt ihn wie jeden Planschritt aus – Voraussetzungen über REQS, Startbarkeit und Kosten live von der Seite;
+   Planzeit zwischen den Nachbarn mit Dauer 0, damit die Faktor-Liste des Plans unverändert weiter gilt), Haltepunkte (payload.halts: der Autobuilder hält ab 0.5.10 vor diesem
    Schritt an), Faktor-Grenzen je Gebäude (payload.limits {Typ: [min %, max %]}, ab 0.5.10; Risiko-Grenzen und „laufender
    Auftrag ≥ 10 %“ gehen vor). Vor dem Anlegen prüft das Cockpit die Reihenfolge der Voraussetzungen (Datenbank Runde 7 wie
    REQS im Autobuilder) gegen den Live-Stand. Freigeben nur der Owner, wie jeden Entwurf. */
@@ -1401,12 +1403,33 @@ async function planId(x) {
 }
 // Neuer Plan aus dem Editor-Zustand: Schritte, Haltepunkte (neue Nummern)
 function editedPlan(E) {
-  const keep = E.rows.filter(r => !r.skip && !(E.dropDone && r.done));
+  const keep = E.rows.filter(r => !r.skip && !(E.dropDone && r.done && !r.ins));
   const steps = keep.map(r => r.s);
   const halts = keep.map((r, i) => r.halt ? i + 1 : null).filter(Boolean);
-  const changed = E.rows.some(r => r.skip || r.moved || r.halt !== r.halt0) || E.dropDone && E.rows.some(r => r.done)
+  const changed = E.rows.some(r => r.skip || r.moved || r.ins || r.halt !== r.halt0) || E.dropDone && E.rows.some(r => r.done)
     || JSON.stringify(E.limits) !== JSON.stringify(E.orig.limits || {});
   return { keep, steps, halts, changed };
+}
+// Eingefügter Schritt (B17): Name und Kosten wie im Plan (Gebäude: Stufenname der Datenbank, Forschung: Grundkosten × 1,5^(Stufe−1)
+// wie im Kompendium); die Kosten nutzt der Autobuilder nur für die Wartezeit-Schätzung, maßgeblich ist die Spielseite.
+function newStep(W, k, id, l) {
+  if (k === 'b') {
+    const o = W.B[id], e = o.L[l], c = e?.[2] || {};
+    return ['b', id, l, 0, 0, `${e?.[1] || o.n} ${l}`, [c.Eisenerz || 0, c.Mineral || 0, c.Treibstoff || 0]];
+  }
+  const o = W.R[id], m = Math.pow(o.c === 'Allianzforschung' ? 2.5 : 1.5, l - 1);
+  return ['r', id, l, 0, 0, `${o.n} ${l}`, (o.k || [0, 0, 0]).map(x => Math.floor(x * m))];
+}
+// Stufe, die ein Objekt vor Zeile j des Editors erreicht hat (frühere Schritte, sonst Live-Stand, sonst 0)
+function levelBefore(E, k, id, j) {
+  let l = E.L?.lv?.[`${k}:${id}`] ?? 0;
+  E.rows.slice(0, j).forEach(r => { if (!r.skip && r.s[0] === k && r.s[1] === id) l = Math.max(l, r.s[2]); });
+  return l;
+}
+// Planzeit für einen neuen Schritt an Position j: zwischen den Startzeiten der Nachbarn (am Ende: Ende des letzten), Dauer 0
+function insTime(rows, j) {
+  const lo = j ? rows[j - 1].s[3] : 0, hi = rows[j]?.s[3];
+  return +(hi == null ? rows[j - 1]?.s[4] ?? 0 : (lo + hi) / 2).toFixed(4);
 }
 async function viewPlanEdit(id) {
   if (!S.ed || S.ed.id !== id) {
@@ -1414,7 +1437,7 @@ async function viewPlanEdit(id) {
     if (!src || src.kind !== 'build' || !Array.isArray(src.payload?.steps)) throw new Error('Bauplan nicht gefunden');
     const [W, L] = await Promise.all([loadWissen().catch(() => null), liveLevels()]);
     const orig = src.payload, lv = L?.lv;
-    S.ed = { id, src, orig, W, L, dropDone: false, limits: { ...(orig.limits || {}) }, note: '',
+    S.ed = { id, src, orig, W, L, dropDone: false, limits: { ...(orig.limits || {}) }, note: '', ins: { k: 'b', id: '', l: 1, at: 0 },
       rows: orig.steps.map((s, i) => {
         const halt = (orig.halts || []).includes(i + 1);
         return { s, n0: i + 1, halt, halt0: halt, done: !!lv && s[0] !== 's' && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };
@@ -1425,7 +1448,8 @@ async function viewPlanEdit(id) {
 function renderPlanEdit(own) {
   const E = S.ed, { W, L, orig } = E;
   const P = editedPlan(E);
-  const errs = checkOrder(P.steps, orig.steps, L?.lv, W);
+  // eingefügte Objekte: Ausgangsstufe = Stufe davor (sonst gälten Objekte ohne Live-Wert als vorhanden)
+  const errs = checkOrder(P.steps, [...orig.steps, ...E.rows.filter(r => r.ins).map(r => r.s)], L?.lv, W);
   const bad = new Set(errs.map(e => e.i));
   const nm = t => W?.B?.[t]?.n || t;
   // Gebäude mit Faktor: aus dem Plan und den Grenzen
@@ -1433,13 +1457,13 @@ function renderPlanEdit(own) {
     .sort((a, b) => nm(a).localeCompare(nm(b), 'de'));
   let n = 0;
   const rows = E.rows.map((r, i) => {
-    const out = r.skip || E.dropDone && r.done;
+    const out = r.skip || E.dropDone && r.done && !r.ins;
     const no = out ? 0 : ++n;
     return `${r.halt && !out ? `<tr class="halt"><td></td><td colspan="2">⏸ Haltepunkt: Autobuilder hält vor #${no} an</td></tr>` : ''}
       <tr class="step${out ? ' skip' : ''}${!out && bad.has(no - 1) ? ' bad' : ''}" data-i="${i}">
       <td class="num">${out ? '–' : '#' + no}</td>
-      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}<div class="small muted">war #${r.n0}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
-      <td class="acts">${own ? `<button data-a="up" title="nach oben"${i ? '' : ' disabled'}>↑</button><button data-a="down" title="nach unten"${i < E.rows.length - 1 ? '' : ' disabled'}>↓</button><button data-a="halt" title="Haltepunkt davor"${r.halt ? ' class="on"' : ''}>⏸</button><button data-a="skip" title="überspringen"${r.skip ? ' class="on"' : ''}>✕</button>` : ''}</td></tr>`;
+      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}<div class="small muted">${r.ins ? '<b>neu eingefügt</b>' : `war #${r.n0}`}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
+      <td class="acts">${own ? `<button data-a="up" title="nach oben"${i ? '' : ' disabled'}>↑</button><button data-a="down" title="nach unten"${i < E.rows.length - 1 ? '' : ' disabled'}>↓</button><button data-a="halt" title="Haltepunkt davor"${r.halt ? ' class="on"' : ''}>⏸</button><button data-a="skip" title="${r.ins ? 'wieder entfernen' : 'überspringen'}"${r.skip ? ' class="on"' : ''}>✕</button>` : ''}</td></tr>`;
   }).join('');
   const lim = Object.entries(E.limits).map(([t, [a, b]]) => `<div class="row between small"><span>${esc(nm(t))}: ${a}–${b} %</span>${own ? `<button class="link" data-lim-del="${esc(t)}">entfernen</button>` : ''}</div>`).join('');
   const pctOpts = sel => Array.from({ length: 11 }, (_, k) => k * 10).map(v => `<option value="${v}"${v === sel ? ' selected' : ''}>${v} %</option>`).join('');
@@ -1458,6 +1482,7 @@ function renderPlanEdit(own) {
     ${own ? `<div class="row wrap" style="margin-top:6px"><select id="limT">${types.map(t => `<option value="${esc(t)}">${esc(nm(t))}</option>`).join('')}</select>
       min <select id="limA">${pctOpts(0)}</select> max <select id="limB">${pctOpts(100)}</select> <button id="limAdd">setzen</button></div>` : ''}
   </div>
+  ${own && W ? insCard(E, P) : ''}
   <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Planschritte (${P.steps.length})</h3>
     <div class="scroll"><table class="small edsteps">${rows}</table></div>
   </div>
@@ -1474,11 +1499,13 @@ function renderPlanEdit(own) {
     if (a > b) return toast('min darf nicht über max liegen');
     E.limits[t] = [a, b]; renderPlanEdit(own);
   });
+  if (W) bindIns(E, own);
   $('#view').querySelectorAll('[data-lim-del]').forEach(b => b.addEventListener('click', () => { delete E.limits[b.dataset.limDel]; renderPlanEdit(own); }));
   $('#view').querySelector('.edsteps').addEventListener('click', e => {
     const b = e.target.closest('button[data-a]'); if (!b) return;
     const i = +b.closest('tr').dataset.i, r = E.rows[i];
-    if (b.dataset.a === 'skip') r.skip = !r.skip;
+    if (b.dataset.a === 'skip' && r.ins) { E.rows.splice(i, 1); if (E.ins.at > i) E.ins.at--; }
+    else if (b.dataset.a === 'skip') r.skip = !r.skip;
     else if (b.dataset.a === 'halt') r.halt = !r.halt;
     else {
       const j = b.dataset.a === 'up' ? i - 1 : i + 1;
@@ -1498,6 +1525,57 @@ function retime(rows, j) {
   const t = isFinite(hi) ? (lo + hi) / 2 : lo, d = s[4] - s[3];
   r.s = [...s.slice(0, 3), +t.toFixed(4), +(t + d).toFixed(4), ...s.slice(5)];
 }
+// Karte „Schritt einfügen“ (B17): Art, Objekt, Stufe, Position (vor Zeile j des Editors; Nummern wie in der Tabelle)
+const insObjs = (W, k) => Object.entries(k === 'b' ? W.B : W.R).sort((a, b) => a[1].n.localeCompare(b[1].n, 'de'));
+function insCard(E, P) {
+  const { W, ins } = E, src = ins.k === 'b' ? W.B : W.R, objs = insObjs(W, ins.k);
+  if (!src[ins.id]) { ins.id = objs[0][0]; ins.l = Math.min(levelBefore(E, ins.k, ins.id, ins.at) + 1, src[ins.id].f || 99); }
+  if (ins.at > E.rows.length) ins.at = E.rows.length;
+  const max = src[ins.id].f || 99, have = levelBefore(E, ins.k, ins.id, ins.at);
+  let n = 0;
+  const pos = E.rows.map((r, i) => {
+    const out = r.skip || E.dropDone && r.done && !r.ins;
+    return out ? '' : `<option value="${i}"${i === ins.at ? ' selected' : ''}>vor #${++n} ${esc(r.s[5])}</option>`;
+  }).join('') + `<option value="${E.rows.length}"${ins.at === E.rows.length ? ' selected' : ''}>ans Ende (nach #${P.steps.length})</option>`;
+  return `<div class="card" style="margin-top:12px"><h3 style="margin-top:0">Schritt einfügen</h3>
+    <div class="row wrap"><select id="insK"><option value="b"${ins.k === 'b' ? ' selected' : ''}>Gebäude</option><option value="r"${ins.k === 'r' ? ' selected' : ''}>Forschung</option></select>
+      <select id="insId">${objs.map(([id, o]) => `<option value="${esc(id)}"${id === ins.id ? ' selected' : ''}>${esc(o.n)}</option>`).join('')}</select>
+      Stufe <input id="insL" type="number" min="1" max="${max}" value="${ins.l}" style="width:4.5em"></div>
+    <div class="row wrap" style="margin-top:6px"><select id="insAt" style="max-width:100%">${pos}</select> <button id="insGo">einfügen</button></div>
+    <p class="muted small">An dieser Stelle hat ${esc(src[ins.id].n)} Stufe ${have}${have >= max ? ' (Höchststufe)' : ''}. Der Autobuilder führt den Schritt wie jeden Planschritt aus: Voraussetzungen laut Datenbank, Kosten und Bauzeit live von der Spielseite; die Faktor-Vorgaben des Plans bleiben unverändert, spätere Planzeiten verschieben sich nicht.</p></div>`;
+}
+function bindIns(E, own) {
+  const ins = E.ins, max = () => (ins.k === 'b' ? E.W.B : E.W.R)[ins.id]?.f || 99;
+  const sugg = () => { ins.l = Math.min(levelBefore(E, ins.k, ins.id, ins.at) + 1, max()); renderPlanEdit(own); };
+  $('#insK')?.addEventListener('change', e => { ins.k = e.target.value; ins.id = insObjs(E.W, ins.k)[0][0]; sugg(); });
+  $('#insId')?.addEventListener('change', e => { ins.id = e.target.value; sugg(); });
+  $('#insAt')?.addEventListener('change', e => { ins.at = +e.target.value; sugg(); });
+  $('#insL')?.addEventListener('input', e => { ins.l = +e.target.value; });
+  $('#insGo')?.addEventListener('click', () => {
+    const l = +$('#insL').value;
+    if (!Number.isInteger(l) || l < 1 || l > max()) return toast(`Stufe 1–${max()} wählen`);
+    // Stufe steht schon im Plan (z. B. Sternwarte 2 als #78): an die gewählte Stelle verschieben statt doppelt einfügen
+    const k = E.rows.findIndex(r => r.s[0] === ins.k && r.s[1] === ins.id && r.s[2] === l);
+    if (k >= 0) {
+      if (k === ins.at || k === ins.at - 1) return toast(`${E.rows[k].s[5]} steht schon an dieser Stelle`);
+      if (!confirm(`${E.rows[k].s[5]} steht schon im Plan${E.rows[k].n0 ? ` (war #${E.rows[k].n0})` : ''}${E.rows[k].skip ? ', übersprungen' : ''}.\nAn die gewählte Stelle verschieben?`)) return;
+      const [r] = E.rows.splice(k, 1), at = k < ins.at ? ins.at - 1 : ins.at;
+      r.skip = false;
+      E.rows.splice(at, 0, r);
+      retime(E.rows, at);
+      ins.at = at + 1;
+      toast(`${r.s[5]} verschoben`);
+      return sugg();
+    }
+    const s = newStep(E.W, ins.k, ins.id, l);
+    s[3] = s[4] = insTime(E.rows, ins.at);
+    const done = !!E.L && (E.L.lv[`${ins.k}:${ins.id}`] ?? -1) >= l;
+    E.rows.splice(ins.at, 0, { s, n0: null, ins: true, halt: false, halt0: false, done });
+    ins.at++;
+    toast(`${s[5]} eingefügt${done ? ' – live schon erreicht' : ''}`);
+    sugg();
+  });
+}
 async function createEdited(E, P, errs) {
   if (errs.length && !confirm(`${errs.length} Probleme bei den Voraussetzungen (erstes: ${errs[0].text}).\nDer Autobuilder würde dort warten oder anhalten. Trotzdem anlegen?`)) return;
   const o = E.orig, now = new Date();
@@ -1511,10 +1589,11 @@ async function createEdited(E, P, errs) {
   // Planet je Schritt (Kolonien, plan.stepPlanet {Nr: Koordinaten}) auf die neuen Nummern umschreiben
   if (o.stepPlanet) payload.stepPlanet = Object.fromEntries(P.keep.map((r, i) => [i + 1, o.stepPlanet[r.n0]]).filter(x => x[1]));
   payload.id = await planId([payload.startTime, payload.steps, payload.factors, payload.halts || [], payload.limits || {}, o.id, now.toISOString()]);
-  const sk = E.rows.filter(r => r.skip).map(r => '#' + r.n0), mv = E.rows.filter(r => r.moved && !r.skip).map(r => '#' + r.n0);
+  const sk = E.rows.filter(r => r.skip).map(r => '#' + r.n0), mv = E.rows.filter(r => r.moved && !r.skip && !r.ins).map(r => '#' + r.n0);
+  const ins = P.keep.map((r, i) => r.ins ? `#${i + 1} ${r.s[5]}` : null).filter(Boolean);
   const note = [`${P.changed ? 'Geändert' : 'Neu gestartet'} aus ${o.id} (${E.src.status}) im Cockpit: ${P.steps.length} Schritte`,
     E.dropDone ? `live erreichte weggelassen (${E.rows.filter(r => r.done && !r.skip).length})` : '',
-    sk.length ? `übersprungen ${sk.join(' ')}` : '', mv.length ? `verschoben ${mv.join(' ')}` : '',
+    sk.length ? `übersprungen ${sk.join(' ')}` : '', ins.length ? `eingefügt ${ins.join(', ')}` : '', mv.length ? `verschoben ${mv.join(' ')}` : '',
     P.halts.length ? `Haltepunkte vor #${P.halts.join(', #')}` : '',
     Object.keys(E.limits).length ? `Faktor-Grenzen ${Object.entries(E.limits).map(([t, [a, b]]) => `${t} ${a}–${b} %`).join(', ')}` : '',
     errs.length ? `${errs.length} Voraussetzungs-Hinweise` : '', E.note.trim()].filter(Boolean).join(' · ');
