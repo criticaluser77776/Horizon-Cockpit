@@ -317,7 +317,7 @@ async function viewLage() {
   // B10 (Nutzer 13.10.2026): oben nur das Nötigste – Überblick, Steuerung, Banner, Ereignisse; Details eingeklappt
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  let html = overviewCard(sess, d, live, abLive, nm) + planetsCard(d, nm) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
+  let html = overviewCard(sess, d, live, abLive, nm, W) + planetsCard(d, nm, W) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
   html += `<div class="card"><div class="row between"><h2>Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.slice(0, 4).map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
   if (d) {
     const lv = (items, set) => items.map(i => `<tr><td>${esc(nm(i, set))}</td><td class="num">${esc(i.levelDone ?? i.level)}${i.inProgress ? ` → ${esc(i.level)}` : ''}</td></tr>`).join('');
@@ -331,15 +331,16 @@ async function viewLage() {
   }
   $('#view').innerHTML = html;
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
-  bindPlanets(d, nm);
+  bindPlanets(d, nm, W);
   bindNotfall(sess, nf);
   swipeEvents($('#view'));
 }
 
 /* ---------- Planeten + Statistik Imperium (B2, 14.10.2026; Collector ab 0.4.5 → d.empire) ----------
    Alle Planeten ohne Planetenwechsel: Kurzinfo wie die Übersicht im Spiel (main.php?cmd=start), Stufen/Schiffe/Verteidigung
-   je Planet (stat_main.php?cmd=overview), Rohstoffe je Kolonie (cmd=emp_prod, Tageswerte). Verbrauch, Bauleistung und
-   Forschung gibt das Spiel (cmd=status) nur für den im Spiel gewählten Planeten → nur dort. */
+   je Planet (stat_main.php?cmd=overview), Rohstoffe je Kolonie (cmd=emp_prod, Tageswerte). Verbrauch gibt das Spiel
+   (cmd=status) nur für den im Spiel gewählten Planeten → nur dort. Arbeiter, Energie, Bauplatz nur in der Ansicht eines
+   Planeten; Bauleistung entfällt, dafür „Ausbau x / y“ wie im alten horizon-enhanced (Nutzer 16.10.). */
 const EMP_RES = [['Eisenerz', 'Eisenerz'], ['Mineral', 'Minerale'], ['Treibstoff', 'T-Stoff']];
 function empirePlanets(d) {
   const e = d?.empire;
@@ -355,7 +356,26 @@ function empirePlanets(d) {
   }
   return list;
 }
-function planetsCard(d, nm) {
+// Baustellen je Planet (wie das alte horizon-enhanced): im Spiel gewählter Planet genau aus cmd=status (CONSTRUCTION,
+// Summe Baustellen), alle anderen aus den Stufen (stat overview) und den Spieldaten: Σ Baustellen je Stufe (Hauptquartier,
+// Gebäudeerstellung, Rechenzentrum) + 1 je Kolonialzentrum (in den Spieldaten ohne Wert). Boni fehlen → „≈“. Nur ganze zählen.
+function planetSlots(d, p, W) {
+  if (p.coords === d.start?.coords) {
+    const v = d.status?.CONSTRUCTION?.tables?.[0]?.Summe?.Baustellen;
+    if (v != null) return { n: Math.floor(+v + 1e-9), exact: true };
+  }
+  if (!W?.B || !p.buildings) return null;
+  let n = 0;
+  for (const b of p.buildings) {
+    const k = String(b.type).toLowerCase();
+    n += +(W.B[k]?.L?.[b.n]?.[4]?.Baustellen || 0) + (k === 'colonycenter' && b.n > 0 ? 1 : 0);
+  }
+  return { n: Math.floor(n + 1e-9), exact: false };
+}
+// „Ausbau x / y“: x = laufende Bauaufträge (Kurzinfo „Ausbau: Bau / Forschung / Werft“), y = Baustellen
+const ausbau = (d, p, W) => ({ busy: +(p.Ausbau?.[0] || 0), slots: planetSlots(d, p, W) });
+const ausbauText = a => `${fmt(a.busy)} / ${a.slots ? `${a.slots.exact ? '' : '≈'}${fmt(a.slots.n)}` : '–'}`;
+function planetsCard(d, nm, W) {
   if (!d) return '';
   const pl = empirePlanets(d), e = d.empire;
   if (!pl.length) {
@@ -371,8 +391,7 @@ function planetsCard(d, nm) {
     const ab = p.Ausbau || [];
     return `<button class="plchip${p.coords === sel ? ' on' : ''}" data-pl="${esc(p.coords)}"><span><b>${esc(p.name)}</b> <span class="muted small">${esc(p.coords)}${p.coords === cur ? ' ◉' : ''}</span></span>
       <span class="small">${EMP_RES.map(([, k]) => fmt(p[k])).join(' · ')}</span>
-      <span class="small muted">Energie ${fmt(p.Energie)} · Arbeiter ${fmt(p.Population)}</span>
-      <span class="small muted">Bauplatz ${fmt(p.Bauplatz)}${ab.length ? ` · Ausbau ${ab.join('/')}` : ''}</span></button>`;
+      ${ab.length ? `<span class="small muted">Ausbau ${ausbauText(ausbau(d, p, W))}</span>` : ''}</button>`;
   };
   let html = `<div class="card" id="planets"><div class="row between"><h2>Planeten</h2><span class="muted small">◉ im Spiel gewählt</span></div>
     <div class="plchips">${all ? `<button class="plchip${sel === 'alle' ? ' on' : ''}" data-pl="alle"><span><b>Imperium</b></span><span class="small muted">${pl.length} Planeten gesamt</span></button>` : ''}${pl.map(chip).join('')}</div>`;
@@ -391,11 +410,14 @@ function planetsCard(d, nm) {
     }
     return html + '</div>';
   }
+  const a = ausbau(d, p, W);
+  html += `<p class="small">Ausbau <b>${ausbauText(a)}</b>${a.slots && !a.slots.exact ? ' <span class="muted">(Baustellen aus den Stufen berechnet)</span>' : ''}</p>
+    <p class="small muted">frei: Energie <span class="${p.Energie < 0 ? 'err' : ''}">${fmt(p.Energie)}</span> · Arbeiter <span class="${p.Population < 0 ? 'err' : ''}">${fmt(p.Population)}</span> · Bauplatz ${fmt(p.Bauplatz)}${p.coords === cur ? supplyText(d) : ''}</p>`;
   html += `<h3>Förderung ${esc(p.name)}</h3>${prodRows(p)}`;
   const extra = ['spacemine', 'debris', 'recycle'].filter(t => p[t] && EMP_RES.some(([r]) => p[t][r]));
   if (extra.length) html += `<p class="small muted">${extra.map(t => `${{ spacemine: 'Orbital', debris: 'Trümmer Orbit', recycle: 'Trümmer Planet' }[t]}: ${EMP_RES.map(([r]) => fmt(p[t][r])).join(' / ')}`).join(' · ')}</p>`;
   html += p.coords === cur ? statDetails(d, nm)
-    : `<p class="small muted">Verbrauch und Bauleistung liefert das Spiel nur für den im Spiel gewählten Planeten (${esc(d.start?.planet || cur || '–')}).</p>`;
+    : `<p class="small muted">Verbrauch liefert das Spiel nur für den im Spiel gewählten Planeten (${esc(d.start?.planet || cur || '–')}).</p>`;
   const lst = (items, set) => items.map(i => `<tr><td>${esc(set ? nm({ type: i.type.toLowerCase() }, set) : i.type)}</td><td class="num">${i.busy ? '<b>' : ''}${fmt(i.n)}${i.busy ? '</b> ⚒' : ''}</td></tr>`).join('');
   const blds = p.buildings || [];
   html += `<details class="sub" data-open="plb"${S.plOpen?.plb ? ' open' : ''}><summary class="small"><b>Gebäude</b> <span class="muted">${blds.length} gebaut</span></summary><table class="small">${lst(blds, 'B')}</table></details>`;
@@ -404,10 +426,18 @@ function planetsCard(d, nm) {
   }
   return html + '</div>';
 }
-// Verbrauch (Energie/Arbeiter je Gebäude, Rohstoffe), Bauleistung, Forschung aus cmd=status des gewählten Planeten
+// Versorgung des gewählten Planeten (cmd=prod): Anteil der benötigten Arbeiter/Energie, der verfügbar ist
+function supplyText(d) {
+  const prod = d.prod || {}, avail = prod['Aktuelle Verfügbarkeit'] || {}, need = prod['Benötigte Kapazitäten'] || {};
+  return ['Arbeiter', 'Energie'].map(k => {
+    const ratio = need[k] ? Math.min(1, (avail[k] || 0) / need[k]) : 1;
+    return `<span class="${ratio < 1 ? 'err' : ''}">${k} ${ratio < 1 ? fmt(Math.floor(ratio * 1000) / 10, 1) : 100} %</span>`;
+  }).join(' · ').replace(/^/, '<br>Versorgung: ');
+}
+// Verbrauch (Energie/Arbeiter je Gebäude, Rohstoffe) aus cmd=status des gewählten Planeten
 function statDetails(d, nm) {
   const t0 = k => d.status?.[k]?.tables?.[0] || null;
-  const res = t0('RESOURCES'), con = t0('CONSTRUCTION'), rs = t0('RESEARCH'), prod = d.prod || {};
+  const res = t0('RESOURCES'), prod = d.prod || {};
   const label = k => nm({ type: k }, 'B');
   const bldRows = o => Object.entries(o || {}).filter(([k]) => k !== 'Summe');
   let html = '';
@@ -419,28 +449,16 @@ function statDetails(d, nm) {
       <table class="small"><tr><th></th><th class="num">Energie</th><th class="num">Arbeiter</th></tr>${use.map(([k, v]) => `<tr><td>${esc(label(k))} ${esc(v.level ?? '')}</td><td class="num">${fmt(v.Energie)}</td><td class="num">${fmt(v.Arbeiter)}</td></tr>`).join('')}
       ${gen.map(([k, v]) => `<tr class="muted"><td>${esc(label(k))} ${esc(v.level ?? '')}</td><td class="num">${v.Energie > 0 ? '+' : ''}${fmt(v.Energie)}</td><td class="num">${v.Arbeiter > 0 ? '+' : ''}${fmt(v.Arbeiter)}</td></tr>`).join('')}</table></details>`;
   }
-  if (con || rs) {
-    const cs = con?.Summe || {}, rsum = rs?.Summe || {};
-    const parts = [['Gebäude', cs['Gebäude']], ['Baustellen', cs.Baustellen], ['Schiffe', cs.Schiffe], ['Verteidigung', cs.Verteidigung], ['Forschung', rsum.Forschung]]
-      .filter(([, v]) => v != null);
-    const keys = [...new Set([...bldRows(con).map(x => x[0]), ...bldRows(rs).map(x => x[0])])];
-    html += `<details class="sub" data-open="plk"${S.plOpen?.plk ? ' open' : ''}><summary class="small"><b>Bauleistung</b> <span class="muted">${parts.map(([k, v]) => `${k} ${fmt(v, 2)}`).join(' · ')}</span></summary>
-      <table class="small">${keys.map(k => {   // B16: je Gebäude nur die Beiträge ungleich 0 als Text (passt aufs Handy)
-        const c = con?.[k] || {}, r = rs?.[k] || {};
-        const v = parts.map(([n]) => [n, n === 'Forschung' ? r.Forschung : c[n]]).filter(([, x]) => x);
-        return `<tr><td>${esc(label(k))} ${esc(c.level ?? r.level ?? '')}</td><td class="muted">${v.map(([n, x]) => `${n} ${fmt(x, 2)}`).join(' · ') || '–'}</td></tr>`;
-      }).join('')}</table></details>`;
-  }
   return html;
 }
-function bindPlanets(d, nm) {
+function bindPlanets(d, nm, W) {
   const box = $('#planets');
   if (!box) return;
   box.querySelectorAll('button[data-pl]').forEach(b => b.addEventListener('click', () => {
     S.planet = b.dataset.pl;
     try { localStorage.setItem('hz-planet', S.planet); } catch { /* egal */ }
-    box.outerHTML = planetsCard(d, nm);
-    bindPlanets(d, nm);
+    box.outerHTML = planetsCard(d, nm, W);
+    bindPlanets(d, nm, W);
   }));
   // aufgeklappte Abschnitte über die Auffrischung hinweg merken
   box.querySelectorAll('details[data-open]').forEach(x => x.addEventListener('toggle', () => { (S.plOpen ||= {})[x.dataset.open] = x.open; }));
@@ -614,8 +632,25 @@ function systemCard(S0, g, s, hm) {
     ${ch}</div>`;
 }
 
-/* ---------- Überblick (B10): Lauf, Rohstoffe, Arbeiter/Energie, laufende Aufträge in wenigen Zeilen ---------- */
-function overviewCard(sess, d, live, abLive, nm) {
+/* ---------- Überblick (B10): Lauf, Rohstoffe, laufende Aufträge in wenigen Zeilen ----------
+   Ab 16.10. (Nutzer) Gesamtwerte des Imperiums: Rohstoffe aller Planeten (emp_prod: Lager + Netto-Förderung, auf jetzt
+   hochgerechnet), Koloniepunkte benutzt/gesamt (cmd=orden, Collector ab 0.4.7), Ausbau x / y über alle Planeten. */
+function empireRes(d, hrs) {
+  const pl = empirePlanets(d).filter(p => p.storage);
+  if (!pl.length) return null;
+  const cur = d.start?.coords, stab = d.prod?.['Maximal stabile Menge'] || {};
+  return RES.map(x => {
+    let now = 0, net = 0, full = null;
+    for (const p of pl) {
+      const r = (p.production?.[x] ?? 0) / 24, cap = p.coords === cur ? stab[x] : null;   // Grenze nur für den gewählten Planeten bekannt
+      const v = Math.min((p.storage[x] || 0) + r * hrs, cap || Infinity);
+      now += v; net += r;
+      if (r > 0 && cap && pl.length === 1) full = (cap - v) / r * 3600;
+    }
+    return { x, now, net, full };
+  });
+}
+function overviewCard(sess, d, live, abLive, nm, W) {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   const runTxt = !r ? 'kein Lauf'
     : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis #${esc(r.until ?? '–')} · ${esc(r.name || '?')}`
@@ -626,17 +661,20 @@ function overviewCard(sess, d, live, abLive, nm) {
   if (r && ['angehalten', 'verloren'].includes(r.state) && r.reason) html += `<p class="small muted">${esc(tidy(r.reason))}</p>`;
   if (d) {
     const prod = d.prod || {}, at = new Date(live.collected_at), hrs = (Date.now() - at) / 3600e3;
-    const stock = prod['Aktueller Lagerbestand'] || {}, rate = prod['Förderung'] || {}, use = prod['Verbrauch'] || {}, cap = prod['Maximal stabile Menge'] || {};
-    html += `<table class="small">${RES.map(x => {
+    const pl = empirePlanets(d);
+    // ohne Imperium-Daten (älterer Collector) wie bisher der gewählte Planet aus cmd=prod
+    const rows = empireRes(d, hrs) || RES.map(x => {
+      const stock = prod['Aktueller Lagerbestand'] || {}, rate = prod['Förderung'] || {}, use = prod['Verbrauch'] || {}, cap = prod['Maximal stabile Menge'] || {};
       const net = (rate[x] || 0) - (use[x] || 0), now = Math.min((stock[x] || 0) + net * hrs, cap[x] || Infinity);
-      const full = net > 0 && cap[x] ? (cap[x] - now) / net * 3600 : null;
-      return `<tr><td>${x}${full == null ? '' : `<div class="muted">voll in ${dur(full)}</div>`}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td></tr>`;
-    }).join('')}</table>`;
-    const avail = prod['Aktuelle Verfügbarkeit'] || {}, need = prod['Benötigte Kapazitäten'] || {};
-    html += `<div class="row small" style="margin:4px 0">${['Arbeiter', 'Energie'].map(k => {
-      const ratio = need[k] ? Math.min(1, (avail[k] || 0) / need[k]) : 1;
-      return `<span class="${ratio < 1 ? 'err' : 'muted'}">${k} ${ratio < 1 ? fmt(Math.floor(ratio * 1000) / 10, 1) : 100} %</span>`;
-    }).join(' · ')}</div>`;
+      return { x, now, net, full: net > 0 && cap[x] ? (cap[x] - now) / net * 3600 : null };
+    });
+    html += `<table class="small"><tr class="muted"><td>${pl.length > 1 ? `Imperium (${pl.length} Planeten)` : 'Rohstoffe'}</td><td class="num">Bestand</td><td class="num">Förderung</td></tr>${rows.map(({ x, now, net, full }) =>
+      `<tr><td>${x}${full == null ? '' : `<div class="muted">voll in ${dur(full)}</div>`}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td></tr>`).join('')}</table>`;
+    const col = d.empire?.colony, ab = pl.map(p => ausbau(d, p, W));
+    const slots = ab.length && ab.every(a => a.slots) ? { n: ab.reduce((s, a) => s + a.slots.n, 0), exact: ab.every(a => a.slots.exact) } : null;
+    html += `<div class="row small" style="margin:4px 0">${col?.max != null
+      ? `<span class="${col.free < 0 ? 'err' : ''}" title="frei ${esc(fmt(col.free, 3))}">Kolopunkte <b>${fmt(col.used, 2)}</b> / ${fmt(col.max, 2)}${col.free < 0 ? ' überzogen' : ''}</span>`
+      : '<span class="muted">Kolopunkte: ab Collector 0.4.7</span>'}${ab.length ? ` · <span>Ausbau <b>${ausbauText({ busy: ab.reduce((s, a) => s + a.busy, 0), slots })}</b></span>` : ''}</div>`;
     const fromAb = abLive && abLive.liveAt > at.getTime();
     const jobs = fromAb
       ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', name: nm({ type: j.t }, j.k === 'b' ? 'B' : 'R'), level: j.l, end: new Date(j.end) }))
@@ -965,12 +1003,15 @@ const verCmp = (a, b) => {
 };
 /* ---------- Ereignisse ---------- */
 
+// Filter dauerhaft je Gerät (Nutzer 16.10.: vorher sessionStorage, nach dem Schließen weg)
+const evGet = k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+const evSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* egal */ } route(); };
 async function viewEvents() {
-  const lvl = sessionStorage.getItem('hz.evlvl') || '', cat = sessionStorage.getItem('hz.evcat') || '';
+  const lvl = evGet('hz.evlvl'), cat = evGet('hz.evcat');
   const p = { account_id: `eq.${S.acc}`, order: 't.desc', limit: 200 };
   if (lvl) p.level = `eq.${lvl}`;
   if (cat) p.cat = `eq.${cat}`;
-  S.showDismissed = sessionStorage.getItem('hz.evdis') === '1';
+  S.showDismissed = evGet('hz.evdis') === '1';
   if (!S.showDismissed) p.dismissed_at = 'is.null';
   const evs = await Cloud.q('events', p);
   const canSee = ['owner', 'viewer'].includes(account()?.role);
@@ -982,9 +1023,9 @@ async function viewEvents() {
     ${canSee ? '<span class="muted small"> · nach rechts wischen oder ✕ = ausblenden</span>' : ''}
     <p class="muted small">Builder = Autobuilder und Sitzungen · Cockpit = Freigaben und Kommandos · Spiel = Berichte und Nachrichten · System = Supabase-Wächter</p>
     ${evs.length ? evs.map(evRow).join('') : '<p class="muted">Keine Ereignisse.</p>'}</div>`;
-  $('#lvl').onchange = e => { sessionStorage.setItem('hz.evlvl', e.target.value); route(); };
-  $('#cat').onchange = e => { sessionStorage.setItem('hz.evcat', e.target.value); route(); };
-  $('#evDis').onchange = e => { sessionStorage.setItem('hz.evdis', e.target.checked ? '1' : ''); route(); };
+  $('#lvl').onchange = e => evSet('hz.evlvl', e.target.value);
+  $('#cat').onchange = e => evSet('hz.evcat', e.target.value);
+  $('#evDis').onchange = e => evSet('hz.evdis', e.target.checked ? '1' : '');
   swipeEvents($('#view'));
   $('#seenAll')?.addEventListener('click', async () => {
     await Cloud.rest(`events?account_id=eq.${S.acc}&seen_at=is.null`, { method: 'PATCH', body: { seen_at: new Date().toISOString() }, prefer: 'return=minimal' });
