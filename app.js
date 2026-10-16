@@ -639,12 +639,24 @@ async function anflugNotfall() {
 /* ---------- Werbebanner (Autobuilder ab 0.5.1) ----------
    Der Autobuilder meldet aktive Banner im Lebenszeichen; aufgerufen werden sie nur per Kommando „banner“ nach Tippen des Owners. */
 const bannerDev = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game' && x.ab.state?.banner?.n);
+// Ab Autobuilder 0.5.20 (Freigabe Nutzer 15.10.2026): Ist kein Gerät eingeloggt und die Banner sind fällig, loggt ein ausgeloggtes
+// Gerät nach Tippen und Bestätigen einmal ein, ruft die Banner auf und loggt ohne Lauf wieder aus. Bevorzugt das Gerät mit dem Lauf.
+const bannerLoginDev = sess => {
+  const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
+  if (live.some(x => x.ab.state?.page === 'game')) return null;
+  const out = live.filter(x => x.ab.state?.page === 'login');
+  return out.find(x => x.holds) || out[0] || null;
+};
+const bannerDue = sess => Math.max(0, ...sess.devs.filter(d => d.ab && isFresh(d.ab.at, 24 * 60)).map(d => +d.ab.state?.bannerDue || 0));
+const bannerLoginNow = sess => { const due = bannerDue(sess); return due && due < Date.now() + 15 * 60e3 ? bannerLoginDev(sess) : null; };
 function bannerCard(sess) {
   const x = bannerDev(sess), b = x?.ab.state.banner;
   if (!b) {
-    const due = Math.max(0, ...sess.devs.filter(d => d.ab && isFresh(d.ab.at, 24 * 60)).map(d => +d.ab.state?.bannerDue || 0));
-    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">keine offen</span></div>
-      <p class="small">Nächste erwartet ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(dt(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).</p></div>` : '';
+    const due = bannerDue(sess), lx = bannerLoginNow(sess);
+    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">${lx ? 'Gerät ausgeloggt' : 'keine offen'}</span></div>
+      <p class="small">Nächste erwartet ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(dt(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).</p>
+      ${lx && isOwner() ? `<p class="small">${esc(lx.name)} ist ausgeloggt. Der Autobuilder loggt dafür einmal ein, ruft die Banner auf und loggt danach wieder aus (läuft dort ein Lauf, macht dieser weiter).</p>
+      <div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Einloggen und Banner öffnen</button></div>` : ''}</div>` : '';
   }
   return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(when(b.since))}</span></div>
     <p>${esc(b.n)} von 3 Votes offen auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Vote ${esc(s.slot)}: ${esc(s.host || 'Ziel unbekannt')}`).join('<br>')}</div>
@@ -652,9 +664,10 @@ function bannerCard(sess) {
     ${isOwner() ? '<div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Banner jetzt öffnen</button></div>' : ''}</div>`;
 }
 async function sendBanner(sess) {
-  const x = bannerDev(sess);
+  const x = bannerDev(sess) || bannerLoginNow(sess), login = x && !bannerDev(sess);
   if (!x) return toast('Kein Gerät mit aktiven Bannern erreichbar');
-  if (!confirm(`Banner auf ${x.name} jetzt einmal aufrufen?`)) return;
+  if (!confirm(login ? `${x.name} ist ausgeloggt. Jetzt einmal einloggen, die Banner aufrufen und danach wieder ausloggen?\n\nEin Spiel auf einem anderen Gerät wird dabei abgemeldet.`
+    : `Banner auf ${x.name} jetzt einmal aufrufen?`)) return;
   try {
     await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
       body: { account_id: S.acc, script: 'autobuilder', cmd: 'banner', args: {}, target_device: x.device } });
