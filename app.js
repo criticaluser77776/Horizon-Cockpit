@@ -852,8 +852,10 @@ function planPlanets(plan, home) {
   return list.filter((p, i) => list.findIndex(q => q.coords === p.coords) === i);
 }
 const stepPlanet = (plan, n, def) => plan.stepPlanet?.[n] || def;
-function stepsTable(plan, st, execs, all, W, planet) {
-  const t0 = Date.parse(plan.startTime);
+// Zeiten der Planschritte enthalten immer die Abweichung (Nutzer 16.10.): Planstart + τ + shift (h, wie activeEnd)
+function stepsTable(plan, st, execs, all, W, planet, shift = 0) {
+  const t0 = Date.parse(plan.startTime) + shift * 3600e3, tp = tau => esc(dt(t0 + tau * 3600e3));
+  const tip = tau => shift ? ` title="Plan: ${esc(dt(t0 - shift * 3600e3 + tau * 3600e3))}"` : '';
   const open = (st.open || []).filter(Number.isInteger);
   const first = open.length ? Math.min(...open) : null;
   const until = st.until || plan.steps.length;
@@ -873,13 +875,13 @@ function stepsTable(plan, st, execs, all, W, planet) {
   const list = all ? vis : vis.filter(r => !r.fc || (r.tau >= lo && r.tau <= hi));
   if (!steps.length && !all) return `<p class="muted small">Kein offener Schritt bis #${esc(until)}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
   return `<table class="small">${list.map(r => {
-    if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num">${esc(dt(t0 + r.tau * 3600e3))}</td></tr>`;
+    if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
     const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
     return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
-      <td class="num">${esc(dt(t0 + r.tau * 3600e3))}</td></tr>`;
+      <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
   }).join('')}</table>`;
 }
-function abCard(active, sess, cmds, own, execs, W) {
+function abCard(active, sess, cmds, own, execs, W, drift) {
   const plan = active?.payload, run = sess.run;
   const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
   const holder = sess.devs.find(x => x.holds);
@@ -921,7 +923,8 @@ function abCard(active, sess, cmds, own, execs, W) {
       <button class="link small" id="allSteps">${S.allSteps ? 'nur offene' : 'alle mit Historie'}</button></div>
       ${pls.length > 1 ? `<div class="row small" style="margin:4px 0">Planet <select id="plSel">${pls.map(p => `<option value="${esc(p.coords)}"${p === cur ? ' selected' : ''}>${esc(plName(p))}</option>`).join('')}</select></div>`
         : cur ? `<div class="small muted" style="margin:4px 0">Planet ${esc(plName(cur))} · Forschung gilt für alle Planeten („global“)</div>` : ''}
-      ${stepsTable(plan, hst, execs, S.allSteps, W, cur?.coords)}`;
+      ${(() => { const sh = planShift(drift); return Math.abs(sh) >= 0.05 ? `<div class="small muted" style="margin:4px 0">Zeiten inkl. Abweichung: ${sh > 0 ? 'Verzug' : 'Vorlauf'} ${esc(hrs(sh))} gegen den Plan (reine Planzeit als Tooltip)</div>` : ''; })()}
+      ${stepsTable(plan, hst, execs, S.allSteps, W, cur?.coords, planShift(drift))}`;
   }
   return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
 }
@@ -996,11 +999,11 @@ const planEnd = p => {
   const h = +p?.hours || +(String(p?.created || '').match(/([\d.]+) h$/) || [])[1];
   return p?.startTime && h ? Date.parse(p.startTime) + h * 3600e3 : null;
 };
+// Verschiebung des aktiven Plans in h (positiv = später): Startverzug + Rückstand bzw. − Vorlauf; vor dem ersten Start die Wartezeit
+const planShift = drift => !drift ? 0 : drift.lag != null ? (+drift.offset || 0) + +drift.lag : Math.max(+drift.wait || 0, 0);
 const activeEnd = (active, drift) => {
   const end = planEnd(active?.payload);
-  if (!end) return null;
-  const shift = drift?.lag != null ? (+drift.offset || 0) + +drift.lag : Math.max(+drift?.wait || 0, 0);
-  return end + shift * 3600e3;
+  return end ? end + planShift(drift) * 3600e3 : null;
 };
 // Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), agreed, better }
 async function draftGains(plans, active, drift) {
@@ -1198,7 +1201,7 @@ async function viewPlans(rest = []) {
       ${own && (p.kind === 'build' && p.plan_hash || old.includes(p)) ? `<div class="row between" style="margin-top:6px">${p.kind === 'build' && p.plan_hash ? `<a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a>` : '<span></span>'}
         ${old.includes(p) ? `<button class="danger small" data-del="${esc(p.id)}">Löschen</button>` : ''}</div>` : ''}
     </div>`;
-  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W) + driftCard(drift, own) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W, drift) + driftCard(drift, own) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude; gezeigt werden nur Baupläne, die das Ziel früher erreichen als der aktive Plan${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${cur.length ? cur.map(item).join('') : `<p class="muted">${old.length ? 'Kein freigegebener Plan und kein offener Entwurf.' : 'Noch keine Pläne. Der Optimierer legt jeden neuen Bauplan hier als Entwurf ab.'}</p>`}
     ${old.length ? `<details id="oldPlans"${S.oldPlans ? ' open' : ''}><summary class="small"><b>Ältere Pläne (${old.length})</b> <span class="muted">verworfen, abgebrochen, erledigt, überholte Entwürfe</span></summary>${old.map(item).join('')}</details>` : ''}</div>`;
