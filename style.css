@@ -239,3 +239,33 @@ details.sub > summary { padding: 6px 0; }
 }
 .kchip { max-width: 100%; flex-wrap: wrap; }
 .kchip .link { white-space: normal; text-align: left; }
+
+/* System-Karte (B9): Bahnen 1–14 mit Typ, Besitzer, zuletzt gesehen; SCOL-Hinweis; Verlauf */
+#sysCard > summary { cursor: pointer; }
+.orbits { display: grid; margin-top: 8px; }
+.orb { display: grid; grid-template-columns: 1.8em 3.6em minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); }
+.orb:first-child { border-top: 0; }
+.orb .ob { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); font-weight: 600; }
+.orb .oi { min-width: 0; overflow-wrap: anywhere; }
+.orb .od { display: block; }
+.orb .os { white-space: nowrap; }
+.orb .osm { display: none; }
+.orb.empty { grid-template-columns: 1.8em minmax(0, 1fr); padding: 2px 0; }
+.orb.unknown .oi b, .orb.gone { color: var(--muted); }
+.orb.gone .oi > b { text-decoration: line-through; }
+.ptype { display: inline-block; text-align: center; font: 600 .75rem ui-monospace, Consolas, monospace; border-radius: 5px; padding: 2px 0;
+  border: 1px solid var(--accent); color: var(--accent); background: var(--accent-2); }
+.ptype.unk { border-color: var(--line); color: var(--muted); background: var(--bg); }
+.ptype.t-VUPL, .ptype.t-LVPL { border-color: var(--bad); color: var(--bad); background: transparent; }
+.ptype.t-JUPL, .ptype.t-FOPL { border-color: var(--ok); color: var(--ok); background: transparent; }
+.scolhint { border-left: 3px solid var(--accent); background: var(--accent-2); border-radius: 6px; padding: 6px 10px; margin-top: 8px; }
+.scolhint p { margin: 4px 0 0; }
+.scolc { margin: 4px 0 0; padding-left: 1.4em; }
+.scolc li.best { font-weight: 600; }
+.scolc li .muted { font-weight: 400; }
+table.chg td { vertical-align: top; }
+@media (max-width: 600px) {
+  .orb { grid-template-columns: 1.6em 3.4em minmax(0, 1fr); }
+  .orb .os { display: none; }
+  .orb .osm { display: inline; }
+}

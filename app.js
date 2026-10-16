@@ -317,7 +317,8 @@ async function viewLage() {
   // B10 (Nutzer 13.10.2026): oben nur das Nötigste – Überblick, Steuerung, Banner, Ereignisse; Details eingeklappt
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  let html = overviewCard(sess, d, live, abLive, nm) + planetsCard(d, nm) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
+  const sysData = await loadSystem(d).catch(() => null);
+  let html = overviewCard(sess, d, live, abLive, nm) + planetsCard(d, nm) + systemCard(sysData) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
   html += `<div class="card"><div class="row between"><h2>Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.slice(0, 4).map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
   if (d) {
     const lv = (items, set) => items.map(i => `<tr><td>${esc(nm(i, set))}</td><td class="num">${esc(i.levelDone ?? i.level)}${i.inProgress ? ` → ${esc(i.level)}` : ''}</td></tr>`).join('');
@@ -332,6 +333,7 @@ async function viewLage() {
   $('#view').innerHTML = html;
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
   bindPlanets(d, nm);
+  bindSystem();
   bindNotfall(sess, nf);
   swipeEvents($('#view'));
 }
@@ -444,6 +446,114 @@ function bindPlanets(d, nm) {
   }));
   // aufgeklappte Abschnitte über die Auffrischung hinweg merken
   box.querySelectorAll('details[data-open]').forEach(x => x.addEventListener('toggle', () => { (S.plOpen ||= {})[x.dataset.open] = x.open; }));
+}
+
+/* ---------- System-Karte (B9, 16.10.2026): Planeten des eigenen Systems aus planets/planet_systems, Verlauf aus planet_changes ----------
+   Nur lesend. Typen zeigt erst Sternwarte 2 (Faktor ≥ 10 %); bis dahin „Unbekannter Planet“ (type null).
+   Planeten, Verlauf und Prospektion kommen nur neu, wenn sich planet_systems.last_seen geändert hat (Auffrischung alle 30 s). */
+const PL_TYPE = { STPL: 'Standard', JUPL: 'Dschungel', FOPL: 'Wald', RKPL: 'Fels', IDPL: 'Eisenerz', HYPL: 'Wasserstoff', WAPL: 'Wasser',
+  ICPL: 'Eis', ACPL: 'Säure', CLPL: 'Wolken', DSPL: 'Wüste', EOPL: 'Ethanozean', VUPL: 'Vulkan', LVPL: 'Lava', MIPL: 'Mineralinsel',
+  CRPL: 'Kristall', MUPL: 'Staub', ASFI: 'Asteroidenfeld', JPGT: 'Sprungtor', PRSR: 'Gebetsschrein', ARNA: 'Arena',
+  SMOS: 'Kleines Mutterschiff', LMOS: 'Großes Mutterschiff', IMOS: 'Imperiales Mutterschiff' };
+const PL_STATUS = { geschuetzt: 'geschützt', aktiv: 'aktiv', inaktiv: 'inaktiv', gesperrt: 'gesperrt', urlaub: 'Urlaub' };
+const PL_FIELD = { neu: 'neu', typ: 'Typ', name: 'Name', besitzer: 'Besitzer', allianz: 'Allianz', status: 'Status', weg: 'Bahn leer', zurueck: 'wieder da' };
+const SYS_ORBITS = 14;
+// SCOL-Regel aus doku/stand/scol-ziel.md (Nutzer 15.10.): Rohstoffe zuerst; CLPL nur prospektiert; gleicher Rang → Bahn 5/6 vor 8/3 vor 1/11–13
+const SCOL_RANK = { VUPL: 1, LVPL: 1, JUPL: 2, CLPL: 3, RKPL: 4, FOPL: 5 };
+const SCOL_WHY = { VUPL: 'Erz/Mineral 150–175 %, Schiffbau ×2', LVPL: 'Erz/Mineral 250–270 %, baut langsamer', JUPL: 'Forschung billiger',
+  CLPL: 'Werte zufällig, prospektiert', RKPL: 'Bauplatz und Baugeschwindigkeit ×1,6', FOPL: 'Bevölkerung ×3' };
+const orbitPref = b => [5, 6].includes(b) ? 0 : [8, 3].includes(b) ? 1 : [1, 11, 12, 13].includes(b) ? 2 : 3;
+const typeLabel = p => p.type_name || PL_TYPE[p.type] || (p.type ? p.type : 'Unbekannter Planet');
+
+async function loadSystem(d) {
+  const acc = `eq.${S.acc}`;
+  const systems = await Cloud.q('planet_systems', { account_id: acc, order: 'last_seen.desc' });
+  if (!systems.length) return { sys: null };
+  // eigenes System = das des im Spiel gewählten Planeten, sonst das zuletzt gesehene
+  const m = /^(\d+):(\d+)/.exec(d?.start?.coords || '');
+  const sys = (m && systems.find(s => s.galaxy === +m[1] && s.system === +m[2])) || systems[0];
+  const key = `${S.acc}|${sys.galaxy}:${sys.system}|${sys.last_seen}`;
+  if (S.sys?.key !== key) {
+    const where = { account_id: acc, galaxy: `eq.${sys.galaxy}`, system: `eq.${sys.system}` };
+    const [planets, changes, prospect] = await Promise.all([
+      Cloud.q('planets', { ...where, order: 'orbit' }),
+      Cloud.q('planet_changes', { ...where, order: 't.desc,id.desc', limit: 60 }),
+      Cloud.q('planet_prospect', { ...where, select: 'orbit,reports,probes,last_report' }).catch(() => []),
+    ]);
+    S.sys = { key, sys, planets, changes, prospect };
+  }
+  return S.sys;
+}
+
+// freie Planeten nach der Regel sortiert; CLPL zählt nur mit Prospektionsbericht
+function scolPick(planets, prospect) {
+  const free = planets.filter(p => p.present && !p.owner);
+  const probed = new Set((prospect || []).map(x => x.orbit));
+  const cands = free.filter(p => SCOL_RANK[p.type] && (p.type !== 'CLPL' || probed.has(p.orbit)))
+    .sort((a, b) => SCOL_RANK[a.type] - SCOL_RANK[b.type] || orbitPref(a.orbit) - orbitPref(b.orbit) || Math.abs(a.orbit - 6) - Math.abs(b.orbit - 6));
+  return { known: free.filter(p => p.type), unknown: free.filter(p => !p.type), cands,
+    cloudOpen: free.filter(p => p.type === 'CLPL' && !probed.has(p.orbit)) };
+}
+
+function scolHint(S0) {
+  const { known, unknown, cands, cloudOpen } = scolPick(S0.planets, S0.prospect);
+  const bahnen = l => l.map(p => p.orbit).join(', ');
+  if (!known.length) {
+    return { short: 'Typen noch unbekannt', html: `<div class="scolhint"><b>SCOL-Ziel:</b> Typen noch unbekannt – ohne Typ gilt <b>Bahn 6</b>.
+      <p class="small muted">Typen zeigt erst Sternwarte 2 (Faktor ≥ 10 %); die nächste Erfassung trägt sie hier ein.</p></div>` };
+  }
+  const best = cands[0];
+  const far = best && orbitPref(best.orbit) === 2;
+  const head = best ? `Bahn ${best.orbit} ${best.type} (${PL_TYPE[best.type] || best.type})` : 'Bahn 6';
+  const list = cands.slice(0, 4).map((p, i) => `<li${i ? '' : ' class="best"'}>Bahn ${p.orbit} <b>${esc(p.type)}</b> ${esc(PL_TYPE[p.type] || '')}
+    <span class="muted">· Rang ${SCOL_RANK[p.type]} · ${esc(SCOL_WHY[p.type])}</span></li>`).join('');
+  return { short: `SCOL-Ziel laut Regel: ${head}`, html: `<div class="scolhint"><b>SCOL-Ziel laut Regel: ${esc(head)}</b>
+    ${best ? `<ol class="scolc">${list}</ol>` : '<p class="small">Kein Typ der Ränge 1–5 (Vulkan/Lava, Dschungel, Wolken prospektiert, Fels, Wald) → Bahn 6.</p>'}
+    ${far ? '<p class="small warn">Bahn 1 bzw. 11–13: vorher die Reichweite des SCOL prüfen.</p>' : ''}
+    ${cloudOpen.length ? `<p class="small muted">Wolken (CLPL) auf Bahn ${bahnen(cloudOpen)}: zählt erst nach Prospektion.</p>` : ''}
+    ${unknown.length ? `<p class="small muted">Noch unbekannt: Bahn ${bahnen(unknown)}.</p>` : ''}
+    <p class="small muted">Regel (scol-ziel.md): VUPL/LVPL → JUPL → CLPL nur prospektiert → RKPL → FOPL, sonst Bahn 6; gleicher Rang: Bahn 5/6 vor 8/3 vor 1/11–13. Das Ziel legt der Nutzer fest.</p></div>` };
+}
+
+function systemCard(S0) {
+  if (!S0) return '';
+  const open = S.plOpen?.sys ? ' open' : '';
+  if (!S0.sys) return `<details class="card" id="sysCard"${open}><summary><b>System</b> <span class="muted small">noch nicht erfasst (Collector ab 0.4.6)</span></summary></details>`;
+  const { sys, planets, changes } = S0;
+  const byOrbit = new Map(planets.map(p => [p.orbit, p]));
+  const probed = new Set((S0.prospect || []).map(x => x.orbit));
+  const n = planets.filter(p => p.present).length;
+  const hint = sys.explored && planets.length ? scolHint(S0) : null;
+  const n0 = Math.max(SYS_ORBITS, ...planets.map(p => p.orbit));
+  const rows = Array.from({ length: n0 }, (_, i) => i + 1).map(b => {
+    const p = byOrbit.get(b);
+    if (!p) return `<div class="orb empty"><span class="ob">${b}</span><span class="muted small">leer</span></div>`;
+    const typ = p.type ? `<span class="ptype t-${esc(p.type)}">${esc(p.type)}</span>` : '<span class="ptype unk">?</span>';
+    const rank = p.owner || !p.present || !SCOL_RANK[p.type] ? ''
+      : p.type === 'CLPL' && !probed.has(b) ? ' <span class="tag">erst prospektieren</span>' : ` <span class="tag ok">Rang ${SCOL_RANK[p.type]}</span>`;
+    const who = p.owner ? `${esc(p.owner)}${p.alliance ? ` [${esc(p.alliance)}]` : ''}${p.status ? ` · ${esc(PL_STATUS[p.status] || p.status)}` : ''}` : 'frei';
+    return `<div class="orb${p.present ? '' : ' gone'}${p.type ? '' : ' unknown'}"><span class="ob">${b}</span>${typ}
+      <span class="oi"><b>${esc(p.name || '–')}</b> <span class="small${p.type ? '' : ' muted'}">${esc(typeLabel(p))}</span>${rank}
+        <span class="small muted od">${who}${p.present ? '' : ` · <b>Bahn leer seit ${esc(dt(p.changed_at))}</b>`}<span class="osm"> · ${esc(ago(p.last_seen))}</span></span></span>
+      <span class="small muted os" title="zuletzt gesehen ${esc(dt(p.last_seen))}">${esc(ago(p.last_seen))}</span></div>`;
+  }).join('');
+  const chRow = c => `<tr><td class="small muted nowrap">${esc(dt(c.t))}</td><td class="num">${c.orbit}</td><td class="small">${esc(PL_FIELD[c.field] || c.field)}</td>
+    <td class="small wrapall">${c.old && c.new ? `${esc(c.old)} → ${esc(c.new)}` : esc(c.old || c.new)}</td></tr>`;
+  const ch = changes.length ? `<h3>Verlauf <span class="muted small">neueste zuerst</span></h3><table class="small chg"><tr><th>Zeit</th><th class="num">Bahn</th><th>Was</th><th>Änderung</th></tr>${changes.slice(0, 10).map(chRow).join('')}</table>
+    ${changes.length > 10 ? `<details class="sub" data-open="syschg"${S.plOpen?.syschg ? ' open' : ''}><summary class="small">ältere (${changes.length - 10}${changes.length >= 60 ? '+' : ''})</summary><table class="small chg">${changes.slice(10).map(chRow).join('')}</table></details>` : ''}`
+    : '<p class="small muted">Noch keine Änderungen.</p>';
+  return `<details class="card" id="sysCard"${open}><summary><b>System ${sys.galaxy}:${sys.system}</b>
+    <span class="muted small">${esc(sys.name)} · ${sys.explored ? `${n} Planeten · ${esc(hint?.short || '')}` : 'unerforscht'} · ${esc(ago(sys.last_seen))}</span></summary>
+    ${!sys.explored ? '<p class="small warn">Das System gilt im Spiel als unerforscht (Sternwarte fehlt oder steht auf Faktor 0) – keine Planeten.</p>' : ''}
+    ${hint?.html || ''}
+    <div class="orbits">${rows}</div>
+    <p class="small muted">Zuletzt erfasst ${esc(dt(sys.last_seen))} (${esc(sys.source)})${sys.discovered_by ? ` · entdeckt von ${esc(sys.discovered_by)}` : ''}. Grau = „Unbekannter Planet“ (Typ erst ab Sternwarte 2).</p>
+    ${ch}</details>`;
+}
+function bindSystem() {
+  const box = $('#sysCard');
+  if (!box) return;
+  box.addEventListener('toggle', e => { (S.plOpen ||= {})[e.target === box ? 'sys' : e.target.dataset.open] = e.target.open; }, true);
 }
 
 /* ---------- Überblick (B10): Lauf, Rohstoffe, Arbeiter/Energie, laufende Aufträge in wenigen Zeilen ---------- */
