@@ -1828,7 +1828,8 @@ async function fillPushCard() {
 
 /* ---------- Verbrauch (B5, 15.10.) ----------
    usage_daily: Größen trägt die DB stündlich selbst ein (pg_cron verbrauch-db), Actions-Minuten und Anfragen die GitHub Action
-   verbrauch.yml (tools/verbrauch.py, täglich 23:40 UTC). Monat = Kalendermonat UTC wie bei GitHub; Supabase rechnet je
+   verbrauch.yml (tools/verbrauch.py, täglich 23:40 UTC). Actions seit 16.10. aus der Abrechnung des ganzen GitHub-Kontos:
+   actions_ms = Minuten privater Repos (belasten das Freikontingent), actions_by je Repo, öffentliche mit „(öffentlich)“. Monat = Kalendermonat UTC wie bei GitHub; Supabase rechnet je
    Abrechnungszeitraum der Organisation (Dashboard), die Grenzen gelten dort je Monat. Egress gibt es nicht per API. */
 const USE_LIMIT = { db: 500 * 2 ** 20, storage: 2 ** 30, actions: 2000 };
 const mb = b => b == null ? '–' : b >= 2 ** 30 ? fmt(b / 2 ** 30, 2) + ' GB' : fmt(b / 2 ** 20, b < 10 * 2 ** 20 ? 2 : 1) + ' MB';
@@ -1866,13 +1867,13 @@ async function fillUseCard() {
   const maxMin = Math.max(1, ...cur.map(r => (r.actions_ms || 0) / 60000));
   const bars = cur.length ? `<svg viewBox="0 0 ${dim * 10} 40" width="100%" height="40" role="img" aria-label="Actions-Minuten je Tag">
     ${cur.map(r => { const d = +r.day.slice(8) - 1, h = Math.max(1, (r.actions_ms || 0) / 60000 / maxMin * 38);
-      return `<rect x="${d * 10 + 1}" y="${40 - h}" width="8" height="${h}" fill="var(--accent)"><title>${esc(r.day.slice(8))}.${esc(r.day.slice(5, 7))}.: ${fmt((r.actions_ms || 0) / 60000)} min, ${r.actions_runs || 0} Läufe</title></rect>`; }).join('')}
+      return `<rect x="${d * 10 + 1}" y="${40 - h}" width="8" height="${h}" fill="var(--accent)"><title>${esc(r.day.slice(8))}.${esc(r.day.slice(5, 7))}.: ${fmt((r.actions_ms || 0) / 60000)} min${r.actions_runs != null ? `, ${r.actions_runs} Läufe` : ''}</title></rect>`; }).join('')}
     </svg><div class="small muted row between"><span>1.</span><span>Actions-Minuten je Tag (max. ${fmt(maxMin)})</span><span>${dim}.</span></div>` : '';
   el.innerHTML = `<h2>Verbrauch <span class="muted small">${esc(now.toLocaleDateString('de-DE', { month: 'long', year: 'numeric', timeZone: 'UTC' }))}, Free-Grenzen</span></h2>
     ${!rows.length ? '<p class="muted small">Noch keine Messung (DB stündlich, Actions täglich 23:40 UTC).</p>' : ''}
     ${last ? useRow('Supabase-Datenbank', last.db_bytes, USE_LIMIT.db, `${mb(last.db_bytes)} von 500 MB${perDay > 0 ? ` · +${mb(perDay)}/Tag` : ''}`, dbProj) : ''}
     ${last ? useRow('Supabase-Dateispeicher', last.storage_bytes, USE_LIMIT.storage, `${mb(last.storage_bytes)} von 1 GB`, null) : ''}
-    ${useRow('GitHub Actions (privates Repo)', actMin, USE_LIMIT.actions, `${fmt(actMin)} von 2000 min`, actProj)}
+    ${useRow('GitHub Actions (Konto, private Repos)', actMin, USE_LIMIT.actions, `${fmt(actMin)} von 2000 min`, actProj)}
     ${Object.keys(by).length ? `<p class="small muted">${Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} ${fmt(v)} min`).join(' · ')}</p>` : ''}
     ${bars}
     <p class="small">Supabase-Anfragen: ${req.length ? `<b>${fmt(reqSum)}</b> in ${req.length} Tagen (Ø ${fmt(reqSum / req.length)}/Tag)` : '<span class="muted">ohne Zugangstoken nicht erhoben (doku/stand/cockpit.md)</span>'}</p>
