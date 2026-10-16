@@ -295,7 +295,7 @@ const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, evs, feats, nf, effs] = await Promise.all([
+  const [heads, sess, evs, feats, nf, effs, gds] = await Promise.all([
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     Cloud.q('events', { account_id: acc, dismissed_at: 'is.null', order: 't.desc', limit: 6 }),
@@ -303,6 +303,7 @@ async function viewLage() {
     loadNotfall(),
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
+    Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,jobs,research,research_at,wake,queues,expires_at,ok_at,error,error_at' }).catch(() => []),
   ]);
   // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
   const head = heads[0];
@@ -317,7 +318,7 @@ async function viewLage() {
   // B10 (Nutzer 13.10.2026): oben nur das Nötigste – Überblick, Steuerung, Banner, Ereignisse; Details eingeklappt
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  let html = overviewCard(sess, d, live, abLive, nm, W) + planetsCard(d, nm, W) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
+  let html = overviewCard(sess, d, live, abLive, nm, W) + getdataCard(gds[0], nm) + planetsCard(d, nm, W) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
   html += `<div class="card"><div class="row between"><h2>Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.slice(0, 4).map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
   if (d) {
     const lv = (items, set) => items.map(i => `<tr><td>${esc(nm(i, set))}</td><td class="num">${esc(i.levelDone ?? i.level)}${i.inProgress ? ` → ${esc(i.level)}` : ''}</td></tr>`).join('');
@@ -334,6 +335,46 @@ async function viewLage() {
   bindPlanets(d, nm, W);
   bindNotfall(sess, nf);
   swipeEvents($('#view'));
+}
+
+/* ---------- getData-Wächter (B18, 16.10.2026; Migrationen 20261016000001/2) ----------
+   Supabase fragt alle 10 min die offizielle getData-Schnittstelle ab (stco ALL + strs), auch ohne eingeloggten PC.
+   Hier: Stand „aus getData“, Weckzeit (nächster Planschritt je Schlange startbar = Schlange frei + Rohstoffe reichen,
+   Planreihenfolge wie im Autobuilder), Rohstoffe hochgerechnet, laufende Aufträge, Gastzugang. Forschungsstufen eingeklappt. */
+function getdataCard(g, nm) {
+  if (!g) return isOwner() ? '<div class="card"><h2>getData</h2><p class="small muted">Nicht eingerichtet – Mehr → getData-Zugang.</p></div>' : '';
+  const at = g.at ? new Date(g.at) : null, c = g.colony, hrs = at ? (Date.now() - at) / 3600e3 : 0;
+  const bad = g.error && (!g.ok_at || new Date(g.error_at) > new Date(g.ok_at));
+  const left = g.expires_at ? (new Date(g.expires_at) - Date.now()) / 86400e3 : null;
+  let html = `<div class="card${bad || (left != null && left < 3) ? ' warn' : ''}"><div class="row between"><h2>getData</h2>
+    <span class="muted small" title="${esc(dt(g.at))}">${at ? `aus getData · ${esc(ago(at))} (${esc(clockT(at))})` : 'noch kein Abruf'}</span></div>`;
+  if (bad) html += `<p class="small err">${esc(tidy(g.error))} <span class="muted">(${esc(ago(g.error_at))})</span></p>`;
+  const w = g.wake;
+  if (w?.steps?.length) {
+    const why = s => s.never ? (s.why ? `${esc(s.why)} reicht nie` : 'nicht absehbar') : s.why === 'jetzt' ? '' : esc(s.why || '');
+    html += `<p>Weckzeit: <b>${w.at ? (new Date(w.at) <= Date.now() ? 'jetzt startbar' : esc(when(w.at))) : '–'}</b>
+      <span class="muted small">Plan ${esc(w.hash || '')}</span></p><table class="small">${w.steps.map(s => `<tr>
+      <td><span class="tag">${s.k === 'b' ? 'Bau' : 'Forschung'}</span> #${esc(s.n)} ${esc(s.text)}${s.beyond ? ' <span class="tag">hinter „bis #“</span>' : ''}</td>
+      <td class="num">${s.at ? (new Date(s.at) <= Date.now() ? '<b>jetzt</b>' : esc(clockT(s.at))) : '–'} <span class="muted">${why(s)}</span></td></tr>`).join('')}</table>`;
+  } else html += '<p class="small muted">Kein aktiver Bauplan oder Plan vollständig.</p>';
+  if (c) {
+    html += `<table class="small">${RES.map((x, i) => {
+      const net = (c.net?.[i] || 0) * 3600, cap = c.max?.[i] || Infinity, now = Math.min((c.res?.[i] || 0) + net * hrs, cap);
+      const full = net > 0 && isFinite(cap) ? (cap - now) / net * 3600 : null;
+      return `<tr><td>${x}${full == null ? '' : `<div class="muted">voll in ${dur(full)}</div>`}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td></tr>`;
+    }).join('')}</table>`;
+  }
+  const jobs = g.jobs || [];
+  html += jobs.length ? `<table class="small">${jobs.map(j => {
+    const end = new Date(j.end), s = (end - Date.now()) / 1000;
+    return `<tr><td><span class="tag">${j.k === 'b' ? 'Bau' : 'Forschung'}</span> ${esc(j.name || nm({ type: j.cls }, j.k === 'b' ? 'B' : 'R'))}</td>
+      <td class="num">${s > 0 ? `${dur(s)} <span class="muted">${esc(clockT(end))}</span>` : 'fertig'}</td></tr>`;
+  }).join('')}</table>` : '<p class="small muted">Baustelle und Labor frei.</p>';
+  const rs = Object.entries(g.research || {}).map(([k, v]) => ({ k, n: nm({ type: k }, 'R'), ...v })).sort((a, b) => String(a.n).localeCompare(String(b.n), 'de'));
+  if (rs.length) html += `<details class="sub"><summary class="small muted">Forschungsstufen (${rs.length}, ${esc(ago(g.research_at))})</summary><table class="small">${rs.map(r =>
+    `<tr><td>${esc(r.n)}</td><td class="num">${esc(r.level)}${r.status === 'CONSTRUCTION' ? ` → ${esc(r.level + 1)}` : ''}</td></tr>`).join('')}</table></details>`;
+  if (g.expires_at) html += `<p class="small ${left < 3 ? 'err' : 'muted'}">Gastzugang bis ${esc(dt(g.expires_at))}${left < 3 ? ' – im Spiel verlängern, dann Mehr → getData-Zugang' : ''}</p>`;
+  return html + '</div>';
 }
 
 /* ---------- Planeten + Statistik Imperium (B2, 14.10.2026; Collector ab 0.4.5 → d.empire) ----------
@@ -1858,6 +1899,34 @@ async function viewClaude() {
   }));
 }
 
+/* getData-Zugang (B18): Gäste-Passwort und Ablauf aus dem Spiel (Einstellungen → Account, „Gastzugang verfällt“).
+   Das Passwort geht nur an public.getdata_zugang (Owner) und liegt danach im Supabase-Vault; das Cockpit zeigt es nie an. */
+async function fillGdCard() {
+  const el = $('#gdCard');
+  if (!el) return;
+  const g = (await Cloud.q('getdata_state', { account_id: `eq.${S.acc}`, select: 'expires_at,ok_at,error,error_at' }).catch(() => []))[0];
+  const local = t => { const d = new Date(t); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+  el.innerHTML = `<h2>getData-Zugang</h2>
+    <p class="small">${g?.expires_at ? `Gastzugang bis <b>${esc(dt(g.expires_at))}</b>` : 'Noch nicht eingerichtet.'}${g?.ok_at ? ` · letzter Abruf ${esc(ago(g.ok_at))}` : ''}</p>
+    ${g?.error ? `<p class="small err">${esc(tidy(g.error))}</p>` : ''}
+    <form id="fGd">
+      <p><label class="small">Gäste-Passwort<br><input name="pw" type="password" autocomplete="off" placeholder="${g?.expires_at ? 'leer = unverändert' : ''}"></label></p>
+      <p><label class="small">Gastzugang verfällt<br><input name="exp" type="datetime-local" required value="${g?.expires_at ? local(g.expires_at) : ''}"></label></p>
+      <p><button>Speichern und abrufen</button></p></form>
+    <p class="muted small">Im Spiel: Einstellungen → Account → Gastzugang (14d). Das Passwort liegt danach nur im Supabase-Vault. Supabase fragt alle 10 min Kolonien und Forschung ab (nur lesend).</p>`;
+  $('#fGd').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target, exp = new Date(f.exp.value);
+    if (isNaN(exp)) return toast('Ablaufdatum fehlt');
+    try {
+      await Cloud.rpc('getdata_zugang', { p_account: S.acc, p_expires: exp.toISOString(), p_password: f.pw.value || null });
+      f.pw.value = '';
+      toast('Gespeichert – Ergebnis in etwa einer Minute unter Lage');
+      fillGdCard();
+    } catch (err) { toast(err.message); }
+  });
+}
+
 async function viewMore() {
   const a = Cloud.access();
   const info = await Cloud.rpc('group_info');
@@ -1882,6 +1951,7 @@ async function viewMore() {
       <p><button id="logout">Abmelden</button></p></div>
     <div class="card" id="pushCard"><h2>Push</h2><p class="muted small">wird geprüft …</p></div>
     <div class="card" id="useCard"><h2>Verbrauch</h2><p class="muted small">wird geladen …</p></div>
+    ${own ? '<div class="card" id="gdCard"><h2>getData-Zugang</h2><p class="muted small">wird geladen …</p></div>' : ''}
     <div class="card"><h2>Über</h2><p class="small">Version ${esc(window.APP_VERSION?.number)}${window.APP_VERSION?.built && window.APP_VERSION.built !== 'lokal' ? ` vom ${esc(dt(window.APP_VERSION.built))}` : ' (lokal)'}</p>
       <details class="sub"><summary class="small muted">Details</summary><p class="small muted wrapall">Gerätekennung ${esc(Cloud.device)}</p></details>
       <p class="small">Ansicht: <b>${isStandalone() ? 'als App (ohne Browserleiste)' : 'im Browser'}</b></p>
@@ -1891,6 +1961,7 @@ async function viewMore() {
       <p class="small muted">Plan und Stand: doku/stand/cockpit.md im Horizon-Repo.</p></div></div>`;
   fillPushCard();
   fillUseCard();
+  if (own) fillGdCard();
   $('#view').querySelectorAll('select[data-member]').forEach(s => s.addEventListener('change', async () => {
     try { await Cloud.rpc('account_grant', { p_account: S.acc, p_member: s.dataset.member, p_role: s.value }); toast('Recht gespeichert'); }
     catch (e) { toast(e.message); route(); }
