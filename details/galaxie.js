@@ -156,7 +156,7 @@ function systemCard(S0, g, s, hm) {
     const who = p.owner ? `${esc(p.owner)}${p.alliance ? ` [${esc(p.alliance)}]` : ''}${p.status ? ` · ${esc(PL_STATUS[p.status] || p.status)}` : ''}` : 'frei';
     const mine = me && p.owner === me;
     return `<div class="orb${p.present ? '' : ' gone'}${p.type ? '' : ' unknown'}${mine ? ' own' : ''}${b === homeOrbit ? ' home' : ''}"><span class="ob">${b === homeOrbit ? '⌂' : b}</span>${typ}
-      <span class="oi"><b>${esc(p.name || '–')}</b> <span class="small${p.type ? '' : ' muted'}">${esc(typeLabel(p))}</span>${rank}
+      <span class="oi"><a href="#/planeten/p/${g}:${s}:${b}" title="In der Planeten-DB öffnen"><b>${esc(p.name || '–')}</b></a> <span class="small${p.type ? '' : ' muted'}">${esc(typeLabel(p))}</span>${rank}
         <span class="small muted od">${b === homeOrbit ? `Bahn ${b} · ` : ''}${who}${p.present ? '' : ` · <b>Bahn leer seit ${esc(dt(p.changed_at))}</b>`}<span class="osm"> · ${esc(ago(p.last_seen))}</span></span></span>
       <span class="small muted os" title="zuletzt gesehen ${esc(dt(p.last_seen))}">${esc(ago(p.last_seen))}</span></div>`;
   }).join('');
@@ -170,5 +170,5 @@ function systemCard(S0, g, s, hm) {
     ${hint?.html || ''}
     <div class="orbits">${rows}</div>
     <p class="small muted">Zuletzt erfasst ${esc(dt(sys.last_seen))} (${esc(sys.source)})${sys.discovered_by ? ` · entdeckt von ${esc(sys.discovered_by)}` : ''}. Grau = „Unbekannter Planet“ (Typ erst ab Sternwarte 2).</p>
-    ${ch}</div>${window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || ''}`;   // Planetenwerte: details/planetwerte.js
+    ${ch}${typeof pdActions === 'function' ? pdActions(null) : ''}</div>${window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || ''}`;   // Aktionsbereich: details/planeten.js   // Planetenwerte: details/planetwerte.js
 }

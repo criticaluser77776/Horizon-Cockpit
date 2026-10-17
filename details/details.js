@@ -3,10 +3,10 @@
    Nur Desktop-Browser am PC: kein Service Worker, kein Push, keine Installation. Anmeldung gemeinsam mit dem Cockpit
    (gleicher Origin, localStorage hz.access/hz.device/hz.acc) – angemeldet wird nur im Cockpit. Schreibt grundsätzlich nicht;
    Ausnahmen: Ereignisse ausblenden/gesehen (owner/viewer) und lesende Kommandos (Planetenwerte messen, nur Owner, mit Rückfrage).
-   Reiter in eigenen Dateien (imperium.js, galaxie.js, ereignisse.js, plaene.js mit Werft/Def und Plan-Editor, verbrauch.js;
+   Reiter in eigenen Dateien (imperium.js, galaxie.js, planeten.js mit der Planeten-DB, ereignisse.js, plaene.js mit Werft/Def und Plan-Editor, verbrauch.js;
    Kompendium aus kompendium.js, Werft-Vorschau aus werft.js, Planetenwerte aus planetwerte.js – seit C1 hier statt im Cockpit). */
 
-const VIEWS = { imperium: viewImperium, galaxie: viewGalaxy, ereignisse: viewEvents, plaene: viewPlans, werft: viewWerft, wissen: viewKompendium, verbrauch: viewVerbrauch };
+const VIEWS = { imperium: viewImperium, galaxie: viewGalaxy, planeten: viewPlanetDb, ereignisse: viewEvents, plaene: viewPlans, werft: viewWerft, wissen: viewKompendium, verbrauch: viewVerbrauch };
 const START = 'imperium';
 
 // Neue Atlas-Version online? version.js frisch lesen (höchstens alle 10 min, beim Start und beim Zurückkehren in den Tab)
@@ -86,7 +86,7 @@ async function route(soft) {
 }
 
 // Imperium, Galaxie und Pläne alle 60 s still neu laden (nur sichtbar, nicht während einer Eingabe, nicht im Plan-Editor);
-// der Atlas ist zum Nachsehen, nicht zum Überwachen
+// der Atlas ist zum Nachsehen, nicht zum Überwachen. Planeten-DB bewusst nicht: Auswahl, Filter und Scroll gingen verloren
 setInterval(() => {
   const tab = location.hash.replace(/^#\/?/, '').split('/')[0] || START;
   if (document.visibilityState !== 'visible' || !['imperium', 'galaxie', 'plaene'].includes(tab) || /^#\/plaene\/edit\//.test(location.hash)) return;

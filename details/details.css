@@ -11,3 +11,41 @@ body.atlas .badge { position: static; }
 .atlas .wide th.num, .atlas .wide td.num { text-align: right; }
 .atlas .cols2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: var(--gap); align-items: start; }
 .atlas .cols2 > * + * { margin-top: 0; }
+/* Planeten-DB (planeten.js, D4) */
+.atlas .pdnav { gap: 4px 14px; }
+.atlas .pdnav a { padding: 4px 2px; text-decoration: none; color: var(--muted); border-bottom: 2px solid transparent; }
+.atlas .pdnav a.on { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.atlas .pdnav .small.muted { margin-left: auto; }
+.atlas .pdf { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: flex-end; }
+.atlas .pdf label { display: flex; flex-direction: column; gap: 2px; font-size: .8rem; color: var(--muted); }
+.atlas .pdf label > input, .atlas .pdf label > select, .atlas .pdf label > span { color: var(--text); }
+.atlas .pdf .row.nowrap { flex-wrap: nowrap; gap: 4px; }
+.atlas .pdf label.pdchk { flex-direction: row; align-items: center; gap: 6px; color: var(--text); padding-bottom: 6px; }
+.atlas .pdn { width: 6em; }
+.atlas .pdpre { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.atlas .pdgrid { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: var(--gap); align-items: start; margin-top: var(--gap); }
+.atlas .pdgrid > * { margin-top: 0; }
+.atlas .pdside { position: sticky; top: 107px; max-height: calc(100vh - 120px); overflow-y: auto; }
+.atlas .pdside > .card { margin-top: 0; }
+.atlas .pdscroll { overflow-x: auto; }
+.atlas .pdtab th[data-sort] { cursor: pointer; user-select: none; white-space: nowrap; }
+.atlas .pdtab th[data-sort]:hover { color: var(--accent); }
+.atlas .pdtab tbody tr { cursor: pointer; }
+.atlas .pdtab tbody tr:hover { background: var(--accent-2); }
+.atlas .pdtab tr.sel, .atlas .pdtab tr.sel:hover { background: var(--accent-2); box-shadow: inset 3px 0 0 var(--accent); }
+.atlas .pdtab tr.own td:nth-child(5) { color: var(--accent); font-weight: 600; }
+.atlas .pdtab tr.gone { opacity: .55; }
+.atlas .pdstar { color: var(--muted); cursor: pointer; text-align: center; width: 1.4em; }
+.atlas .pdstar.on { color: var(--warn); }
+.atlas .pdbar { height: 10px; min-width: 2px; border-radius: 3px; background: var(--accent); margin-top: 4px; }
+.atlas .wide th.pdgrp { padding-top: 8px; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; border-bottom-color: var(--text); }
+.atlas .pdcmp th { vertical-align: bottom; }
+.atlas .pdcmp tr:first-child th:not(:first-child) { text-align: right; }
+.atlas tr.own td:first-child b { color: var(--accent); }
+@media (max-width: 1100px) { .atlas .pdgrid { grid-template-columns: 1fr; } .atlas .pdside { position: static; max-height: none; } }
+.atlas .pdtiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin: 8px 0; }
+.atlas .pdtile { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+.atlas .pdtile b { font-size: 1.5rem; line-height: 1.1; }
+.atlas .pdsec { margin: 18px 2px 0; }
+.atlas .pdheat td, .atlas .pdheat th { text-align: center; }
+.atlas .pdact { margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--line); }
