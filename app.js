@@ -371,7 +371,7 @@ function getdataCard(g, nm) {
   if (bad) html += `<p class="small err">${esc(tidy(g.error))} <span class="muted">(${esc(ago(g.error_at))})</span></p>`;
   const w = g.wake;
   if (w?.steps?.length) {
-    const why = s => s.never ? (s.why ? `${esc(s.why)} reicht nie` : 'nicht absehbar') : s.why === 'jetzt' ? '' : esc(s.why || '');
+    const why = s => s.never ? (/^Voraussetzung/.test(s.why || '') ? `${esc(s.why)} fehlt` : s.why ? `${esc(s.why)} reicht nie` : 'nicht absehbar') : s.why === 'jetzt' ? '' : esc(s.why || '');
     html += `<p>Weckzeit: <b>${w.at ? (new Date(w.at) <= Date.now() ? 'jetzt startbar' : esc(when(w.at))) : '–'}</b>
       <span class="muted small">Plan ${esc(w.hash || '')}</span></p><table class="small">${w.steps.map(s => `<tr>
       <td><span class="tag">${s.k === 'b' ? 'Bau' : 'Forschung'}</span> #${esc(s.n)} ${esc(s.text)}${s.beyond ? ' <span class="tag">hinter „bis #“</span>' : ''}</td>
