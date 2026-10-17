@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Horizon Atlas</title>
+<meta name="theme-color" content="#0f1724">
+<link rel="icon" href="../icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="details.css">
+</head>
+<body class="atlas">
+<header class="top">
+  <div class="brand"><img src="../icons/icon.svg" alt="" width="26" height="26"><span>Horizon Atlas</span></div>
+  <div class="row" style="flex-wrap:nowrap;min-width:0"><a class="atlaslink small" href="../" title="Fernkontrolle: Lauf, Freigaben, Entscheidungen, Notfall">Cockpit</a><div class="acc" id="acc"></div></div>
+</header>
+<nav class="tabs" id="tabs" hidden>
+  <a href="#/galaxie" data-tab="galaxie"><span class="ic">☉</span>Galaxie</a>
+  <a href="#/ereignisse" data-tab="ereignisse"><span class="ic">⚑</span>Ereignisse</a>
+  <a href="#/wissen" data-tab="wissen"><span class="ic">✦</span>Kompendium</a>
+</nav>
+<main id="view"><p class="muted pad">Lädt …</p></main>
+<div class="toast" id="toast" hidden></div>
+<!-- Gemeinsam mit dem Cockpit (gleiche Anmeldung über localStorage hz.access/hz.device/hz.acc); kein Service Worker -->
+<script>window.HZ_ATLAS = true;</script>
+<script src="../config.js"></script>
+<script src="version.js"></script>
+<script src="../cloud.js"></script>
+<script src="../common.js"></script>
+<script src="../kompendium.js"></script>
+<script src="../planetwerte.js"></script>
+<script src="galaxie.js"></script>
+<script src="ereignisse.js"></script>
+<script src="details.js"></script>
+</body>
+</html>

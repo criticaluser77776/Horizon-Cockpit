@@ -43,6 +43,7 @@ header.top {
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; }
 .acc { font-size: .85rem; color: var(--muted); text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc select { font: inherit; max-width: 46vw; }
+.atlaslink { text-decoration: none; border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; white-space: nowrap; }
 
 nav.tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; height: calc(var(--tabs-h) + env(safe-area-inset-bottom));

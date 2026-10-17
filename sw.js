@@ -1,6 +1,6 @@
 // Service Worker: App-Gerüst sofort aus dem Cache (im Hintergrund aktualisiert); Supabase-Daten immer live.
 // Pfade relativ, damit die App unter …github.io/Horizon-Cockpit/ läuft. Neue Version = SHELL-Nummer erhöhen.
-const SHELL = 'shell-v29';
+const SHELL = 'shell-v30';
 const BASE = new URL('./', self.location).pathname;
 const SHELL_FILES = ['./', 'index.html', 'app.js', 'kompendium.js', 'werft.js', 'planetwerte.js', 'common.js', 'cloud.js', 'config.js', 'style.css', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'data/horizon-data.json'];
@@ -37,6 +37,8 @@ self.addEventListener('notificationclick', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;  // Supabase: nicht abfangen
+  // Horizon Atlas (details/, nur Desktop, ohne Service Worker): weder die Seite noch ihre Dateien (auch ../common.js usw.) abfangen
+  if (url.pathname.startsWith(BASE + 'details/') || new URL(e.request.referrer || location.href).pathname.startsWith(BASE + 'details/')) return;
   const fresh = e.request.mode === 'navigate'
     ? new Request(e.request.url, { cache: 'no-cache', credentials: 'same-origin' })
     : new Request(e.request, { cache: 'no-cache' });

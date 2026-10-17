@@ -1,0 +1,13 @@
+/* Horizon Atlas: nur Desktop-Browser am PC (Entscheidung 7.4) – Reiterleiste immer oben, breitere Seite, breite Tabellen.
+   Farben und Bausteine aus ../style.css. */
+body.atlas { padding-bottom: 16px; }
+body.atlas nav.tabs { position: sticky; top: 51px; bottom: auto; height: 44px; justify-content: safe center; border-top: 0; border-bottom: 1px solid var(--line);
+  -webkit-mask-image: none; mask-image: none; }
+body.atlas nav.tabs a { flex: 0 0 auto; min-width: 0; flex-direction: row; padding: 0 18px; font-size: .9rem; gap: 6px; }
+body.atlas main { max-width: 1400px; }
+body.atlas .badge { position: static; }
+.atlas .wide { width: 100%; border-collapse: collapse; }
+.atlas .wide th, .atlas .wide td { padding: 3px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.atlas .wide th.num, .atlas .wide td.num { text-align: right; }
+.atlas .cols2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: var(--gap); align-items: start; }
+.atlas .cols2 > * + * { margin-top: 0; }
