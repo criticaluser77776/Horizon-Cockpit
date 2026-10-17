@@ -1,8 +1,8 @@
 // Service Worker: App-Gerüst sofort aus dem Cache (im Hintergrund aktualisiert); Supabase-Daten immer live.
 // Pfade relativ, damit die App unter …github.io/Horizon-Cockpit/ läuft. Neue Version = SHELL-Nummer erhöhen.
-const SHELL = 'shell-v24';
+const SHELL = 'shell-v25';
 const BASE = new URL('./', self.location).pathname;
-const SHELL_FILES = ['./', 'index.html', 'app.js', 'kompendium.js', 'cloud.js', 'config.js', 'style.css', 'manifest.webmanifest',
+const SHELL_FILES = ['./', 'index.html', 'app.js', 'kompendium.js', 'werft.js', 'cloud.js', 'config.js', 'style.css', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'data/horizon-data.json'];
 
 self.addEventListener('install', e => {

@@ -1329,7 +1329,7 @@ const SRC = { optimizer: 'Optimierer', user: 'eigener Entwurf', claude: 'Claude'
 function planDetails(p) {
   if (!p.note && !p.plan_hash && !p.id) return '';
   return `<details class="sub"><summary class="small muted">Details</summary>${p.note ? `<div class="small wrapall" style="white-space:pre-wrap">${esc(tidy(p.note))}</div>` : ''}
-    <div class="small muted wrapall">Plan-id ${esc(p.plan_hash || '–')} · Datensatz ${esc(p.id)}${p.parent_id ? ` · Vorlage ${esc(p.parent_id)}` : ''}</div></details>`;
+    <div class="small muted wrapall">Plan-id ${esc(p.plan_hash || '–')} · Datensatz ${esc(p.id)}${p.parent_id ? ` · Vorlage ${esc(p.parent_id)}` : ''}</div></details>` + (window.HzWerftCockpit?.details(p) || '');   // Werft-/Def-Pläne: cockpit/werft.js
 }
 function newPlanCard(o, own) {
   if (!o) return '';
