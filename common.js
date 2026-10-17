@@ -1,0 +1,304 @@
+'use strict';
+/* Gemeinsamer Code für Cockpit (app.js) und Horizon Atlas (details/), Schritt C0 der Cockpit-Aufteilung
+   (doku/stand/cockpit-aufteilung.md): Formate und Zeiten, Anzeigenummern, Konto/Rolle, Toast, Ereignis-Zeilen,
+   Sitzungen/Lauf, Spieldaten. Klassisches Skript (kein Modul): die Namen sind global und werden von app.js,
+   kompendium.js, werft.js, planetwerte.js und den Atlas-Dateien zur Laufzeit genutzt. Erwartet je Seite: route(),
+   postCmd(), anflugNotfall() (nur Cockpit, nur bei Knöpfen). Lädt nach config.js und cloud.js. */
+
+// Wurzel der Web-App (Ordner von common.js), damit Pfade auch aus details/ stimmen
+const HZ_ROOT = new URL('./', document.currentScript?.src || location.href).href;
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (n, d = 0) => n == null || n === '' || !isFinite(n) ? '–'
+  : Number(n).toLocaleString('de-DE', { maximumFractionDigits: d, minimumFractionDigits: 0 });
+/* Zeiten (B16, 15.10.2026): überall dasselbe Format „Do 15.10. 15:02“, Ortszeit Berlin (MESZ/MEZ), nie rohe ISO-Zeiten.
+   dt = Wochentag Datum Uhrzeit · when = „vor 12 min“ / „in 20 min“ bis 1 h Abstand, sonst dt · clockT = nur Uhrzeit, wenn heute
+   ago = immer relativ (Alter eines Stands) · tidy = Zeiten, Snapshot-Namen und IDs in Texten aus der Datenbank lesbar machen */
+const TZ = 'Europe/Berlin';
+const WD = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+const dtParts = d => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('de-DE', { timeZone: TZ, weekday: 'short', day: '2-digit', month: '2-digit',
+    year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d).map(x => [x.type, x.value]));
+  return { wd: p.weekday.replace('.', ''), day: `${p.day}.${p.month}.`, time: `${p.hour}:${p.minute}`, ymd: `${p.year}${p.month}${p.day}` };
+};
+const toDate = t => t == null || t === '' ? null : t instanceof Date ? t : new Date(typeof t === 'string' && /^\d+$/.test(t) ? +t : t);
+function dt(t) {
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const p = dtParts(d);
+  return `${p.wd} ${p.day} ${p.time}`;
+}
+const clockT = t => {
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const p = dtParts(d);
+  return p.ymd === dtParts(new Date()).ymd ? p.time : `${p.wd} ${p.day} ${p.time}`;
+};
+function ago(t) {
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const s = Math.round((Date.now() - d) / 1000);
+  if (s < 90) return 'gerade eben';
+  if (s < 5400) return `vor ${Math.round(s / 60)} min`;
+  if (s < 172800) return `vor ${fmt(s / 3600, 1)} h`;
+  return `vor ${Math.round(s / 86400)} Tagen`;
+}
+function when(t) {
+  const d = toDate(t);
+  if (!d || isNaN(d)) return '–';
+  const m = (d - Date.now()) / 60e3;
+  if (Math.abs(m) < 1.5) return 'gerade eben';
+  if (Math.abs(m) < 60) return m < 0 ? `vor ${Math.round(-m)} min` : `in ${Math.round(m)} min`;
+  return dt(d);
+}
+
+/* Anzeigenummern (B16): Pläne „Plan 1, 2, 3 …“ in der Reihenfolge ihres Anlegens, Optimierer-Läufe „Lauf 1, 2 …“ nach Datum.
+   Technische Kennungen (Plan-id/Hash, UUID, Lauf-id) nur im Klapper „Details“. Werden alte Pläne gelöscht (B15), rücken die
+   Nummern nach – sie sind nur Anzeige, gespeichert bleibt immer die Kennung. */
+const NUMS = { acc: null, at: 0, plan: {}, run: {} };
+const RUN_RE = /\bauto-(\d{2})(\d{2})T(\d{2})(\d{2})\b/g;
+async function loadNums(force) {
+  if (!force && NUMS.acc === S.acc && Date.now() - NUMS.at < 30e3) return NUMS;
+  const rows = await Cloud.q('plans', { account_id: `eq.${S.acc}`, order: 'created_at.asc', limit: 1000, select: 'id,plan_hash,created_at,note' }).catch(() => null);
+  if (!rows) return NUMS;
+  const plan = {}, runs = new Set();
+  rows.forEach((r, i) => {
+    plan[r.id] = i + 1;
+    if (r.plan_hash && !plan[r.plan_hash]) plan[r.plan_hash] = i + 1;
+    for (const m of String(r.note || '').matchAll(RUN_RE)) runs.add(m[0]);
+  });
+  const run = Object.fromEntries([...runs].sort().map((k, i) => [k, i + 1]));
+  Object.assign(NUMS, { acc: S.acc, at: Date.now(), plan, run });
+  return NUMS;
+}
+const planNo = key => NUMS.plan[key] || null;
+const planLabel = key => !key ? '–' : planNo(key) ? `Plan ${planNo(key)}` : 'unbekannter Plan';
+// Lauf-id „auto-MMTTThhmm“ (UTC): Nummer, sonst Datum des Laufs
+function runLabel(id) {
+  if (NUMS.run[id]) return `Lauf ${NUMS.run[id]}`;
+  const m = /auto-(\d{2})(\d{2})T(\d{2})(\d{2})/.exec(id);
+  if (!m) return 'Lauf';
+  const y = new Date().getUTCFullYear(), d = new Date(Date.UTC(y, m[1] - 1, +m[2], +m[3], +m[4]));
+  return `Lauf vom ${dt(d > Date.now() + 30 * 864e5 ? new Date(Date.UTC(y - 1, m[1] - 1, +m[2], +m[3], +m[4])) : d)}`;
+}
+// Texte aus der Datenbank (Ereignisse, Notizen, Antworten): ISO-Zeiten, „15.10.2026 15:05:44“, Snapshot-Namen, Lauf-ids,
+// Plan-Hashes und UUIDs in die Anzeigeform bringen. Ergebnis ist Klartext (danach escapen).
+const WD_BEFORE = '(?<!\\b(?:Mo|Di|Mi|Do|Fr|Sa|So)\\.?,?\\s)';
+function tidy(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/\bsnapshot-(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})\.json\b/g, (_, y, mo, d, h, mi) => `Snapshot ${dt(new Date(Date.UTC(+y, mo - 1, +d, +h, +mi)))}`)
+    .replace(/\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)?/g, (all, y, mo, d, h, mi, z) => {
+      const x = z ? new Date(all.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00')) : new Date(Date.UTC(+y, mo - 1, +d, +h, +mi));   // ohne Zone = UTC (Snapshots)
+      return isNaN(x) ? all : dt(x);
+    })
+    .replace(new RegExp(`${WD_BEFORE}\\b(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})?,?\\s+(\\d{1,2}):(\\d{2})(?::\\d{2})?\\b`, 'g'), (all, d, mo, y, h, mi) => {
+      const now = new Date(), yy = +y || now.getFullYear();
+      let x = new Date(yy, mo - 1, +d, +h, +mi);
+      if (!y && x - now > 60 * 864e5) x = new Date(yy - 1, mo - 1, +d, +h, +mi);
+      return isNaN(x) ? all : dt(x);
+    })
+    .replace(/\b(?:(automatischer\s+|Optimierer-)?Lauf\s+)?auto-\d{4}T\d{4}\b/g, (m, pre) => (pre && !/Optimierer/.test(pre) ? pre : '') + runLabel(m.match(/auto-\d{4}T\d{4}/)[0]))
+    .replace(/\b(?:(Lauf|Plan(?:-id)?|id)\s+)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{10})\b/g, (all, w, k) => {
+      const n = planNo(k);
+      if (w === 'Lauf') return n ? `Lauf mit Plan ${n}` : 'Lauf';
+      return n ? `Plan ${n}` : w && /^Plan/.test(w) ? 'unbekannter Plan' : w === 'id' ? 'Plan ?' : '…';
+    });
+}
+function dur(sec) {
+  if (sec == null || !isFinite(sec)) return '–';
+  sec = Math.max(0, Math.round(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  return (d ? `${d} d ` : '') + `${h} h ${String(m).padStart(2, '0')} min`;
+}
+function toast(msg, action) {     // action = { label, run } → Knopf im Toast (z. B. Rückgängig), dann 6 s sichtbar
+  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  if (action) {
+    const b = document.createElement('button'); b.className = 'link'; b.textContent = action.label;
+    b.onclick = () => { t.hidden = true; action.run(); }; t.append(' ', b);
+  }
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, action ? 6000 : 3500);
+}
+
+const S = { acc: null, wissen: null };
+const ROLE = { owner: 'Owner', executor: 'Skript', claude: 'Claude', viewer: 'Lesen' };
+const STAGES = ['Doku', 'Parser', 'Erkennung', 'Live erhoben', 'Probelauf', 'Erste Aktion', 'Frei'];
+
+function accounts() { return Cloud.access()?.accounts || []; }
+function account() { return accounts().find(a => a.id === S.acc) || null; }
+function isOwner() { return account()?.role === 'owner'; }
+
+const CAT = { builder: 'Builder', cockpit: 'Cockpit', spiel: 'Spiel', system: 'System' };
+function evRow(e) {
+  const can = ['owner', 'viewer'].includes(account()?.role);
+  return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}${e.dismissed_at ? ' dismissed' : ''}" data-id="${esc(e.id)}"><div class="row between">
+    <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
+    <span class="muted small nowrap">${esc(when(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}" aria-label="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
+    <div class="wrapall">${esc(tidy(e.text))}</div>${e.kind === 'anflug' && e.level === 'hoch' && isOwner() && Date.now() - new Date(e.t) < 6 * 3600e3
+      ? '<div class="row" style="margin:4px 0"><button class="danger small nfgo">Notfall verbauen</button></div>' : ''}${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? '<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>' : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+}
+/* Nachrichten (B1, Autobuilder ab 0.5.13): Inhalt, Links und Effekt stehen in data des Ereignisses „bericht“.
+   Links nur als Text – das Cockpit macht daraus keine klickbaren Verweise (Spiel-Links tragen Einmal-Token, fremde Ziele
+   ruft niemand automatisch auf). */
+const EFF_SRC = { datum: 'Ende laut Nachricht', text: 'Dauer laut Nachricht', typisch: 'typische Dauer (geschätzt)' };
+function msgBody(e) {
+  const x = e.kind === 'bericht' ? e.data : null;
+  if (!x?.body && !x?.effect && !x?.decision) return '';
+  const eff = x.effect?.until ? `<div class="small">Effekt bis <b>${esc(dt(x.effect.until))}</b>${Date.parse(x.effect.until) > Date.now()
+    ? ` (noch ${esc(dur((Date.parse(x.effect.until) - Date.now()) / 1000))})` : ' (abgelaufen)'} <span class="muted">· ${esc(EFF_SRC[x.effect.src] || x.effect.src || '')}</span></div>` : '';
+  const links = Array.isArray(x.links) && x.links.length ? `<div class="small muted">Links (nur Text, nicht aufrufen): ${x.links.map(l =>
+    `${esc(l.text || 'ohne Text')} <code>${esc(l.href)}</code>`).join(' · ')}</div>` : '';
+  return msgDecision(e, x) + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(tidy(x.body))}</div>${links}</details>` : '');
+}
+/* Entscheidungen beantworten (Paket B, Autobuilder ab 0.5.29, Nutzer 17.10.2026: per Tipp wie beim Werbebanner).
+   decision = [{i, text, href, cost?}] (bis 0.5.28 nur Texte → nur Anzeige). Knopf je Option (nur Owner) → confirm() mit Text,
+   Kosten und Frist → Kommando „antwort“ {msgId, option, text} an ein eingeloggtes Gerät, sonst an ein ausgeloggtes (es loggt
+   einmal ein, antwortet und loggt wieder aus; ein dort schlafender Lauf schläft bis zur alten Weckzeit weiter). Das Ergebnis
+   trägt Supabase aus dem Ereignis „antwort“ an der Nachricht ein (data.answer, Migration 20261017100001). */
+function msgDecision(e, x) {
+  const dec = Array.isArray(x.decision) ? x.decision : [], a = x.answer;
+  if (a?.ok) return `<div class="small"><b>Beantwortet</b>: ${esc(a.text || `Option ${a.option}`)}${a.t ? ` <span class="muted">· ${esc(when(a.t))}</span>` : ''}${a.result ? `<div class="muted">${esc(a.result)}</div>` : ''}</div>`;
+  if (!dec.length) return '';
+  const objs = dec.every(d => d && typeof d === 'object' && Number.isInteger(d.i));
+  const head = `<div class="small"><b>Entscheidung offen</b>${x.frist ? ` · Frist ${esc(x.frist)}` : ''}${a && !a.ok ? ` <span class="err">· letzte Antwort nicht gesendet: ${esc(a.result || '')}</span>` : ''}</div>`;
+  if (!objs) return head.replace('</div>', ` – im Spiel antworten: ${dec.map(d => esc(typeof d === 'string' ? d : d?.text || '')).join(' · ')}</div>`);
+  const btns = isOwner() ? `<div class="row wrap" style="margin:4px 0;gap:4px">${dec.map(d => `<button class="small ansgo" data-msg="${esc(x.msgId)}" data-opt="${esc(d.i)}"
+    data-text="${esc(d.text)}" data-cost="${esc((d.cost || []).join(', '))}" data-frist="${esc(x.frist || '')}">${esc(d.text)}</button>`).join('')}</div>`
+    : `<div class="small">${dec.map(d => esc(d.text)).join(' · ')}</div>`;
+  return head + btns;
+}
+// Ziel: eingeloggtes Gerät (Halter zuerst), sonst ausgeloggtes (Halter eines Laufs zuerst – ein anderes lehnt dann ab)
+const answerDev = sess => {
+  const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at) && verCmp(x.ab.version, '0.5.29') >= 0);
+  const pick = page => { const l = live.filter(x => x.ab.state?.page === page); return l.find(x => x.holds) || l[0] || null; };
+  return pick('game') || (sess.devs.some(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game') ? null : pick('login'));
+};
+async function sendAnswer(b) {
+  const msgId = b.dataset.msg, option = +b.dataset.opt, text = b.dataset.text, cost = b.dataset.cost, frist = b.dataset.frist;
+  const sess = await loadSessions().catch(() => null);
+  const dev = sess && answerDev(sess);
+  if (!dev) return toast('Kein Autobuilder ab 0.5.29 erreichbar (oder eingeloggt nur mit älterer Version)');
+  const login = dev.ab.state?.page === 'login', sleep = login && dev.ab.state?.sleeping;
+  if (!confirm(`Im Spiel antworten: „${text}“?${cost ? `\nKosten laut Option: ${cost}` : ''}${frist ? `\nFrist: ${frist}` : ''}\n\nGerät: ${dev.name}`
+    + (login ? `\n${dev.name} ist ausgeloggt: Es loggt einmal ein, antwortet und loggt danach wieder aus${sleep ? ' (der schlafende Lauf schläft bis zu seiner Weckzeit weiter)' : ''}. Ein Spiel auf einem anderen Gerät wird dabei abgemeldet.` : '')
+    + '\nDie Antwort lässt sich im Spiel nicht zurücknehmen.')) return;
+  try {
+    await postCmd(dev, 'antwort', { msgId: String(msgId), option, text });
+    toast(`Antwort an ${dev.name} gesendet – Ergebnis in 15–60 s an der Nachricht`);
+    setTimeout(() => route(true), 1500);
+  } catch (e) { toast(e.message); }
+}
+// Lage: aktive Effekte aus Berichten (Ende in der Zukunft), je Name nur der jüngste
+function effectsCard(effs) {
+  const seen = new Set(), list = (effs || []).filter(r => r.eff?.until && !seen.has(r.eff.name) && seen.add(r.eff.name))
+    .sort((a, b) => Date.parse(a.eff.until) - Date.parse(b.eff.until));
+  if (!list.length) return '';
+  return `<div class="card"><div class="row between"><h2>Aktive Effekte</h2><span class="muted small">aus Berichten</span></div><table class="small">${list.map(r => `<tr>
+    <td>${esc(String(r.eff.name || '').split(/\s*·\s*/)[0])}</td><td class="num">noch ${esc(dur((Date.parse(r.eff.until) - Date.now()) / 1000))}</td>
+    <td class="muted">bis ${esc(dt(r.eff.until))}${r.eff.src === 'typisch' ? ' (geschätzt)' : ''}</td></tr>`).join('')}</table></div>`;
+}
+// Werbebanner (Autobuilder ab 0.5.1): Ziele nur als Text zeigen; ob und wie sie geöffnet werden, ist noch offen
+function bannerSlots(e) {
+  const s = e.kind === 'banner' && Array.isArray(e.data?.slots) ? e.data.slots : [];
+  return s.length ? `<div class="small">${s.map(x => `${x.url !== undefined ? 'Vote' : 'Monitor'} ${esc(x.slot)}: ${esc(x.host || (x.href ? 'intern' : 'ohne Link'))}`).join('<br>')}</div>
+    <details class="sub"><summary class="small muted">Details</summary><div class="small muted wrapall">${s.map(x => esc(x.url || x.href || x.onclick || x.src || '–')).join('<br>')}</div></details>` : '';
+}
+// Ereignis ausblenden: nach rechts wischen (Handy) oder ✕ (Rechner); Rückgängig im Toast. Nur Owner/Lesen (wie „gesehen“).
+async function setDismissed(id, on) {
+  await Cloud.rest(`events?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', body: { dismissed_at: on ? new Date().toISOString() : null }, prefer: 'return=minimal' });
+}
+async function dismissEvent(el) {
+  const id = el.dataset.id, undo = el.classList.contains('dismissed');
+  try {
+    await setDismissed(id, !undo);
+    if (undo) { route(true); return toast('Wieder eingeblendet'); }
+    el.style.transition = 'opacity .2s'; el.style.opacity = '0';
+    setTimeout(() => (S.showDismissed ? route(true) : el.remove()), 200);
+    toast('Ausgeblendet', { label: 'Rückgängig', run: async () => { try { await setDismissed(id, false); route(true); } catch (e) { toast(e.message); } } });
+  } catch (e) { el.style.transform = ''; toast(e.message); }
+}
+function swipeEvents(root) {
+  if (!['owner', 'viewer'].includes(account()?.role)) return;
+  root.querySelectorAll('.ev .nfgo').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); anflugNotfall(); }));
+  root.querySelectorAll('.ev .ansgo').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); if (isOwner()) sendAnswer(b); }));
+  root.querySelectorAll('.ev .evx').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); dismissEvent(b.closest('.ev')); }));
+  root.querySelectorAll('.ev:not(.dismissed)').forEach(el => {
+    let x0 = null, y0 = 0, dx = 0;
+    el.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; el.style.transition = ''; }, { passive: true });
+    el.addEventListener('touchmove', e => {
+      if (x0 == null) return;
+      dx = e.touches[0].clientX - x0;
+      if (Math.abs(e.touches[0].clientY - y0) > Math.abs(dx)) { x0 = null; el.style.transform = ''; return; }   // senkrecht = scrollen
+      if (dx > 0) el.style.transform = `translateX(${dx}px)`;
+    }, { passive: true });
+    el.addEventListener('touchend', () => {
+      if (x0 == null) return;
+      x0 = null; el.style.transition = 'transform .15s';
+      if (dx > Math.min(120, el.offsetWidth * 0.35)) { el.style.transform = 'translateX(100%)'; dismissEvent(el); }
+      else el.style.transform = '';
+    });
+  });
+}
+
+/* ---------- Sitzungen und Lauf (mehrere PCs) ----------
+   runs: genau ein Lauf je Account (Gerät, Plan, bis #, Zustand); heartbeats je Gerät: Autobuilder (voller Zustand inkl.
+   Seite Spiel/Login) und Collector. „verloren“ setzt Supabase selbst (pg_cron), wenn der Halter 3 min schweigt. */
+const RUNST = { laeuft: 'läuft', schlaeft: 'schläft (ausgeloggt)', angehalten: 'angehalten', verloren: 'verloren' };
+// B13: Pause – der Lauf bleibt „läuft“/„schläft“, nur dieser Merker (runs.paused_at)
+const pauseTag = r => r?.paused_at && ['laeuft', 'schlaeft', 'verloren'].includes(r.state) ? ` · <b class="warn">⏸ pausiert seit ${esc(clockT(r.paused_at))}</b>` : '';
+const isFresh = (t, min = 3) => !!t && (Date.now() - new Date(t)) / 60e3 < min;
+async function loadSessions() {
+  const acc = `eq.${S.acc}`;
+  const [runs, hbs] = await Promise.all([
+    Cloud.q('runs', { account_id: acc, script: 'eq.autobuilder' }),
+    Cloud.q('heartbeats', { account_id: acc, order: 'at.desc' }),
+  ]);
+  const by = {};
+  for (const h of hbs) {
+    const x = by[h.device] ||= { device: h.device, name: '', ab: null, col: null };
+    if (h.script === 'autobuilder') x.ab = h; else if (h.script === 'collector') x.col = h;
+    if (h.name && !x.name) x.name = h.name;
+  }
+  const run = runs[0] || null;
+  const devs = Object.values(by).map(x => ({ ...x, name: x.name || 'Gerät ohne Namen', holds: run?.device === x.device,
+    last: [x.ab?.at, x.col?.at].filter(Boolean).sort().pop() }));
+  devs.sort((a, b) => (b.holds - a.holds) || String(b.last).localeCompare(String(a.last)));
+  return { run, devs };
+}
+// Zustand des Laufs (wer baut gerade, bis #, schläft/verloren, Status der letzten Prüfung)
+function runBody(sess) {
+  const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
+  if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
+  let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis #${esc(r.until ?? '–')}
+    auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}${pauseTag(r)}</p>`;
+  if (r.paused_at && s.hand) html += `<p class="small warn">In der Pause von Hand: ${esc(s.hand)}</p>`;
+  if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(tidy(r.reason))}</p>`;
+  if (['laeuft', 'schlaeft'].includes(r.state) && h?.ab) {
+    html += `<p class="small muted">${s.planInfo ? esc(tidy(s.planInfo)) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
+      · Lebenszeichen ${esc(ago(h.ab.at))}</p>${s.status ? `<p class="small">${esc(tidy(s.status))}</p>` : ''}`;
+  }
+  return html;
+}
+// Versionen vergleichen ('0.5.10' > '0.5.9')
+const verCmp = (a, b) => {
+  const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
+  return 0;
+};
+
+const evGet = k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+const evSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* egal */ } route(); };
+
+const KIND = { build: 'Bau', research: 'Forschung', ship: 'Schiffe', probe: 'Sonden', trade: 'Handel', defense: 'Verteidigung', fleet: 'Flotte', transport: 'Transport' };
+
+/* ---------- Spieldaten (Gebäude und Forschung, Datenbank Runde 7); Reiter Kompendium in kompendium.js ---------- */
+
+async function loadWissen() {
+  if (S.wissen) return S.wissen;
+  let r = await fetch(HZ_ROOT + 'data/horizon-data.json').catch(() => null);
+  if (!r?.ok) r = await fetch(HZ_ROOT + '../analyse/horizon-data.json');  // lokale Vorschau aus dem Repo
+  const d = await r.json();
+  for (const o of Object.values(d.B)) o.L = Object.fromEntries(o.l.map(x => [x[0], x]));
+  return (S.wissen = d);
+}
