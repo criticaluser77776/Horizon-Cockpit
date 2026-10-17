@@ -118,7 +118,7 @@ async function viewGalaxy(rest = []) {
       <p class="small muted galsum">${withPl.length ? `Erfasst mit Planeten: ${withPl.length} System${withPl.length > 1 ? 'e' : ''}${inGal.length ? `, in Galaxie ${g}: ${inGal.map(x => `<a href="#/galaxie/${x.galaxy}/${x.system}"${x.system === s ? ' class="on"' : ''}>${x.system}</a>`).join(' · ')}` : ` (keins in Galaxie ${g})`}` : 'Noch kein System mit Planeten erfasst.'}</p></div>
     ${systemCard(data, g, s, hm)}`;
   const v = $('#view');
-  window.HzPlanetwerte?.bind(v);   // Planetenwerte: cockpit/planetwerte.js
+  window.HzPlanetwerte?.bind(v);   // Planetenwerte: details/planetwerte.js
   v.querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () => galGo(...b.dataset.go.split('/'))));
   $('#galHome').addEventListener('click', () => hm && galGo(hm[1], hm[2]));
   const f = $('#galForm');
@@ -170,5 +170,5 @@ function systemCard(S0, g, s, hm) {
     ${hint?.html || ''}
     <div class="orbits">${rows}</div>
     <p class="small muted">Zuletzt erfasst ${esc(dt(sys.last_seen))} (${esc(sys.source)})${sys.discovered_by ? ` · entdeckt von ${esc(sys.discovered_by)}` : ''}. Grau = „Unbekannter Planet“ (Typ erst ab Sternwarte 2).</p>
-    ${ch}</div>${window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || ''}`;   // Planetenwerte: cockpit/planetwerte.js
+    ${ch}</div>${window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || ''}`;   // Planetenwerte: details/planetwerte.js
 }

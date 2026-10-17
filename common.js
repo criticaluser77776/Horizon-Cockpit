@@ -166,7 +166,7 @@ function msgDecision(e, x) {
   const objs = dec.every(d => d && typeof d === 'object' && Number.isInteger(d.i));
   const head = `<div class="small"><b>Entscheidung offen</b>${x.frist ? ` · Frist ${esc(x.frist)}` : ''}${a && !a.ok ? ` <span class="err">· letzte Antwort nicht gesendet: ${esc(a.result || '')}</span>` : ''}</div>`;
   if (!objs) return head.replace('</div>', ` – im Spiel antworten: ${dec.map(d => esc(typeof d === 'string' ? d : d?.text || '')).join(' · ')}</div>`);
-  if (ATLAS) return head + `<div class="small">${dec.map(d => esc(d.text)).join(' · ')}${isOwner() ? ` · ${COCKPIT_LINK('#/ereignisse', 'im Cockpit beantworten')}` : ''}</div>`;
+  if (ATLAS) return head + `<div class="small">${dec.map(d => esc(d.text)).join(' · ')}${isOwner() ? ` · ${COCKPIT_LINK('#/meldungen', 'im Cockpit beantworten')}` : ''}</div>`;
   const btns = isOwner() ? `<div class="row wrap" style="margin:4px 0;gap:4px">${dec.map(d => `<button class="small ansgo" data-msg="${esc(x.msgId)}" data-opt="${esc(d.i)}"
     data-text="${esc(d.text)}" data-cost="${esc((d.cost || []).join(', '))}" data-frist="${esc(x.frist || '')}">${esc(d.text)}</button>`).join('')}</div>`
     : `<div class="small">${dec.map(d => esc(d.text)).join(' · ')}</div>`;

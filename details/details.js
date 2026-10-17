@@ -4,7 +4,7 @@
    (gleicher Origin, localStorage hz.access/hz.device/hz.acc) – angemeldet wird nur im Cockpit. Schreibt grundsätzlich nicht;
    Ausnahmen: Ereignisse ausblenden/gesehen (owner/viewer) und lesende Kommandos (Planetenwerte messen, nur Owner, mit Rückfrage).
    Reiter in eigenen Dateien (imperium.js, galaxie.js, ereignisse.js, plaene.js mit Werft/Def und Plan-Editor, verbrauch.js;
-   Kompendium aus ../kompendium.js, Werft-Vorschau aus ../werft.js, Planetenwerte aus ../planetwerte.js). */
+   Kompendium aus kompendium.js, Werft-Vorschau aus werft.js, Planetenwerte aus planetwerte.js – seit C1 hier statt im Cockpit). */
 
 const VIEWS = { imperium: viewImperium, galaxie: viewGalaxy, ereignisse: viewEvents, plaene: viewPlans, werft: viewWerft, wissen: viewKompendium, verbrauch: viewVerbrauch };
 const START = 'imperium';
