@@ -336,6 +336,7 @@ async function viewLage() {
   const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
   // B10 (Nutzer 13.10.2026): oben nur das Nötigste – Überblick, Steuerung, Banner, Ereignisse; Details eingeklappt
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
+  S.build = liveBuild(live, abLive, gds[0]);
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
   let html = overviewCard(sess, d, live, abLive, nm, W) + getdataCard(gds[0], nm) + planetsCard(d, nm, W) + notfallCard(sess, nf, d) + bannerCard(sess) + effectsCard(effs);
   html += `<div class="card"><div class="row between"><h2>Ereignisse</h2><a href="#/ereignisse" class="small">alle</a></div>${evs.length ? evs.slice(0, 4).map(evRow).join('') : '<p class="muted">Keine.</p>'}</div>`;
@@ -432,9 +433,25 @@ function planetSlots(d, p, W) {
   }
   return { n: Math.floor(n + 1e-9), exact: false };
 }
-// „Ausbau x / y“: x = laufende Bauaufträge (Kurzinfo „Ausbau: Bau / Forschung / Werft“), y = Baustellen
-const ausbau = (d, p, W) => ({ busy: +(p.Ausbau?.[0] || 0), slots: planetSlots(d, p, W) });
-const ausbauText = a => `${fmt(a.busy)} / ${a.slots ? `${a.slots.exact ? '' : '≈'}${fmt(a.slots.n)}` : '–'}`;
+// „Ausbau x / y“: x = laufende Bauaufträge, y = Baustellen. x steht im Snapshot nur als erste Zahl der Kurzinfo „Ausbau a/b/c“
+// (main.php?cmd=start) und ist oft veraltet (17.10.: Snapshot 06:04 „0“, HQ 4 lief seit 06:06). Für den im Spiel gewählten
+// Planeten zählt deshalb die jüngste Quelle mit laufenden Aufträgen (Lebenszeichen des Autobuilders oder getData), wenn sie
+// neuer als der Snapshot ist; sonst der Snapshot-Wert mit „Stand hh:mm“. Die 2./3. Zahl der Kurzinfo ist ungeprüft
+// (laut Snapshots 16.10. nicht Forschung) und wird nicht angezeigt.
+function liveBuild(live, abLive, gd) {
+  const snapAt = live ? new Date(live.collected_at).getTime() : 0;
+  const src = [abLive?.jobs && { at: +abLive.liveAt, jobs: abLive.jobs, from: 'Autobuilder' },
+    gd?.at && gd.jobs && { at: new Date(gd.at).getTime(), jobs: gd.jobs, from: 'getData' }]
+    .filter(x => x && x.at > snapAt).sort((a, b) => b.at - a.at)[0];
+  return src ? { n: src.jobs.filter(j => j.k === 'b' && !(new Date(j.end) <= Date.now())).length, at: src.at, from: src.from } : { snapAt };
+}
+const ausbau = (d, p, W) => {
+  const b = S.build || {}, lv = b.from && p.coords === d.start?.coords;
+  return { busy: lv ? b.n : +(p.Ausbau?.[0] || 0), at: lv ? b.at : b.snapAt || null, from: lv ? b.from : 'Snapshot', slots: planetSlots(d, p, W) };
+};
+const AUSBAU_TIP = 'x = laufende Bauaufträge, y = Baustellen. Die weiteren Zahlen der Kurzinfo im Spiel (Ausbau a/b/c) sind ungeprüft – laut Snapshots 16.10. ist die zweite nicht Forschung.';
+const ausbauText = a => `<span title="${esc(`${AUSBAU_TIP} Quelle x: ${a.from || 'Snapshot'}${a.at ? ` ${clockT(a.at)}` : ''}.`)}">${fmt(a.busy)} / ${a.slots ? `${a.slots.exact ? '' : '≈'}${fmt(a.slots.n)}` : '–'}</span>`
+  + (a.from === 'Snapshot' && a.at ? ` <span class="muted">Stand ${esc(clockT(a.at))}</span>` : '');
 function planetsCard(d, nm, W) {
   if (!d) return '';
   const pl = empirePlanets(d), e = d.empire;
@@ -730,11 +747,11 @@ function overviewCard(sess, d, live, abLive, nm, W) {
     });
     html += `<table class="small"><tr class="muted"><td>${pl.length > 1 ? `Imperium (${pl.length} Planeten)` : 'Rohstoffe'}</td><td class="num">Bestand</td><td class="num">Förderung</td></tr>${rows.map(({ x, now, net, full }) =>
       `<tr><td>${x}${full == null ? '' : `<div class="muted">voll in ${dur(full)}</div>`}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td></tr>`).join('')}</table>`;
-    const col = d.empire?.colony, ab = pl.map(p => ausbau(d, p, W));
+    const col = d.empire?.colony, ab = pl.map(p => ausbau(d, p, W)), abFrom = ab.find(a => a.from !== 'Snapshot');
     const slots = ab.length && ab.every(a => a.slots) ? { n: ab.reduce((s, a) => s + a.slots.n, 0), exact: ab.every(a => a.slots.exact) } : null;
     html += `<div class="row small" style="margin:4px 0">${col?.max != null
       ? `<span class="${col.free < 0 ? 'err' : ''}" title="frei ${esc(fmt(col.free, 3))}">Kolopunkte <b>${fmt(col.used, 2)}</b> / ${fmt(col.max, 2)}${col.free < 0 ? ' überzogen' : ''}</span>`
-      : '<span class="muted">Kolopunkte: ab Collector 0.4.7</span>'}${ab.length ? ` · <span>Ausbau <b>${ausbauText({ busy: ab.reduce((s, a) => s + a.busy, 0), slots })}</b></span>` : ''}</div>`;
+      : '<span class="muted">Kolopunkte: ab Collector 0.4.7</span>'}${ab.length ? ` · <span>Ausbau <b>${ausbauText({ busy: ab.reduce((s, a) => s + a.busy, 0), slots, ...(ab.length === 1 || !abFrom ? { at: ab[0].at, from: ab[0].from } : { at: abFrom.at, from: `${abFrom.from} (gewählter Planet), sonst Snapshot` }) })}</b></span>` : ''}</div>`;
     const fromAb = abLive && abLive.liveAt > at.getTime();
     const jobs = fromAb
       ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', name: nm({ type: j.t }, j.k === 'b' ? 'B' : 'R'), level: j.l, end: new Date(j.end) }))
@@ -907,9 +924,16 @@ async function anflugNotfall() {
 const bannerDev = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game' && x.ab.state?.banner?.n);
 // Ab Autobuilder 0.5.20 (Freigabe Nutzer 15.10.2026): Ist kein Gerät eingeloggt und die Banner sind fällig, loggt ein ausgeloggtes
 // Gerät nach Tippen und Bestätigen einmal ein, ruft die Banner auf und loggt ohne Lauf wieder aus. Bevorzugt das Gerät mit dem Lauf.
+// Schläft ein Lauf, lehnt der Autobuilder den Banner-Login ab („Auto-Login des Laufs steht an“ bzw. „Lauf liegt bei …“,
+// Kommandos 152/153 am 17.10.) → dann kein Login-Knopf, sondern Hinweis auf die Weckzeit; die Banner danach im Spiel tippen.
+const bannerSleep = sess => {
+  const r = sess.run, d = sess.devs.find(x => x.ab && isFresh(x.ab.at) && x.ab.state?.sleeping);
+  if (r?.state !== 'schlaeft' && !d) return null;
+  return { wake: (r?.state === 'schlaeft' && r.wake_at) || d?.ab.state.wakeAt || null, name: r?.name || d?.name || null };
+};
 const bannerLoginDev = sess => {
   const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
-  if (live.some(x => x.ab.state?.page === 'game')) return null;
+  if (live.some(x => x.ab.state?.page === 'game') || bannerSleep(sess)) return null;
   const out = live.filter(x => x.ab.state?.page === 'login');
   return out.find(x => x.holds) || out[0] || null;
 };
@@ -918,9 +942,10 @@ const bannerLoginNow = sess => { const due = bannerDue(sess); return due && due 
 function bannerCard(sess) {
   const x = bannerDev(sess), b = x?.ab.state.banner;
   if (!b) {
-    const due = bannerDue(sess), lx = bannerLoginNow(sess);
-    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">${lx ? 'Gerät ausgeloggt' : 'keine offen'}</span></div>
+    const due = bannerDue(sess), lx = bannerLoginNow(sess), zz = due && due < Date.now() + 15 * 60e3 ? bannerSleep(sess) : null;
+    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">${lx ? 'Gerät ausgeloggt' : zz ? 'Lauf schläft' : 'keine offen'}</span></div>
       <p class="small">Nächste erwartet ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(dt(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).</p>
+      ${zz ? `<p class="small">Banner nach dem Aufwachen${zz.wake ? ` (<b>${esc(clockT(zz.wake))}</b>, ${new Date(zz.wake) > Date.now() ? `in ${esc(dur((new Date(zz.wake) - Date.now()) / 1000))}` : 'jetzt'})` : ''}: Der Lauf${zz.name ? ` auf ${esc(zz.name)}` : ''} schläft und loggt dann selbst ein – ein Login für die Banner jetzt würde ihn stören, der Autobuilder lehnt ihn ab.</p>` : ''}
       ${lx && isOwner() ? `<p class="small">${esc(lx.name)} ist ausgeloggt. Der Autobuilder loggt dafür einmal ein, ruft die Banner auf und loggt danach wieder aus (läuft dort ein Lauf, macht dieser weiter).</p>
       <div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Einloggen und Banner öffnen</button></div>` : ''}</div>` : '';
   }
