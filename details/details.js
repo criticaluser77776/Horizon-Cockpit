@@ -3,10 +3,11 @@
    Nur Desktop-Browser am PC: kein Service Worker, kein Push, keine Installation. Anmeldung gemeinsam mit dem Cockpit
    (gleicher Origin, localStorage hz.access/hz.device/hz.acc) – angemeldet wird nur im Cockpit. Schreibt grundsätzlich nicht;
    Ausnahmen: Ereignisse ausblenden/gesehen (owner/viewer) und lesende Kommandos (Planetenwerte messen, nur Owner, mit Rückfrage).
-   Reiter in eigenen Dateien (galaxie.js, ereignisse.js; Kompendium aus ../kompendium.js). */
+   Reiter in eigenen Dateien (imperium.js, galaxie.js, ereignisse.js, plaene.js mit Werft/Def und Plan-Editor, verbrauch.js;
+   Kompendium aus ../kompendium.js, Werft-Vorschau aus ../werft.js, Planetenwerte aus ../planetwerte.js). */
 
-const VIEWS = { galaxie: viewGalaxy, ereignisse: viewEvents, wissen: viewKompendium };
-const START = 'galaxie';
+const VIEWS = { imperium: viewImperium, galaxie: viewGalaxy, ereignisse: viewEvents, plaene: viewPlans, werft: viewWerft, wissen: viewKompendium, verbrauch: viewVerbrauch };
+const START = 'imperium';
 
 // Neue Atlas-Version online? version.js frisch lesen (höchstens alle 10 min, beim Start und beim Zurückkehren in den Tab)
 async function checkUpdate() {
@@ -21,6 +22,13 @@ async function checkUpdate() {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
 
 async function boot() {
+  // Übergang: Ein Cockpit-Service-Worker vor Shell v30 liefert ../common.js aus seinem Cache (ohne ATLAS) und holt die neue
+  // im Hintergrund – dann einmal neu laden (nur einmal je Tab, damit offline keine Schleife entsteht)
+  if (typeof ATLAS === 'undefined') {
+    let again = false;
+    try { again = !sessionStorage.getItem('hz.atlasReload'); sessionStorage.setItem('hz.atlasReload', '1'); } catch { /* egal */ }
+    if (again) return setTimeout(() => location.reload(), 1500);
+  }
   setTimeout(checkUpdate, 3000);
   window.addEventListener('hashchange', route);
   // Anmeldung oder Konto im Cockpit (anderer Tab) geändert → hier übernehmen
@@ -77,10 +85,11 @@ async function route(soft) {
   }
 }
 
-// Galaxie alle 60 s still neu laden (nur sichtbar, nicht während einer Eingabe); der Atlas ist zum Nachsehen, nicht zum Überwachen
+// Imperium, Galaxie und Pläne alle 60 s still neu laden (nur sichtbar, nicht während einer Eingabe, nicht im Plan-Editor);
+// der Atlas ist zum Nachsehen, nicht zum Überwachen
 setInterval(() => {
   const tab = location.hash.replace(/^#\/?/, '').split('/')[0] || START;
-  if (document.visibilityState !== 'visible' || !['galaxie'].includes(tab)) return;
+  if (document.visibilityState !== 'visible' || !['imperium', 'galaxie', 'plaene'].includes(tab) || /^#\/plaene\/edit\//.test(location.hash)) return;
   if (document.activeElement?.matches?.('input,select,textarea')) return;
   route(true);
 }, 60000);
