@@ -306,13 +306,13 @@ async function pdDetail(p) {
 }
 
 // Aktionsbereich (Entscheidung 7.3 neu, 17.10. abends: Spielaktionen im Atlas nur Owner, jede einzeln mit Rückfrage, als Kommando
-// ans Skript). Noch ohne echte Aktion: Prospektieren kommt mit Sonden und dem Autobuilder-Kommando (plan-planeten-db.md P5).
-// p = Planet (Planet-Detail) oder null (System in der Galaxie).
+// ans Skript). Prospektieren: details/sonden.js (Dialog, Kommando „sonden“ an den Autobuilder ab 0.5.33, plan-planeten-db.md P5).
+// p = Planet (Planet-Detail) oder null (System in der Galaxie; dort steht der Knopf je Bahn).
 function pdActions(p) {
   if (!isOwner()) return '';
   return `<div class="pdact"><h3>Aktionen <span class="muted small">${p ? `Planet ${p.coords}` : 'System'}</span></h3><div class="row">
-    <button disabled title="kommt mit Sonden (PRDR) und dem Autobuilder-Kommando, plan-planeten-db.md P5">Prospektieren …</button>
-    <span class="small muted">kommt mit Sonden</span></div></div>`;
+    ${p ? prbButton(p) || '<span class="small muted">Bahn leer – nichts zu prospektieren</span>' : '<span class="small muted">Prospektieren: Knopf 🛰 an der Bahn</span>'}
+    <span class="small muted">Rückfrage mit Sondenzahl, Verbänden und „Nur prüfen“</span></div></div>`;
 }
 
 function pdBindDetail(d, p) {

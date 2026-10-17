@@ -158,7 +158,7 @@ function systemCard(S0, g, s, hm) {
     return `<div class="orb${p.present ? '' : ' gone'}${p.type ? '' : ' unknown'}${mine ? ' own' : ''}${b === homeOrbit ? ' home' : ''}"><span class="ob">${b === homeOrbit ? '⌂' : b}</span>${typ}
       <span class="oi"><a href="#/planeten/p/${g}:${s}:${b}" title="In der Planeten-DB öffnen"><b>${esc(p.name || '–')}</b></a> <span class="small${p.type ? '' : ' muted'}">${esc(typeLabel(p))}</span>${rank}
         <span class="small muted od">${b === homeOrbit ? `Bahn ${b} · ` : ''}${who}${p.present ? '' : ` · <b>Bahn leer seit ${esc(dt(p.changed_at))}</b>`}<span class="osm"> · ${esc(ago(p.last_seen))}</span></span></span>
-      <span class="small muted os" title="zuletzt gesehen ${esc(dt(p.last_seen))}">${esc(ago(p.last_seen))}</span></div>`;
+      <span class="small muted os" title="zuletzt gesehen ${esc(dt(p.last_seen))}">${esc(ago(p.last_seen))}</span>${typeof prbButton === 'function' ? prbButton({ ...p, coords: `${g}:${s}:${b}` }, true) : ''}</div>`;   // Sonden: details/sonden.js
   }).join('');
   const chRow = c => `<tr><td class="small muted nowrap">${esc(dt(c.t))}</td><td class="num">${c.orbit}</td><td class="small">${esc(PL_FIELD[c.field] || c.field)}</td>
     <td class="small wrapall">${c.old && c.new ? `${esc(c.old)} → ${esc(c.new)}` : esc(c.old || c.new)}</td></tr>`;
@@ -167,6 +167,8 @@ function systemCard(S0, g, s, hm) {
     : '<p class="small muted">Noch keine Änderungen.</p>';
   return `<div class="card" id="sysCard"><h2>System ${sys.galaxy}:${sys.system} <span class="muted small">${esc(sys.name)} · ${sys.explored ? `${n} Planet${n === 1 ? '' : 'en'}` : 'unerforscht'} · erfasst ${esc(ago(sys.last_seen))}</span></h2>
     ${!sys.explored ? '<p class="small warn">Das System gilt im Spiel als unerforscht (Sternwarte fehlt oder steht auf Faktor 0) – keine Planeten.</p>' : ''}
+    <p class="small galbar">Planeten-DB: <a href="#/planeten">Suche</a> · <a href="#/planeten/statistik">Statistik</a> · <a href="#/planeten/verlauf">Verlauf</a> · <a href="#/planeten/spieler">Spieler</a>
+      <span class="muted">· Planetenname → Planet-Detail${isOwner() ? ' · 🛰 = Prospektieren (mit Rückfrage)' : ''}</span></p>
     ${hint?.html || ''}
     <div class="orbits">${rows}</div>
     <p class="small muted">Zuletzt erfasst ${esc(dt(sys.last_seen))} (${esc(sys.source)})${sys.discovered_by ? ` · entdeckt von ${esc(sys.discovered_by)}` : ''}. Grau = „Unbekannter Planet“ (Typ erst ab Sternwarte 2).</p>

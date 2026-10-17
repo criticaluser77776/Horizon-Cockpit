@@ -49,3 +49,9 @@ body.atlas .badge { position: static; }
 .atlas .pdsec { margin: 18px 2px 0; }
 .atlas .pdheat td, .atlas .pdheat th { text-align: center; }
 .atlas .pdact { margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--line); }
+/* Sonden versenden (sonden.js, P5) */
+.atlas .orb { grid-template-columns: 1.8em 3.6em minmax(0, 1fr) auto auto; }
+.atlas .orbits .prbgo { padding: 2px 8px; }
+.prbdlg { max-width: 520px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); }
+.prbdlg::backdrop { background: rgba(0, 0, 0, .45); }
+.prbdlg h2 { margin-top: 0; }
