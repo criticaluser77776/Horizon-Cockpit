@@ -140,7 +140,7 @@ function renderNoAccount() {
 
 /* ---------- Navigation ---------- */
 
-// ereignisse = alter Name von Meldungen (Push-Ziel „#/ereignisse“ der Edge Function bis C2, Links in common.js)
+// ereignisse = alter Name von Meldungen (ältere Push-Nachrichten mit „#/ereignisse“, Links in common.js)
 const VIEWS = { lage: viewLage, meldungen: viewMeldungen, ereignisse: viewMeldungen, plaene: viewPlans, claude: viewClaude, mehr: viewMore };
 const TAB_OF = { ereignisse: 'meldungen' };
 

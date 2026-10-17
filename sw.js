@@ -1,6 +1,6 @@
 // Service Worker: App-Gerüst sofort aus dem Cache (im Hintergrund aktualisiert); Supabase-Daten immer live.
 // Pfade relativ, damit die App unter …github.io/Horizon-Cockpit/ läuft. Neue Version = SHELL-Nummer erhöhen.
-const SHELL = 'shell-v31';
+const SHELL = 'shell-v32';
 const BASE = new URL('./', self.location).pathname;
 const SHELL_FILES = ['./', 'index.html', 'app.js', 'common.js', 'cloud.js', 'config.js', 'style.css', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'data/horizon-data.json'];
@@ -26,9 +26,11 @@ self.addEventListener('push', e => {
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const target = new URL(BASE, self.location.origin).href + (e.notification.data?.url || '');
+  const base = new URL(BASE, self.location.origin).href, target = base + (e.notification.data?.url || '');
+  // Ziel im Atlas ('details/#/…', C2): nur ein Atlas-Fenster wiederverwenden, sonst neu öffnen – das Cockpit-Fenster bleibt
+  const atlas = target.startsWith(base + 'details/');
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-    const w = list.find(c => c.url.startsWith(new URL(BASE, self.location.origin).href));
+    const w = list.find(c => c.url.startsWith(base) && c.url.startsWith(base + 'details/') === atlas);
     if (w) { w.navigate(target).catch(() => {}); return w.focus(); }
     return self.clients.openWindow(target);
   }));
