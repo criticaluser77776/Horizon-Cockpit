@@ -1,0 +1,80 @@
+'use strict';
+/* Planetenwerte im Reiter „Galaxie“ (Paket C, 17.10.2026): Grundwerte der eigenen Kolonien in % der Heimat (STPL = 100 %),
+   gemessen vom Collector (ab 0.4.12) gleich nach der Kolonisierung – immer Stufe n gegen Stufe n, sonst „offen“.
+   Daten: Tabelle planet_values (eine Zeile je Planet und Wert, Migration 20261017110001). Knopf „Planetenwerte messen“
+   (nur Owner): Kommando planetwerte {planet, ungebaut?} an den Collector mit frischem Lebenszeichen im Spiel; er misst den im
+   Spiel gewählten Planeten und wechselt ihn nie selbst. Ablauf am Tag der Landung: doku/stand/planeten-erfassung.md.
+   Läuft vor app.js; nutzt zur Laufzeit dessen Helfer ($, esc, fmt, dt, ago, Cloud, S, account, isOwner, isFresh, verCmp,
+   loadSessions, toast, route). */
+(function () {
+  const MIN_VER = '0.4.12';
+  const MAIN = { metal: 'Erz', mineral: 'Mineral', fuel: 'T-Stoff', buildCost: 'Baukosten', buildSpeed: 'Baugeschwindigkeit',
+    researchCost: 'Forschungskosten', ground: 'Bauplatz', housingCost: 'Wohnkosten' };
+  const REST = { orbMetal: 'Erz Umlaufbahn', orbMineral: 'Mineral Umlaufbahn', orbFuel: 'T-Stoff Umlaufbahn', colonizable: 'Kolonisierbarkeit',
+    atmosphere: 'Atmosphäre', moon: 'Mond', artefacts: 'Artefakte' };
+  const METHOD = { 'hilfe-produktion': 'Hilfe: Produktion gleicher Stufe', kosten: 'Kosten der nächsten Stufen', 'kosten-wohnkomplex': 'Kosten Wohnkomplex',
+    bauleistung: 'Bauleistung (Statistik)', forschungskosten: 'Kosten der nächsten Forschung', 'bauplatz-gesamt': 'Bauplatz gesamt',
+    'typ-median': 'Median des Typs', prospektion: 'erst mit Prospektion' };
+
+  const coords = (g, s, b) => `${g}:${s}:${b}`;
+  const val = v => !v ? '<span class="muted">–</span>'
+    : v.status === 'offen' ? '<span class="tag">offen</span>'
+    : `<b>${esc(fmt(v.pct, 1))} %</b>${v.status === 'typ-median' ? ' <span class="tag">Median</span>' : ''}`;
+  // Spalte „Messung“: gemessen → Methode, Stufe, Notiz; offen → nur der Grund
+  const info = v => !v ? '' : v.status === 'offen' ? v.note || METHOD[v.method] || ''
+    : [METHOD[v.method] || v.method, v.level != null ? `Stufe ${v.level}` : '', v.note].filter(Boolean).join(' · ');
+  const row = (k, n, v) => `<tr><td>${esc(n)}</td><td class="num nowrap">${val(v)}</td><td class="small muted">${esc(info(v))}</td></tr>`;
+
+  // Collector, der messen kann: frisches Lebenszeichen, im Spiel eingeloggt, Version ab 0.4.12; Gerät mit dem Lauf zuerst
+  const target = sess => sess.devs.filter(x => x.col && isFresh(x.col.at) && x.col.state?.page === 'game' && verCmp(x.col.version, MIN_VER) >= 0)
+    .sort((a, b) => b.holds - a.holds || String(b.col.at).localeCompare(String(a.col.at)))[0] || null;
+
+  // Karte unter dem System: Werte je eigener Kolonie + Messknopf; nur im System mit eigenen Planeten
+  function card(S0, g, s, homeOrbit) {
+    const me = account()?.player || '';
+    const mine = (S0?.planets || []).filter(p => p.present && me && p.owner === me);
+    if (!mine.length) return '';
+    const by = {};
+    for (const v of S0.values || []) (by[v.orbit] ||= {})[v.key] = v;
+    const blocks = mine.filter(p => by[p.orbit]).map(p => {
+      const vs = by[p.orbit], any = Object.values(vs)[0];
+      const at = Object.values(vs).map(v => v.measured_at).sort().pop();
+      return `<h3>Bahn ${p.orbit} ${esc(any.planet_type || p.type || '')} <span class="muted small">${esc(p.name || '')} · gemessen ${esc(dt(at))} (${esc(ago(at))})</span></h3>
+        <table class="small pw"><tr class="muted"><td>Wert</td><td class="num">Kolonie</td><td>Messung</td></tr>${Object.entries(MAIN).map(([k, n]) => row(k, n, vs[k])).join('')}</table>
+        <details class="sub"><summary class="small muted">Umlaufbahn, Kolonisierbarkeit, Atmosphäre, Mond, Artefakte</summary>
+          <table class="small pw">${Object.entries(REST).map(([k, n]) => row(k, n, vs[k])).join('')}</table></details>`;
+    }).join('');
+    const opts = mine.map(p => `<option value="${esc(coords(g, s, p.orbit))}"${p.orbit === homeOrbit ? '' : ' selected'}>Bahn ${p.orbit}${p.orbit === homeOrbit ? ' (Heimat)' : ''} ${esc(p.name || '')}</option>`).join('');
+    return `<div class="card" id="pwCard"><h2>Planetenwerte <span class="muted small">in % der Heimat (STPL = 100 %)</span></h2>
+      ${blocks || '<p class="small muted">Noch keine Kolonie gemessen.</p>'}
+      <p class="small muted">Kosten und Bauzeit: über 100 % heißt teurer bzw. langsamer als die Heimat. Verglichen wird immer dieselbe Stufe; fehlt sie auf einer Seite, bleibt der Wert offen.</p>
+      ${isOwner() ? `<form id="pwForm" class="row" style="margin-top:6px;flex-wrap:wrap;gap:6px">
+        <select name="planet" aria-label="Planet">${opts}</select>
+        <label class="small"><input type="checkbox" name="ungebaut"> ungebaute Stufen zählen</label>
+        <button class="primary">Planetenwerte messen</button></form>
+        <p class="small muted">Gemessen wird der im Spiel gewählte Planet – vorher im Spiel dorthin wechseln, der Autobuilder sollte dabei pausieren.
+          Auf der Heimat frischt die Messung den Bezug auf (Gegenprobe = 100 %). „Ungebaute Stufen“ erst nach der Live-Prüfung setzen; die Einstellung bleibt im Collector gespeichert.</p>` : ''}</div>`;
+  }
+
+  async function measure(form) {
+    const planet = form.planet.value, ungebaut = form.ungebaut.checked;
+    const sess = await loadSessions().catch(() => null);
+    const dev = sess && target(sess);
+    if (!dev) return toast(`Kein Collector ab ${MIN_VER} im Spiel eingeloggt – erst im Spiel einloggen`);
+    if (!confirm(`Planetenwerte von ${planet} auf ${dev.name} messen?\n\nIm Spiel muss ${planet} gewählt sein, sonst bricht die Messung ab. `
+      + `Der Collector liest nur (Gebäude, Forschung, Statistik, Hilfeseiten), gebaut wird nichts.${ungebaut ? '\n\nUngebaute Stufen zählen ab jetzt mit.' : ''}`)) return;
+    try {
+      await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
+        body: { account_id: S.acc, script: 'autobuilder', cmd: 'planetwerte', args: { planet, ...(ungebaut ? { ungebaut: true } : {}) }, target_device: dev.device } });
+      toast(`Kommando an ${dev.name} gesendet – Ergebnis unter Ereignisse, Werte hier nach dem Neuladen`);
+      setTimeout(() => route(true), 1500);
+    } catch (e) { toast(e.message); }
+  }
+
+  function bind(view) {
+    const f = view.querySelector('#pwForm');
+    if (f) f.addEventListener('submit', e => { e.preventDefault(); measure(f); });
+  }
+
+  window.HzPlanetwerte = { card, bind };
+})();

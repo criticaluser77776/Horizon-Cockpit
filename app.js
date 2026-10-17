@@ -563,14 +563,16 @@ async function loadSysData(sys) {
   const key = `${S.acc}|${sys.galaxy}:${sys.system}|${sys.last_seen}`;
   S.sysCache ||= {};
   const hit = S.sysCache[`${sys.galaxy}:${sys.system}`];
-  if (hit?.key === key) return hit;
   const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${sys.galaxy}`, system: `eq.${sys.system}` };
+  const values = Cloud.q('planet_values', { ...where, order: 'orbit,key' }).catch(() => []);   // Planetenwerte (Paket C): immer frisch
+  if (hit?.key === key) return { ...hit, values: await values };
   const [planets, changes, prospect] = await Promise.all([
     Cloud.q('planets', { ...where, order: 'orbit' }),
     Cloud.q('planet_changes', { ...where, order: 't.desc,id.desc', limit: 60 }),
     Cloud.q('planet_prospect', { ...where, select: 'orbit,reports,probes,last_report' }).catch(() => []),
   ]);
-  return (S.sysCache[`${sys.galaxy}:${sys.system}`] = { key, sys, planets, changes, prospect });
+  S.sysCache[`${sys.galaxy}:${sys.system}`] = { key, sys, planets, changes, prospect };
+  return { key, sys, planets, changes, prospect, values: await values };
 }
 
 // Heimat-Knopf: der in „Planeten“ (Lage) gewählte eigene Planet, sonst der Standardplanet (erster des Imperiums bzw. im Spiel gewählter)
@@ -655,6 +657,7 @@ async function viewGalaxy(rest = []) {
       <p class="small muted galsum">${withPl.length ? `Erfasst mit Planeten: ${withPl.length} System${withPl.length > 1 ? 'e' : ''}${inGal.length ? `, in Galaxie ${g}: ${inGal.map(x => `<a href="#/galaxie/${x.galaxy}/${x.system}"${x.system === s ? ' class="on"' : ''}>${x.system}</a>`).join(' · ')}` : ` (keins in Galaxie ${g})`}` : 'Noch kein System mit Planeten erfasst.'}</p></div>
     ${systemCard(data, g, s, hm)}`;
   const v = $('#view');
+  window.HzPlanetwerte?.bind(v);   // Planetenwerte: cockpit/planetwerte.js
   v.querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () => galGo(...b.dataset.go.split('/'))));
   $('#galHome').addEventListener('click', () => hm && galGo(hm[1], hm[2]));
   const f = $('#galForm');
@@ -706,7 +709,7 @@ function systemCard(S0, g, s, hm) {
     ${hint?.html || ''}
     <div class="orbits">${rows}</div>
     <p class="small muted">Zuletzt erfasst ${esc(dt(sys.last_seen))} (${esc(sys.source)})${sys.discovered_by ? ` · entdeckt von ${esc(sys.discovered_by)}` : ''}. Grau = „Unbekannter Planet“ (Typ erst ab Sternwarte 2).</p>
-    ${ch}</div>`;
+    ${ch}</div>${window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || ''}`;   // Planetenwerte: cockpit/planetwerte.js
 }
 
 /* ---------- Überblick (B10): Lauf, Rohstoffe, laufende Aufträge in wenigen Zeilen ----------
