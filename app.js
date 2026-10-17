@@ -774,7 +774,7 @@ function overviewCard(sess, d, live, abLive, nm, W) {
    aus. „Faktoren sichern“ und „Faktor von Hand“ braucht den Autobuilder (ab 0.5.9). Nur der Owner sieht die Knöpfe.
    „Notfall verbauen“ (B7, Autobuilder ab 0.5.18, nur auf Tippen): 2 h lang füllt der Autobuilder jede freie Schlange mit dem
    teuersten startbaren Planschritt der nächsten 25 (auch außer der Reihe, nie Abbrechen); auch am Ereignis „anflug“. */
-const NF_CMDS = ['stop', 'reload', 'snapshot', 'factors', 'factor', 'notfall'];
+const NF_CMDS = ['stop', 'reload', 'snapshot', 'factors', 'factor', 'notfall', 'antwort'];
 const HANG_MIN = 10;
 async function loadNotfall() {
   const acc = `eq.${S.acc}`;
@@ -986,12 +986,49 @@ const EFF_SRC = { datum: 'Ende laut Nachricht', text: 'Dauer laut Nachricht', ty
 function msgBody(e) {
   const x = e.kind === 'bericht' ? e.data : null;
   if (!x?.body && !x?.effect && !x?.decision) return '';
-  const dec = Array.isArray(x.decision) && x.decision.length ? `<div class="small"><b>Entscheidung offen</b> – im Spiel antworten: ${x.decision.map(esc).join(' · ')}</div>` : '';
   const eff = x.effect?.until ? `<div class="small">Effekt bis <b>${esc(dt(x.effect.until))}</b>${Date.parse(x.effect.until) > Date.now()
     ? ` (noch ${esc(dur((Date.parse(x.effect.until) - Date.now()) / 1000))})` : ' (abgelaufen)'} <span class="muted">· ${esc(EFF_SRC[x.effect.src] || x.effect.src || '')}</span></div>` : '';
   const links = Array.isArray(x.links) && x.links.length ? `<div class="small muted">Links (nur Text, nicht aufrufen): ${x.links.map(l =>
     `${esc(l.text || 'ohne Text')} <code>${esc(l.href)}</code>`).join(' · ')}</div>` : '';
-  return dec + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(tidy(x.body))}</div>${links}</details>` : '');
+  return msgDecision(e, x) + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(tidy(x.body))}</div>${links}</details>` : '');
+}
+/* Entscheidungen beantworten (Paket B, Autobuilder ab 0.5.29, Nutzer 17.10.2026: per Tipp wie beim Werbebanner).
+   decision = [{i, text, href, cost?}] (bis 0.5.28 nur Texte → nur Anzeige). Knopf je Option (nur Owner) → confirm() mit Text,
+   Kosten und Frist → Kommando „antwort“ {msgId, option, text} an ein eingeloggtes Gerät, sonst an ein ausgeloggtes (es loggt
+   einmal ein, antwortet und loggt wieder aus; ein dort schlafender Lauf schläft bis zur alten Weckzeit weiter). Das Ergebnis
+   trägt Supabase aus dem Ereignis „antwort“ an der Nachricht ein (data.answer, Migration 20261017100001). */
+function msgDecision(e, x) {
+  const dec = Array.isArray(x.decision) ? x.decision : [], a = x.answer;
+  if (a?.ok) return `<div class="small"><b>Beantwortet</b>: ${esc(a.text || `Option ${a.option}`)}${a.t ? ` <span class="muted">· ${esc(when(a.t))}</span>` : ''}${a.result ? `<div class="muted">${esc(a.result)}</div>` : ''}</div>`;
+  if (!dec.length) return '';
+  const objs = dec.every(d => d && typeof d === 'object' && Number.isInteger(d.i));
+  const head = `<div class="small"><b>Entscheidung offen</b>${x.frist ? ` · Frist ${esc(x.frist)}` : ''}${a && !a.ok ? ` <span class="err">· letzte Antwort nicht gesendet: ${esc(a.result || '')}</span>` : ''}</div>`;
+  if (!objs) return head.replace('</div>', ` – im Spiel antworten: ${dec.map(d => esc(typeof d === 'string' ? d : d?.text || '')).join(' · ')}</div>`);
+  const btns = isOwner() ? `<div class="row wrap" style="margin:4px 0;gap:4px">${dec.map(d => `<button class="small ansgo" data-msg="${esc(x.msgId)}" data-opt="${esc(d.i)}"
+    data-text="${esc(d.text)}" data-cost="${esc((d.cost || []).join(', '))}" data-frist="${esc(x.frist || '')}">${esc(d.text)}</button>`).join('')}</div>`
+    : `<div class="small">${dec.map(d => esc(d.text)).join(' · ')}</div>`;
+  return head + btns;
+}
+// Ziel: eingeloggtes Gerät (Halter zuerst), sonst ausgeloggtes (Halter eines Laufs zuerst – ein anderes lehnt dann ab)
+const answerDev = sess => {
+  const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at) && verCmp(x.ab.version, '0.5.29') >= 0);
+  const pick = page => { const l = live.filter(x => x.ab.state?.page === page); return l.find(x => x.holds) || l[0] || null; };
+  return pick('game') || (sess.devs.some(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game') ? null : pick('login'));
+};
+async function sendAnswer(b) {
+  const msgId = b.dataset.msg, option = +b.dataset.opt, text = b.dataset.text, cost = b.dataset.cost, frist = b.dataset.frist;
+  const sess = await loadSessions().catch(() => null);
+  const dev = sess && answerDev(sess);
+  if (!dev) return toast('Kein Autobuilder ab 0.5.29 erreichbar (oder eingeloggt nur mit älterer Version)');
+  const login = dev.ab.state?.page === 'login', sleep = login && dev.ab.state?.sleeping;
+  if (!confirm(`Im Spiel antworten: „${text}“?${cost ? `\nKosten laut Option: ${cost}` : ''}${frist ? `\nFrist: ${frist}` : ''}\n\nGerät: ${dev.name}`
+    + (login ? `\n${dev.name} ist ausgeloggt: Es loggt einmal ein, antwortet und loggt danach wieder aus${sleep ? ' (der schlafende Lauf schläft bis zu seiner Weckzeit weiter)' : ''}. Ein Spiel auf einem anderen Gerät wird dabei abgemeldet.` : '')
+    + '\nDie Antwort lässt sich im Spiel nicht zurücknehmen.')) return;
+  try {
+    await postCmd(dev, 'antwort', { msgId: String(msgId), option, text });
+    toast(`Antwort an ${dev.name} gesendet – Ergebnis in 15–60 s an der Nachricht`);
+    setTimeout(() => route(true), 1500);
+  } catch (e) { toast(e.message); }
 }
 // Lage: aktive Effekte aus Berichten (Ende in der Zukunft), je Name nur der jüngste
 function effectsCard(effs) {
@@ -1025,6 +1062,7 @@ async function dismissEvent(el) {
 function swipeEvents(root) {
   if (!['owner', 'viewer'].includes(account()?.role)) return;
   root.querySelectorAll('.ev .nfgo').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); anflugNotfall(); }));
+  root.querySelectorAll('.ev .ansgo').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); if (isOwner()) sendAnswer(b); }));
   root.querySelectorAll('.ev .evx').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); dismissEvent(b.closest('.ev')); }));
   root.querySelectorAll('.ev:not(.dismissed)').forEach(el => {
     let x0 = null, y0 = 0, dx = 0;
