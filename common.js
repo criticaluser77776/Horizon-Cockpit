@@ -2,8 +2,8 @@
 /* Gemeinsamer Code für Cockpit (app.js) und Horizon Atlas (details/), Schritt C0 der Cockpit-Aufteilung
    (doku/stand/cockpit-aufteilung.md): Formate und Zeiten, Anzeigenummern, Konto/Rolle, Toast, Ereignis-Zeilen,
    Sitzungen/Lauf, Spieldaten. Klassisches Skript (kein Modul): die Namen sind global und werden von app.js,
-   kompendium.js, werft.js, planetwerte.js und den Atlas-Dateien zur Laufzeit genutzt. Erwartet je Seite: route(),
-   postCmd(), anflugNotfall() (nur Cockpit, nur bei Knöpfen; im Atlas mit window.HZ_ATLAS ausgeblendet). Lädt nach config.js und cloud.js. */
+   kompendium.js, werft.js, planetwerte.js und den Atlas-Dateien zur Laufzeit genutzt. Erwartet je Seite
+   route(); Kommandos (postCmd, Notfall) stehen hier. Lädt nach config.js und cloud.js. */
 
 // Wurzel der Web-App (Ordner von common.js), damit Pfade auch aus details/ stimmen
 const HZ_ROOT = new URL('./', document.currentScript?.src || location.href).href;
@@ -130,7 +130,9 @@ function account() { return accounts().find(a => a.id === S.acc) || null; }
 function isOwner() { return account()?.role === 'owner'; }
 
 const CAT = { builder: 'Builder', cockpit: 'Cockpit', spiel: 'Spiel', system: 'System' };
-// Horizon Atlas (details/, D1): setzt window.HZ_ATLAS vor common.js – dort keine Owner-Knöpfe an Ereignissen, nur Text + Link ins Cockpit
+/* Horizon Atlas (details/, D1): setzt window.HZ_ATLAS vor common.js. Seit Entscheidung 7.3 (17.10. abends) zeigt der Atlas
+   dieselben Owner-Knöpfe an Ereignissen wie das Cockpit (Entscheidung beantworten, Notfall verbauen; je mit Rückfrage, Kommando
+   über postCmd). Lauf-Steuerung und Planfreigaben bleiben im Cockpit – dorthin führt COCKPIT_LINK. */
 const ATLAS = !!window.HZ_ATLAS;
 const COCKPIT_LINK = (h, txt) => `<a href="${esc(HZ_ROOT + h)}">${esc(txt)} →</a>`;
 function evRow(e) {
@@ -139,7 +141,7 @@ function evRow(e) {
     <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
     <span class="muted small nowrap">${esc(when(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}" aria-label="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
     <div class="wrapall">${esc(tidy(e.text))}</div>${e.kind === 'anflug' && e.level === 'hoch' && isOwner() && Date.now() - new Date(e.t) < 6 * 3600e3
-      ? (ATLAS ? `<div class="small">${COCKPIT_LINK('#/lage', 'Notfall verbauen im Cockpit')}</div>` : '<div class="row" style="margin:4px 0"><button class="danger small nfgo">Notfall verbauen</button></div>') : ''}${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? `<div class="small">${ATLAS ? COCKPIT_LINK('#/plaene', 'Planabweichung im Cockpit ansehen / neu planen') : '<a href="#/plaene">Planabweichung ansehen / neu planen →</a>'}</div>` : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+      ? '<div class="row" style="margin:4px 0"><button class="danger small nfgo">Notfall verbauen</button></div>' : ''}${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? `<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>` : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
 }
 /* Nachrichten (B1, Autobuilder ab 0.5.13): Inhalt, Links und Effekt stehen in data des Ereignisses „bericht“.
    Links nur als Text – das Cockpit macht daraus keine klickbaren Verweise (Spiel-Links tragen Einmal-Token, fremde Ziele
@@ -166,7 +168,6 @@ function msgDecision(e, x) {
   const objs = dec.every(d => d && typeof d === 'object' && Number.isInteger(d.i));
   const head = `<div class="small"><b>Entscheidung offen</b>${x.frist ? ` · Frist ${esc(x.frist)}` : ''}${a && !a.ok ? ` <span class="err">· letzte Antwort nicht gesendet: ${esc(a.result || '')}</span>` : ''}</div>`;
   if (!objs) return head.replace('</div>', ` – im Spiel antworten: ${dec.map(d => esc(typeof d === 'string' ? d : d?.text || '')).join(' · ')}</div>`);
-  if (ATLAS) return head + `<div class="small">${dec.map(d => esc(d.text)).join(' · ')}${isOwner() ? ` · ${COCKPIT_LINK('#/meldungen', 'im Cockpit beantworten')}` : ''}</div>`;
   const btns = isOwner() ? `<div class="row wrap" style="margin:4px 0;gap:4px">${dec.map(d => `<button class="small ansgo" data-msg="${esc(x.msgId)}" data-opt="${esc(d.i)}"
     data-text="${esc(d.text)}" data-cost="${esc((d.cost || []).join(', '))}" data-frist="${esc(x.frist || '')}">${esc(d.text)}</button>`).join('')}</div>`
     : `<div class="small">${dec.map(d => esc(d.text)).join(' · ')}</div>`;
@@ -192,6 +193,27 @@ async function sendAnswer(b) {
     toast(`Antwort an ${dev.name} gesendet – Ergebnis in 15–60 s an der Nachricht`);
     setTimeout(() => route(true), 1500);
   } catch (e) { toast(e.message); }
+}
+/* Kommandos an den Autobuilder (Cockpit und Atlas, Entscheidung 7.3): je Gerät eine Zeile in commands; vorher immer confirm().
+   Notfall verbauen: Ziel für den Knopf am Anflug = eingeloggter Autobuilder, Halter zuerst. */
+async function postCmd(dev, cmd, args = {}, planId = null) {
+  await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
+    body: { account_id: S.acc, script: 'autobuilder', cmd, args, plan_id: planId, target_device: dev.device } });
+}
+const nfTarget = sess => sess.devs.filter(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game').sort((a, b) => b.holds - a.holds)[0] || null;
+const NF_ASK = name => `Notfall verbauen auf ${name}? 2 Stunden lang startet der Autobuilder in jeder freien Schlange sofort den teuersten startbaren Planschritt der nächsten 25 – auch außer der Reihe, nichts außerhalb des Plans, kein Abbrechen. Das kann den Plan etwas verschieben.`;
+async function sendNotfall(dev, args) {
+  try {
+    await postCmd(dev, 'notfall', args);
+    toast(`Kommando an ${dev.name} gesendet – Ergebnis in 15–60 s`);
+    setTimeout(() => route(true), 1500);
+  } catch (e) { toast(e.message); }
+}
+async function anflugNotfall() {
+  const sess = await loadSessions().catch(() => null);
+  const dev = sess && nfTarget(sess);
+  if (!dev) return toast('Kein eingeloggter Autobuilder erreichbar – erst im Spiel einloggen');
+  if (confirm(NF_ASK(dev.name))) sendNotfall(dev, { hours: 2 });
 }
 // Lage: aktive Effekte aus Berichten (Ende in der Zukunft), je Name nur der jüngste
 function effectsCard(effs) {

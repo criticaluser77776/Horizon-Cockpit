@@ -1,6 +1,6 @@
 'use strict';
 /* Horizon Atlas – Reiter Ereignisse: alle Stufen, Filter, ausblenden, „alle gesehen“. Kopie aus cockpit/app.js (D1);
-   Entscheidungen und „Notfall verbauen“ nur im Cockpit (window.HZ_ATLAS in common.js). */
+   Entscheidungen beantworten und „Notfall verbauen“ wie im Cockpit (nur Owner, mit Rückfrage; Code in common.js, Entscheidung 7.3). */
 
 // Filter dauerhaft je Gerät (Nutzer 16.10.: vorher sessionStorage, nach dem Schließen weg)
 async function viewEvents() {

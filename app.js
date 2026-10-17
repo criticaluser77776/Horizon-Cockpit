@@ -449,10 +449,6 @@ function notfallCard(sess, nf, snap) {
   html += `<div id="nfCmds">${cmdTable(nf.cmds)}</div></div>`;
   return html;
 }
-async function postCmd(dev, cmd, args = {}, planId = null) {
-  await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
-    body: { account_id: S.acc, script: 'autobuilder', cmd, args, plan_id: planId, target_device: dev.device } });
-}
 function bindNotfall(sess, nf) {
   const v = $('#view');
   if (!v.querySelector('#notfall')) return;
@@ -499,23 +495,8 @@ function bindNotfall(sess, nf) {
   watchCmds(nf.cmds, Date.now(), '#nfCmds', { cmd: `in.(${NF_CMDS.join(',')})` });
 }
 
-// Notfall verbauen: Gerät mit offenem Fenster bzw. Ziel für den Knopf am Anflug (eingeloggter Autobuilder, Halter zuerst)
+// Notfall verbauen: Gerät mit offenem Fenster (nfTarget, NF_ASK, sendNotfall, anflugNotfall stehen in common.js)
 const nfActive = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at, 10) && x.ab.state?.notfall?.until > Date.now()) || null;
-const nfTarget = sess => sess.devs.filter(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game').sort((a, b) => b.holds - a.holds)[0] || null;
-const NF_ASK = name => `Notfall verbauen auf ${name}? 2 Stunden lang startet der Autobuilder in jeder freien Schlange sofort den teuersten startbaren Planschritt der nächsten 25 – auch außer der Reihe, nichts außerhalb des Plans, kein Abbrechen. Das kann den Plan etwas verschieben.`;
-async function sendNotfall(dev, args) {
-  try {
-    await postCmd(dev, 'notfall', args);
-    toast(`Kommando an ${dev.name} gesendet – Ergebnis in 15–60 s`);
-    setTimeout(() => route(true), 1500);
-  } catch (e) { toast(e.message); }
-}
-async function anflugNotfall() {
-  const sess = await loadSessions().catch(() => null);
-  const dev = sess && nfTarget(sess);
-  if (!dev) return toast('Kein eingeloggter Autobuilder erreichbar – erst im Spiel einloggen');
-  if (confirm(NF_ASK(dev.name))) sendNotfall(dev, { hours: 2 });
-}
 
 /* ---------- Werbebanner (Autobuilder ab 0.5.1) ----------
    Der Autobuilder meldet aktive Banner im Lebenszeichen; aufgerufen werden sie nur per Kommando „banner“ nach Tippen des Owners. */
