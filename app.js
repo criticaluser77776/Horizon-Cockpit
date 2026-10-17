@@ -832,17 +832,8 @@ const OPT_ST = { neu: 'angefordert', in_arbeit: 'rechnet', beantwortet: 'fertig'
 function optCard(req, own) {
   const busy = req && ['neu', 'in_arbeit'].includes(req.status) && Date.now() - new Date(req.created_at) < 3 * 3600e3;
   return `<div class="card"><div class="row between"><h2>Neuer Plan</h2>${req ? `<span class="tag">${esc(OPT_ST[req.status] || req.status)}</span>` : ''}</div>
-    <p class="muted small">Optimierer-Lauf in GitHub Actions ab dem neuesten Snapshot (täglich 05:17 und auf Knopfdruck); das Ergebnis erscheint hier als Entwurf.</p>
-    ${req ? `<div class="small wrapall">Zuletzt ${esc(when(req.created_at))}${req.answer ? `: ${esc(tidy(req.answer))}` : ''}</div>` : ''}
-    ${own ? `<div class="row" style="margin-top:6px"><button id="optGo"${busy ? ' disabled' : ''}>${busy ? 'Lauf angefordert …' : 'Neuen Plan vorschlagen'}</button></div>` : ''}</div>`;
-}
-async function askPlan() {
-  if (!confirm('Optimierer-Lauf in GitHub Actions starten? Dauer etwa 30–90 min, das Ergebnis kommt als Entwurf (Freigabe weiter nur durch dich).')) return;
-  try {
-    const r = await Cloud.rpc('plan_vorschlagen', { p_account: S.acc });
-    toast(r.ok ? 'Lauf angefordert – Ergebnis als Entwurf unter Pläne' : r.text);
-    setTimeout(() => route(true), 1000);
-  } catch (e) { toast(e.message); }
+    <p class="muted small">Automatischer Lauf und Knopf ausgesetzt (17.10.): Pläne mit Kolonien rechnet Claude von Hand; das Ergebnis erscheint hier als Entwurf.</p>
+    ${req ? `<div class="small wrapall">Zuletzt ${esc(when(req.created_at))}${busy ? ' (läuft)' : ''}${req.answer ? `: ${esc(tidy(req.answer))}` : ''}</div>` : ''}</div>`;
 }
 
 /* ---------- Planabweichung (B4, 14.10.) ----------
@@ -857,7 +848,7 @@ function driftLine(d, own) {
   if (d.lag == null) return `<p class="small muted">Abweichung: noch kein Schritt dieses Plans gestartet.</p>`;
   const cls = d.lag >= d.limit ? 'err' : d.lag >= 1 ? 'warn' : 'ok';
   return `<div class="row between small" style="margin:6px 0;gap:6px"><span>Abweichung: <b class="${cls}">${esc(lagText(d.lag))}</b>${d.due?.lag > 0 ? ` · überfällig #${esc(d.due.n)}` : ''}
-    · <a href="details/#/plaene" target="_blank" rel="noopener">Grafik im Atlas</a></span>${own && d.lag >= d.limit ? '<button class="primary small" id="driftGo">Neu planen</button>' : ''}</div>`;
+    · <a href="details/#/plaene" target="_blank" rel="noopener">Grafik im Atlas</a></span></div>`;
 }
 
 async function viewPlans(rest = []) {
@@ -926,8 +917,6 @@ async function viewPlans(rest = []) {
   }));
   $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
   $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
-  $('#optGo')?.addEventListener('click', askPlan);
-  $('#driftGo')?.addEventListener('click', askPlan);
   $('#npNo')?.addEventListener('click', async () => {
     if (!confirm('Entwurf verwerfen?')) return;
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
