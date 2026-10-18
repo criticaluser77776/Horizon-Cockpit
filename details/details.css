@@ -58,3 +58,13 @@ body.atlas .badge { position: static; }
 /* Statistik (statistik.js, D3) */
 .atlas svg.stchart { max-width: none; font-size: 12px; }
 .atlas .stkey { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+/* Kampf (kampf.js, D7.3) */
+.atlas .kampf .kfl { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 8px 0; }
+.atlas .kampf .kfl input[type=range] { width: 130px; }
+.atlas .kampf .kreg { display: inline-block; min-width: 2em; text-align: right; }
+.atlas .kampf .kunits { width: 100%; table-layout: fixed; }
+.atlas .kampf .kunits td:nth-child(2) { width: 7em; } .atlas .kampf .kunits td:nth-child(3) { width: 6.5em; } .atlas .kampf .kunits td:nth-child(4) { width: 1.6em; }
+.atlas .kampf .kunits select, .atlas .kampf .kunits input { width: 100%; box-sizing: border-box; }
+.atlas .kampf .kpis { display: flex; gap: 24px; flex-wrap: wrap; margin: 4px 0 8px; }
+.atlas .kampf .kpis div { display: flex; flex-direction: column; }
+.atlas .kampf .kpis b { font-size: 1.6rem; }
