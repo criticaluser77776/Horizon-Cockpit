@@ -334,6 +334,29 @@ function planTabs(plan, home) {
 }
 // Schritt Nr. n im Reiter k? Heimat = Gebäude und Schiffe ohne Planet
 const planInTab = (plan, k, s, n) => !k || k === 'alle' ? true : k === 'r' ? s[0] === 'r' : k === 'heim' ? s[0] !== 'r' && !planAway(plan, n) : planAway(plan, n) === k;
+// Feste Schrittkennung (M7): <Planet|r>:<Art>:<Typ>:<Stufe>, Planet = Koordinaten (Kolonie), 'h' Heimat, Forschung 'r';
+// doppelte Kennungen mit „~2“ … Gleiche Regel wie der Autobuilder (stepKeys in Horiversum/src/autobuilder/06-planstand.js).
+function planStepKeys(plan) {
+  const seen = {};
+  return (plan?.steps || []).map((s, i) => {
+    const k = `${s[0] === 'r' ? 'r' : planAway(plan, i + 1) || 'h'}:${s[0]}:${s[1]}:${s[2]}`;
+    seen[k] = (seen[k] || 0) + 1;
+    return seen[k] > 1 ? `${k}~${seen[k]}` : k;
+  });
+}
+// Ausführungen des Plans (executions mit plan_id) plus die aus anderen Plänen mit gleicher Kennung (data.key, Autobuilder ab
+// 0.5.47): so behält ein neuer Plan den Stand unveränderter Planeten. step = Nummer in diesem Plan.
+async function loadPlanExecs(accId, planId, plan) {
+  const [own, keyed] = await Promise.all([
+    Cloud.q('executions', { account_id: accId, plan_id: `eq.${planId}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }),
+    Cloud.q('executions', { account_id: accId, or: `(plan_id.is.null,plan_id.neq.${planId})`, 'data->>key': 'not.is.null', ok: 'is.true',
+      select: 't,action,src_name,key:data->>key', order: 't.desc', limit: 1000 }).catch(() => []),
+  ]);
+  const no = new Map(planStepKeys(plan).map((k, i) => [k, i + 1])), have = new Set(own.filter(e => e.step).map(e => e.step));
+  const more = [];
+  for (const e of keyed) { const n = no.get(e.key); if (n && !have.has(n)) { have.add(n); more.push({ t: e.t, step: n, action: e.action, src_name: e.src_name, carried: true }); } }
+  return [...own, ...more].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+}
 const planTabName = (plan, c) => (Array.isArray(plan.planets) && plan.planets.find(p => p?.coords === c)?.name) || c;
 // Reiter-Leiste (Klick setzt S.planTab, eigene Wahl unabhängig vom Planeten im Reiter Imperium)
 const planTabsHtml = (tabs, cur) => `<div class="kseg pltabs" style="margin:4px 0">${tabs.map(t => `<button type="button" data-pltab="${esc(t.k)}" aria-pressed="${t.k === cur}">${esc(t.t)}</button>`).join('')}</div>`;

@@ -883,7 +883,7 @@ async function viewPlans(rest = []) {
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
   const [execs, drift] = active ? await Promise.all([
-    Cloud.q('executions', { account_id: acc, plan_id: `eq.${active.id}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }),
+    loadPlanExecs(acc, active.id, active.payload),
     Cloud.rpc('plan_abweichung', { p_plan: active.id }).catch(() => null),
   ]) : [[], null];
   // B14: nur bessere Entwürfe zeigen (Karte und Liste); Gewinn gegen das erwartete Ende des aktiven Plans
