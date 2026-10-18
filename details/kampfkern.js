@@ -448,10 +448,13 @@ function guenstigsteVerteidigung(angreifer, {
   return { beste, einzeln, loesungen, angreiferKosten: flottenKosten(angreifer) };
 }
 
-// Angriffsflotten-Kandidaten: Kampfschiffe mit bekannten Kosten (ohne Schwarm/arkane Sonderklassen).
+// Angriffsflotten-Kandidaten: Kampfschiffe mit bekannten Kosten > 0 (ohne Schwarm/arkane Sonderklassen; die arkanen Schiffe
+// RBCR/RHDR/RKDR/RSDR stehen unter „Kampfschiffe“ mit Kosten 0 – ohne den Filter liefe besterAngriff dort bis Infinity).
+// Ohne die Einheiten „der Erstgeborenen“ (PLFG, PBOM, PCOR): Wiki-Kosten 200–21 600 bei Rumpf 0,5–10 Mio. passen nicht,
+// sie würden jede Suche gewinnen (D7.4, 18.10.2026).
 function angriffsKandidaten() {
   return Object.entries(CU.units)
-    .filter(([, u]) => u.kind === 'ship' && u.cost && u.weapons.length && !/Schwarm|Arkan/i.test(u.class))
+    .filter(([, u]) => u.kind === 'ship' && summe(u.cost) > 0 && u.weapons.length && !/Schwarm|Arkan/i.test(u.class) && !/Arkan|Erstgeborenen/i.test(u.name))
     .map(([k]) => k);
 }
 
@@ -465,6 +468,7 @@ function besterAngriff(verteidigung, ungeschuetzt, {
   const lade = CU.units[transporter].cargo;
   for (const k of kandidaten) {
     const c = kosten(k);
+    if (!(c > 0)) continue;
     for (let a = 1, b = 2; a * c <= maxKosten; [a, b] = [b, a + b]) {
       const units = { [k]: a };
       const fehlt = ungeschuetzt - a * (CU.units[k].cargo ?? 0);

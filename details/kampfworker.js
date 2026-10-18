@@ -22,6 +22,11 @@ self.HzKampfRechne = function (art, a) {
     const r = B.guenstigsteVerteidigung(a.angreifer, { forschung: a.forschung, gegnerForschung: a.gegnerForschung, n: a.n, seed: a.seed });
     return { ...r, ms: Date.now() - t0 };
   }
+  if (art === 'angriff') {
+    // D7.4: beste Angriffsflotte gegen die Verteidigerseite (je Schiffstyp Anzahlen 1, 2, 3, 5, 8 …, Laderaum mit LTRN aufgefüllt)
+    const r = B.besterAngriff(a.verteidigung, a.ungeschuetzt, { forschung: a.forschung, gegnerForschung: a.gegnerForschung, n: a.n, seed: a.seed, treibstoff: a.treibstoff });
+    return { beste: r.beste, lohnt: r.lohnt, ergebnisse: r.ergebnisse.slice(0, 20), anzahl: r.ergebnisse.length, ms: Date.now() - t0 };
+  }
   throw new Error('unbekannte Rechnung ' + art);
 };
 
