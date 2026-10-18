@@ -89,11 +89,12 @@
   function model(p) {
     const req = Array.isArray(p.pflicht) ? new Set(p.pflicht) : null;
     const s = p.steps.map((x, i) => ({ i, k: x[0], id: x[1], l: x[2], t0: x[3], t1: x[4], name: x[5] || '', c: x[6] || [0, 0, 0],
-      req: req && x[0] !== 's' ? req.has(`${x[0]}:${x[1]}:${x[2]}`) : null }));
+      req: req && x[0] !== 's' ? req.has(`${x[0]}:${x[1]}:${x[2]}`) : null, pl: planAway(p, i + 1) }));   // pl: Kolonie (M5), sonst null
     const hours = p.hours || Math.max(...s.map(x => x.t1));
     const f = []; let cur = {};
     (p.factors || []).forEach(([t, ch], j, a) => { cur = { ...cur, ...ch }; const to = j + 1 < a.length ? a[j + 1][0] : hours; if (to > t) f.push([t, to, { ...cur }]); });
-    return { startTime: p.startTime, hours, s, f, id: p.id, created: p.created, at100: p.at100, lb: p.lb, hasReq: !!req };
+    return { startTime: p.startTime, hours, s, f, id: p.id, created: p.created, at100: p.at100, lb: p.lb, hasReq: !!req,
+      kol: planMulti(p) ? planTabs(p, null).filter(t => t.kol) : [], plName: c => planTabName(p, c) };
   }
   // Live-Stand: erledigte und laufende Schritte, Verschiebung in h (positiv = Verzug); wie liveState in build_page.js
   function liveOf(M, snap) {
@@ -105,7 +106,7 @@
     const lv = (k, id) => items[k].find(x => x.type === id) || { level: 0 };
     const done = new Set(), running = {}; let late = null, open = null;
     for (const st of M.s) {
-      if (st.k === 's') continue;
+      if (st.k === 's' || st.pl) continue;   // Kolonie-Schritte: der Live-Stand gilt nur für die Heimat
       const it = lv(st.k, st.id);
       if (it.inProgress && it.level === st.l) { running[st.i] = it.remaining || 0; const d = snapH + (it.remaining || 0) / 3600 - st.t1; late = late == null ? d : Math.max(late, d); }
       else if (it.level >= st.l) done.add(st.i);
@@ -168,7 +169,7 @@
     const f = K.filter;
     let curDay = null, hidden = 0, later = 0, nowDone = !(nowH >= 0 && nowH <= M.hours), html = '';
     for (const r of rows) {
-      if (r.s && f !== 'all' && r.s.k !== f && r.s.k !== 's') continue;
+      if (r.s && f !== 'all' && (f === 'b' ? r.s.k === 'r' || r.s.pl : f === 'r' ? r.s.k !== 'r' : r.s.pl !== f)) continue;
       if (r.ch && f === 'r') continue;
       if (!K.done && past(r)) { if (r.s) hidden++; continue; }
       if (!K.all && r.t > nowH + 24) { if (r.s) later++; continue; }
@@ -178,13 +179,13 @@
       const tm = r.s && r.s.i in LR ? 'läuft bis ' + esc(hm(new Date(Date.parse(LV.at) + LR[r.s.i] * 1000))) : esc(hm(at(r.t)));
       if (r.ch) { html += `<tr class="kfac"><td></td><td class="num">${tm}</td><td colspan="5">⚙ ${r.ch.map(([id, o, v]) => `${esc(bName(id))} ${pct(o)} → <b>${pct(v)}</b>`).join(', ')}</td></tr>`; continue; }
       const s = r.s;
-      html += `<tr${LD.has(s.i) ? ' class="kdone"' : ''}><td class="num">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}
+      html += `<tr${LD.has(s.i) ? ' class="kdone"' : ''}><td class="num">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}${s.pl ? ` <span class="tag aktiv">${esc(M.plName(s.pl))}</span>` : ''}
         <div class="small muted">Dauer ${hrs(s.t1 - s.t0)}${s.req == null ? '' : s.req ? ' · <span class="pill req">Pflicht</span>' : ' · <span class="pill opt">Investition</span>'}</div>${rmob(s.c)}</td>${res3(s.c)}</tr>`;
     }
     const fb = (v, l) => `<button type="button" data-f="${v}" aria-pressed="${f === v}">${l}</button>`;
     return `<div class="card"><h2>Die nächsten 24 Stunden</h2>
       <p class="small muted">Erledigte Aufträge sind ausgeblendet, „Jetzt“ zeigt die Uhrzeit im Plan. ⚙ = Änderung der Betriebsfaktoren (der Autobuilder stellt sie vor dem nächsten Auftrag ein, live nach der Faktor-Regel).</p>
-      <div class="row"><div class="kseg" id="kFilter">${fb('all', 'Alle')}${fb('b', 'Gebäude')}${fb('r', 'Forschung')}</div>
+      <div class="row"><div class="kseg" id="kFilter">${fb('all', 'Alle')}${fb('b', M.kol.length ? 'Gebäude Heimat' : 'Gebäude')}${M.kol.map(t => fb(t.k, esc(t.t))).join('')}${fb('r', M.kol.length ? 'Forschung (global)' : 'Forschung')}</div>
       <button type="button" id="kDone" aria-pressed="${K.done}">${K.done ? 'Erledigte ausblenden' : `Erledigte zeigen (${hidden})`}</button>
       <button type="button" id="kAll" aria-pressed="${K.all}">${K.all ? 'nur 24 h' : `ganzer Plan (+${later})`}</button></div>
       <div class="scroll"><table class="ktbl"><thead><tr><th class="num">#</th><th class="num">Start</th><th>Auftrag</th><th class="num e rc">Erz</th><th class="num m rc">Mineral</th><th class="num t rc">Treibst.</th></tr></thead>
@@ -193,15 +194,15 @@
   // Ebene 2: Kennzahlen + Zeitleiste bis zum SCOL
   function scol(M, OFF, cur) {
     const at = h => atPlan(M, h + OFF);
-    const nb = M.s.filter(s => s.k === 'b').length, nr = M.s.filter(s => s.k === 'r').length;
+    const nb = M.s.filter(s => s.k === 'b' && !s.pl).length, nr = M.s.filter(s => s.k === 'r').length;
     const ship = M.s.find(s => s.k === 's');
     const tile = (l, v, sub) => `<div class="ktot"><span>${l}</span><b>${v}</b>${sub ? `<div class="small muted">${sub}</div>` : ''}</div>`;
-    const lanes = [['b', 'Baustelle'], ['r', 'Forschung'], ['s', 'Werft']], Wd = 1100, L = 86, H = 26, top = 22, X = h => L + (Wd - L - 8) * h / M.hours;
+    const lanes = [['b', 'Baustelle'], ...M.kol.map(t => [t.k, M.plName(t.k)]), ['r', 'Forschung'], ['s', 'Werft']], Wd = 1100, L = 86, H = 26, top = 22, X = h => L + (Wd - L - 8) * h / M.hours;
     let svg = `<svg viewBox="0 0 ${Wd} ${top + lanes.length * H + 8}" role="img" aria-label="Zeitleiste der Bau- und Forschungsaufträge">`;
     for (let d = 0; d <= M.hours; d += 24) svg += `<line class="grid" x1="${X(d)}" x2="${X(d)}" y1="${top - 4}" y2="${top + lanes.length * H}"/><text x="${X(d) + 3}" y="12">Tag ${d / 24 + 1}</text>`;
     lanes.forEach(([k, n], li) => {
       const y = top + li * H; svg += `<text class="lane" x="4" y="${y + H / 2 + 4}">${n}</text>`;
-      for (const s of M.s) if (s.k === k) { const x = X(s.t0), w = Math.max(1, X(s.t1) - x), cls = k === 's' ? 's' : !M.hasReq ? k : s.req ? 'req' : 'opt';
+      for (const s of M.s) if (s.pl ? s.pl === k : s.k === k) { const x = X(s.t0), w = Math.max(1, X(s.t1) - x), cls = k === 's' ? 's' : !M.hasReq ? k : s.req ? 'req' : 'opt';
         svg += `<rect class="${cls}" x="${x}" y="${y + 3}" width="${w}" height="${H - 10}" rx="1"><title>${esc(stepName(s))}: ${esc(fmtT(at(s.t0)))} → ${esc(fmtT(at(s.t1)))} (${hrs(s.t1 - s.t0)})</title></rect>`; }
     });
     return `<div class="card"><h2>Schnellster Weg zum ersten Kolonieschiff</h2>

@@ -19,28 +19,28 @@ function factorChanges(plan) {
   return out;
 }
 // Planschritte: aktiver Ausschnitt (erster offener Schritt bis „bis #“) oder alle mit Historie (Ausführungen aus executions)
-// Planeten des Plans: plan.planet (ab 12.10. von build_autobuilder.js), weitere über plan.stepPlanet {Schritt: Koordinaten}
-// und plan.planets [{name, coords}]; ältere Pläne ohne Angabe: Heimatplanet aus dem Live-Stand
-function planPlanets(plan, home) {
-  const list = [plan.planet || home, ...(plan.planets || [])].filter(p => p?.coords);   // Heimat zuerst
-  for (const c of Object.values(plan.stepPlanet || {})) if (!list.some(p => p.coords === c)) list.push({ name: '', coords: c });
-  return list.filter((p, i) => list.findIndex(q => q.coords === p.coords) === i);
-}
-const stepPlanet = (plan, n, def) => plan.stepPlanet?.[n] || def;
+// Planeten: Reiter aus common.js (planTabs/planInTab, M5): tab = 'alle' | 'heim' | Koordinaten einer Kolonie | 'r' (Forschung)
+// Erledigt: Ausführung (executions) oder vor dem ersten offenen Schritt des Autobuilders – Kolonie-Schritte baut er (bis M3)
+// nicht, für sie zählt nur eine Ausführung
+const planStepDone = (plan, st, execs) => {
+  const open = (st.open || []).filter(Number.isInteger), first = open.length ? Math.min(...open) : null;
+  const done = new Set(execs.filter(e => e.step).map(e => e.step));
+  return n => done.has(n) || (first != null && n < first && !planAway(plan, n));
+};
 // Zeiten der Planschritte enthalten immer die Abweichung (Nutzer 16.10.): Planstart + τ + shift (h, wie activeEnd)
-function stepsTable(plan, st, execs, all, W, planet, shift = 0) {
+function stepsTable(plan, st, execs, all, W, tab, shift = 0) {
   const t0 = Date.parse(plan.startTime) + shift * 3600e3, tp = tau => esc(dt(t0 + tau * 3600e3));
   const tip = tau => shift ? ` title="Plan: ${esc(dt(t0 - shift * 3600e3 + tau * 3600e3))}"` : '';
   const open = (st.open || []).filter(Number.isInteger);
   const first = open.length ? Math.min(...open) : null;
   const until = st.until || plan.steps.length;
   const done = new Map(execs.filter(e => e.step).map(e => [e.step, e]));
-  const isDone = n => done.has(n) || (first != null && n < first);
+  const isDone = planStepDone(plan, st, execs);
   const nameOf = k => W?.B?.[k]?.n || k;
   const rows = [];
-  const def = (plan.planet || S.home)?.coords;
-  plan.steps.forEach((s, i) => { if (s[0] !== 's' && (!planet || stepPlanet(plan, i + 1, def) === planet)) rows.push({ tau: s[3], n: i + 1, s }); });
-  for (const fc of factorChanges(plan)) rows.push({ tau: fc.tau, fc });
+  plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) rows.push({ tau: s[3], n: i + 1, s }); });
+  // Faktorwechsel betreffen die Heimat: nur in den Reitern Alle und Heimat
+  if (!tab || tab === 'alle' || tab === 'heim') for (const fc of factorChanges(plan)) rows.push({ tau: fc.tau, fc });
   rows.sort((a, b) => a.tau - b.tau || (a.fc ? -1 : 1));
   const from = first ?? 1;
   const vis = all ? rows : rows.filter(r => r.fc ? true : r.n >= from && r.n <= until);
@@ -52,7 +52,8 @@ function stepsTable(plan, st, execs, all, W, planet, shift = 0) {
   return `<table class="small">${list.map(r => {
     if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
     const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
-    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
+    const kol = planAway(plan, r.n);
+    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) ? ' <span class="muted">· von Hand</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
   }).join('')}</table>`;
 }
@@ -395,7 +396,9 @@ async function createEdited(E, P, errs) {
   if (!P.halts.length) delete payload.halts;
   if (!Object.keys(E.limits).length) delete payload.limits;
   // Planet je Schritt (Kolonien, plan.stepPlanet {Nr: Koordinaten}) auf die neuen Nummern umschreiben
-  if (o.stepPlanet) payload.stepPlanet = Object.fromEntries(P.keep.map((r, i) => [i + 1, o.stepPlanet[r.n0]]).filter(x => x[1]));
+  // (eine Liste aus Plänen vor M1 gilt nicht und fällt weg)
+  delete payload.stepPlanet;
+  if (o.stepPlanet && !Array.isArray(o.stepPlanet)) payload.stepPlanet =Object.fromEntries(P.keep.map((r, i) => [i + 1, o.stepPlanet[r.n0]]).filter(x => x[1]));
   payload.id = await planId([payload.startTime, payload.steps, payload.factors, payload.halts || [], payload.limits || {}, o.id, now.toISOString()]);
   const sk = E.rows.filter(r => r.skip).map(r => '#' + r.n0), mv = E.rows.filter(r => r.moved && !r.skip && !r.ins).map(r => '#' + r.n0);
   const ins = P.keep.map((r, i) => r.ins ? `#${i + 1} ${r.s[5]}` : null).filter(Boolean);
@@ -444,19 +447,26 @@ async function viewPlans(rest = []) {
   const gains = await draftGains(plans, active, drift).catch(() => ({}));
   const own = isOwner();
   let html = '';
-  const plan = active?.payload;
+  // Lokale Vorschau (nur localhost): ?testplan=<Fixture> zeigt einen Testplan aus Horiversum/tests/fixtures statt des aktiven
+  // Plans (M5: Kolonie-Testplan plan-kolonie); Ausführungen und Lauf bleiben die echten
+  const tpn = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && new URLSearchParams(location.search).get('testplan');
+  const testPlan = tpn && /^[\w-]+$/.test(tpn) ? await fetch(`${HZ_ROOT}../Horiversum/tests/fixtures/${tpn}.json`).then(r => r.ok ? r.json() : null).catch(() => null) : null;
+  const plan = testPlan || active?.payload;
   if (plan?.steps) {
     const holder = sess.devs.find(x => x.holds);
     const hst = holder?.ab?.state?.plan === plan.id ? holder.ab.state : {};
-    const pls = planPlanets(plan, S.home);
-    const cur = pls.find(p => p.coords === S.planet) || pls[0] || null;
     const sh = planShift(drift);
-    html += `<div class="cols2"><div class="card"><div class="row between"><h2>${esc(planLabel(active.id))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span></h2>
+    // Mehrere Planeten (M5): Kopfzeile Imperium und Reiter Alle / Heimat / je Kolonie / Forschung (global), Nummern global
+    const multi = planMulti(plan), tabs = multi ? planTabs(plan, S.home) : null, tab = multi ? planTabCur(tabs) : null;
+    const t0 = Date.parse(plan.startTime) + sh * 3600e3;
+    const ex = testPlan ? [] : execs;
+    html += `<div class="cols2"><div class="card"><div class="row between"><h2>${testPlan ? `Testplan ${esc(tpn)} <span class="tag">lokal</span>` : `${esc(planLabel(active.id))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span>`}</h2>
       <span class="small">${COCKPIT_LINK('#/plaene', '„bis #“, Start/Stopp im Cockpit')}</span></div>
-      <p class="small">${esc(tidy(active.title || ''))}</p>${runBody(sess)}
-      ${pls.length > 1 ? `<div class="row small" style="margin:4px 0">Planet <select id="plSel">${pls.map(p => `<option value="${esc(p.coords)}"${p === cur ? ' selected' : ''}>${esc(`${p.name || 'Planet'} (${p.coords})`)}</option>`).join('')}</select></div>` : ''}
+      <p class="small">${esc(tidy(testPlan ? `${plan.created || ''} · id ${plan.id}` : active.title || ''))}</p>${runBody(sess)}
+      ${multi ? `<h3>Imperium</h3>${planEmpire(plan, tabs, planStepDone(plan, hst, ex), tau => t0 + tau * 3600e3)}${planTabsHtml(tabs, tab)}`
+        : `<div class="small muted" style="margin:4px 0">Planet ${esc((plan.planet || S.home)?.name || 'Heimat')} ${esc((plan.planet || S.home)?.coords || '')} · Forschung gilt für alle Planeten („global“)</div>`}
       ${Math.abs(sh) >= 0.05 ? `<div class="small muted" style="margin:4px 0">Zeiten inkl. Abweichung: ${sh > 0 ? 'Verzug' : 'Vorlauf'} ${esc(hrs(sh))} (reine Planzeit als Tooltip)</div>` : ''}
-      <h3>Alle ${plan.steps.length} Planschritte mit Ausführungen</h3>${stepsTable(plan, hst, execs, true, W, cur?.coords, sh)}</div>
+      <h3>${multi && tab !== 'alle' ? `${esc(tabs.find(t => t.k === tab).t)}: ${plan.steps.filter((s, i) => s[0] !== 's' && planInTab(plan, tab, s, i + 1)).length} von` : 'Alle'} ${plan.steps.length} Planschritte mit Ausführungen</h3>${stepsTable(plan, hst, ex, true, W, tab, sh)}</div>
       <div class="stack">${driftCard(drift, false)}</div></div>`;
   } else html += `<div class="card"><h2>Bauplan</h2><p class="muted">Kein freigegebener Bauplan. Freigeben im Cockpit: ${COCKPIT_LINK('#/plaene', 'Pläne')}</p></div>`;
   const item = p => `<div class="list-item"><div class="row between">
@@ -471,7 +481,7 @@ async function viewPlans(rest = []) {
     <p class="muted small">Freigeben, Verwerfen und Abbrechen im Cockpit. Hier: ansehen, als neuen Entwurf ändern, nicht laufende löschen (Owner).</p>
     ${plans.length ? plans.map(item).join('') : '<p class="muted">Noch keine Pläne.</p>'}</div>`;
   $('#view').innerHTML = html;
-  $('#plSel')?.addEventListener('change', e => { S.planet = e.target.value; route(true); });
+  planTabsWire($('#view'));
   $('#view').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => deletePlan(plans.find(x => x.id === b.dataset.del))));
 }
 

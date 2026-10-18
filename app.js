@@ -580,41 +580,37 @@ function factorChanges(plan) {
   return out;
 }
 // Planschritte: aktiver Ausschnitt (erster offener Schritt bis „bis #“) oder alle mit Historie (Ausführungen aus executions)
-// Planeten des Plans: plan.planet (ab 12.10. von build_autobuilder.js), weitere über plan.stepPlanet {Schritt: Koordinaten}
-// und plan.planets [{name, coords}]; ältere Pläne ohne Angabe: Heimatplanet aus dem Live-Stand
-function planPlanets(plan, home) {
-  const list = [plan.planet || home, ...(plan.planets || [])].filter(p => p?.coords);   // Heimat zuerst
-  for (const c of Object.values(plan.stepPlanet || {})) if (!list.some(p => p.coords === c)) list.push({ name: '', coords: c });
-  return list.filter((p, i) => list.findIndex(q => q.coords === p.coords) === i);
-}
-const stepPlanet = (plan, n, def) => plan.stepPlanet?.[n] || def;
+// Planeten: Reiter aus common.js (planTabs/planInTab, M5): tab = 'alle' | 'heim' | Koordinaten einer Kolonie | 'r' (Forschung).
+// Kolonie-Schritte baut der Autobuilder bis M3 nicht: erledigt nur per Ausführung, nicht „vor dem ersten offenen“.
 // Zeiten der Planschritte enthalten immer die Abweichung (Nutzer 16.10.): Planstart + τ + shift (h, wie activeEnd)
 // C1 (17.10.2026): nur ein Ausschnitt – die nächsten STEP_NEAR Schritte ab dem ersten offenen und ±3 um „bis #“ (Tipp = „bis #“ wählen);
 // die ganze Liste mit Ausführungen steht im Atlas unter Pläne.
 const STEP_NEAR = 12;
-function stepsTable(plan, st, execs, W, planet, shift = 0) {
+function stepsTable(plan, st, execs, W, tab, shift = 0) {
   const t0 = Date.parse(plan.startTime) + shift * 3600e3, tp = tau => esc(dt(t0 + tau * 3600e3));
   const tip = tau => shift ? ` title="Plan: ${esc(dt(t0 - shift * 3600e3 + tau * 3600e3))}"` : '';
   const open = (st.open || []).filter(Number.isInteger);
   const first = open.length ? Math.min(...open) : null;
   const until = st.until || null;
   const done = new Map(execs.filter(e => e.step).map(e => [e.step, e]));
-  const isDone = n => done.has(n) || (first != null && n < first);
+  const isDone = n => done.has(n) || (first != null && n < first && !planAway(plan, n));
   const nameOf = k => W?.B?.[k]?.n || k;
-  const def = (plan.planet || S.home)?.coords;
-  const from = first ?? 1;
-  const show = n => (n >= from && n < from + STEP_NEAR) || (until && Math.abs(n - until) <= 3);
+  // im Reiter eines Planeten/der Forschung: die nächsten STEP_NEAR offenen Schritte dieses Reiters statt des Nummernfensters
+  const own = plan.steps.map((s, i) => i + 1).filter(n => tab && tab !== 'alle' && planInTab(plan, tab, plan.steps[n - 1], n) && !isDone(n));
+  const from = tab && tab !== 'alle' ? own[0] ?? first ?? 1 : first ?? 1;
+  const near = n => tab && tab !== 'alle' ? own.indexOf(n) >= 0 && own.indexOf(n) < STEP_NEAR : n >= from && n < from + STEP_NEAR;
+  const show = n => near(n) || (until && Math.abs(n - until) <= 3);
   const steps = [];
-  plan.steps.forEach((s, i) => { if (s[0] !== 's' && show(i + 1) && (!planet || stepPlanet(plan, i + 1, def) === planet)) steps.push({ tau: s[3], n: i + 1, s }); });
+  plan.steps.forEach((s, i) => { if (s[0] !== 's' && show(i + 1) && planInTab(plan, tab, s, i + 1)) steps.push({ tau: s[3], n: i + 1, s }); });
   if (!steps.length) return `<p class="muted small">Kein offener Schritt${until ? ` bis #${esc(until)}` : ''}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
   // zusammenhängende Gruppen (Lücke = „…“); Faktorwechsel nur innerhalb einer Gruppe
   const groups = [];
   const gap = until && until - 3 > from + STEP_NEAR;   // Ausschnitt um „bis #“ getrennt vom Anfang
-  for (const r of steps) { const g = groups[groups.length - 1]; if (g && !(gap && g[g.length - 1].n < from + STEP_NEAR && r.n >= from + STEP_NEAR)) g.push(r); else groups.push([r]); }
-  const fcs = factorChanges(plan);
+  for (const r of steps) { const g = groups[groups.length - 1]; if (g && !(gap && near(g[g.length - 1].n) && !near(r.n))) g.push(r); else groups.push([r]); }
+  const fcs = !tab || tab === 'alle' || tab === 'heim' ? factorChanges(plan) : [];   // Faktoren gelten für die Heimat
   const row = r => {
     const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
-    return `<tr class="step${isDone(r.n) ? ' muted' : ''}${r.n === until ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${r.n === until ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
+    return `<tr class="step${isDone(r.n) ? ' muted' : ''}${r.n === until ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${planAway(plan, r.n) && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, planAway(plan, r.n)))}</span>` : ''}${planAway(plan, r.n) && !isDone(r.n) ? ' <span class="muted">· von Hand</span>' : ''}${r.n === until ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
   };
   const fcRow = fc => `<tr class="muted"><td></td><td>⚙ Faktor ${fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(fc.tau)}>${tp(fc.tau)}</td></tr>`;
@@ -660,15 +656,18 @@ function abCard(active, sess, cmds, own, execs, W, drift) {
   html += driftLine(drift, own);
   if (plan) {
     const hst = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
-    const pls = planPlanets(plan, S.home);
-    const cur = pls.find(p => p.coords === S.planet) || pls[0] || null;
-    const plName = p => `${p.name || 'Planet'} (${p.coords})`;
+    // Mehrere Planeten (M5): Kopfzeile Imperium und Reiter wie im Atlas, Nummern und „bis #“ global
+    const multi = planMulti(plan), tabs = multi ? planTabs(plan, S.home) : null, tab = multi ? planTabCur(tabs) : null;
+    const home = plan.planet || S.home;
+    const t0 = Date.parse(plan.startTime) + planShift(drift) * 3600e3;
+    const isDone = (() => { const o = (hst.open || []).filter(Number.isInteger), f = o.length ? Math.min(...o) : null, d = new Set(execs.filter(e => e.step).map(e => e.step));
+      return n => d.has(n) || (f != null && n < f && !planAway(plan, n)); })();
     html += `<div class="row between" style="margin-top:10px"><h3 style="margin:0">Nächste Planschritte <span class="muted small">bis #${esc(hst.until || '–')}</span></h3>
       <a class="small" href="details/#/plaene" target="_blank" rel="noopener">alle im Atlas</a></div>
-      ${pls.length > 1 ? `<div class="row small" style="margin:4px 0">Planet <select id="plSel">${pls.map(p => `<option value="${esc(p.coords)}"${p === cur ? ' selected' : ''}>${esc(plName(p))}</option>`).join('')}</select></div>`
-        : cur ? `<div class="small muted" style="margin:4px 0">Planet ${esc(plName(cur))} · Forschung gilt für alle Planeten („global“)</div>` : ''}
+      ${multi ? planEmpire(plan, tabs, isDone, tau => t0 + tau * 3600e3) + planTabsHtml(tabs, tab)
+        : home?.coords ? `<div class="small muted" style="margin:4px 0">Planet ${esc(`${home.name || 'Planet'} (${home.coords})`)} · Forschung gilt für alle Planeten („global“)</div>` : ''}
       ${(() => { const sh = planShift(drift); return Math.abs(sh) >= 0.05 ? `<div class="small muted" style="margin:4px 0">Zeiten inkl. Abweichung: ${sh > 0 ? 'Verzug' : 'Vorlauf'} ${esc(hrs(sh))} gegen den Plan (reine Planzeit als Tooltip)</div>` : ''; })()}
-      ${stepsTable(plan, hst, execs, W, cur?.coords, planShift(drift))}
+      ${stepsTable(plan, hst, execs, W, tab, planShift(drift))}
       ${own ? `<div class="row between small" style="margin-top:6px"><span class="muted">Tipp auf einen Schritt = „bis #“</span><a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a></div>` : ''}`;
   }
   return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
@@ -932,7 +931,7 @@ async function viewPlans(rest = []) {
     if (!confirm('Entwurf verwerfen?')) return;
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
   });
-  $('#plSel')?.addEventListener('change', e => { S.planet = e.target.value; route(true); });
+  planTabsWire($('#view'));
   $('#abDev')?.addEventListener('change', e => { S.abSel = { ...S.abSel, dev: e.target.value }; route(true); });
   watchCmds(cmds);
   const showStep = () => {

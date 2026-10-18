@@ -318,6 +318,41 @@ const evSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* egal */
 
 const KIND = { build: 'Bau', research: 'Forschung', ship: 'Schiffe', probe: 'Sonden', trade: 'Handel', defense: 'Verteidigung', fleet: 'Flotte', transport: 'Transport' };
 
+/* ---------- Bauplan mit mehreren Planeten (M1/M5, doku/stand/autobuilder-mehrplaneten.md) ----------
+   Ein Plan, eine Nummernfolge: plan.stepPlanet {Nr: Koordinaten} nur für Kolonie-Schritte, plan.planets [{id, name, coords,
+   bahn}] = Kolonien, plan.planet = Heimat (ältere Pläne ohne: Live-Stand). Forschung ist global. stepPlanet als Liste
+   (Pläne vor M1, z. B. a8d36cc9b3: Simulator-Nummern, Kolonie-Schritte nicht in steps) gilt nicht → Einplaneten-Ansicht. */
+const planAway = (plan, n) => { const sp = plan?.stepPlanet; return sp && !Array.isArray(sp) && typeof sp[n] === 'string' ? sp[n] : null; };
+const planMulti = plan => (plan?.steps || []).some((s, i) => planAway(plan, i + 1));
+// Reiter: alle · heim · je Kolonie (Koordinaten) · r (Forschung global)
+function planTabs(plan, home) {
+  const h = plan.planet?.coords ? plan.planet : home;
+  const kol = (Array.isArray(plan.planets) ? plan.planets : []).filter(p => typeof p?.coords === 'string').map(p => ({ ...p }));
+  (plan.steps || []).forEach((s, i) => { const c = planAway(plan, i + 1); if (c && !kol.some(p => p.coords === c)) kol.push({ name: '', coords: c }); });
+  return [{ k: 'alle', t: 'Alle' }, { k: 'heim', t: h?.coords ? `${h.name || 'Heimat'} (${h.coords})` : 'Heimat' },
+    ...kol.map(p => ({ k: p.coords, t: `${p.name || 'Kolonie'} (${p.coords})`, kol: true })), { k: 'r', t: 'Forschung (global)' }];
+}
+// Schritt Nr. n im Reiter k? Heimat = Gebäude und Schiffe ohne Planet
+const planInTab = (plan, k, s, n) => !k || k === 'alle' ? true : k === 'r' ? s[0] === 'r' : k === 'heim' ? s[0] !== 'r' && !planAway(plan, n) : planAway(plan, n) === k;
+const planTabName = (plan, c) => (Array.isArray(plan.planets) && plan.planets.find(p => p?.coords === c)?.name) || c;
+// Reiter-Leiste (Klick setzt S.planTab, eigene Wahl unabhängig vom Planeten im Reiter Imperium)
+const planTabsHtml = (tabs, cur) => `<div class="kseg pltabs" style="margin:4px 0">${tabs.map(t => `<button type="button" data-pltab="${esc(t.k)}" aria-pressed="${t.k === cur}">${esc(t.t)}</button>`).join('')}</div>`;
+const planTabCur = tabs => tabs.some(t => t.k === S.planTab) ? S.planTab : 'alle';
+function planTabsWire(root) {
+  root?.querySelectorAll('[data-pltab]').forEach(b => b.addEventListener('click', () => { S.planTab = b.dataset.pltab; route(true); }));
+}
+// Kopfzeile Imperium: je Reiter der nächste offene Schritt (Zeit tm(tau) inkl. Abweichung), fällige Kolonie-Schritte markiert
+function planEmpire(plan, tabs, isDone, tm, now = Date.now()) {
+  const rows = tabs.filter(t => t.k !== 'alle').map(t => {
+    const i = plan.steps.findIndex((s, j) => s[0] !== 's' && planInTab(plan, t.k, s, j + 1) && !isDone(j + 1));
+    const s = plan.steps[i], at = s ? tm(s[3]) : null;
+    const nx = !s ? '<span class="muted">alle Schritte erledigt</span>'
+      : `nächster #${i + 1} ${esc(s[5])} · ${esc(dt(at))}${t.kol && at < now ? ' <span class="tag mittel">fällig</span>' : ''}`;
+    return `<div><b>${esc(t.t)}</b>${t.kol ? ' <span class="muted">(von Hand bis M3)</span>' : ''}: ${nx}</div>`;
+  });
+  return `<div class="small" style="margin:4px 0">${rows.join('')}<div class="muted">Der Autobuilder baut auf der Heimat; Kolonie-Schritte bis M3 von Hand, Forschung global.</div></div>`;
+}
+
 /* ---------- Spieldaten (Gebäude und Forschung, Datenbank Runde 7); Reiter Kompendium in kompendium.js ---------- */
 
 async function loadWissen() {
