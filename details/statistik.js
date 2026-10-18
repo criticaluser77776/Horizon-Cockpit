@@ -1,8 +1,8 @@
 'use strict';
 /* Horizon Atlas – Reiter Statistik (D3, 18.10.2026): Verlauf aus den Live-Snapshots über die RPC stats_series
    (Migration 20261018120001, je Zeitfenster der letzte Snapshot, wenige KB statt ganzer Snapshots). Punkte, Rang,
-   Förderung, Lager, freie Kapazitäten und Stufensummen als Linien; Tagestabelle. Highscores je Kategorie folgen mit D8
-   (Collector liest stat_main.php?cmd=orden, Feld empire.highscore → Spalte hs). Schreibt nichts. */
+   Förderung, Lager, freie Kapazitäten und Stufensummen als Linien; Tagestabelle. Highscores (D8): volle Tabelle
+   aus state_latest (empire.highscore, Collector ab 0.4.16, stat_main.php?cmd=orden), Platz je Kategorie aus der Reihe (hs). Schreibt nichts. */
 
 const ST_RANGES = [['1', '24 h'], ['3', '3 Tage'], ['7', '7 Tage'], ['30', '30 Tage'], ['90', '90 Tage']];
 const ST_RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
@@ -69,7 +69,11 @@ function stDays(rows) {
 async function viewStatistik() {
   const range = stGet(), days = +range;
   const von = new Date(Date.now() - days * 864e5).toISOString();
-  const res = await Cloud.rpc('stats_series', { p_account: S.acc, p_von: von, p_bis: new Date().toISOString(), p_step: 'auto' });
+  // Reihe + volle Highscore-Tabelle des neuesten Stands (eine Zeile, nur das Feld empire.highscore; Collector ab 0.4.16)
+  const [res, latest] = await Promise.all([
+    Cloud.rpc('stats_series', { p_account: S.acc, p_von: von, p_bis: new Date().toISOString(), p_step: 'auto' }),
+    Cloud.q('state_latest', { select: 'collected_at,hs:data->empire->highscore', account_id: `eq.${S.acc}`, kind: 'eq.live' }).catch(() => []),
+  ]);
   const rows = res?.rows || [];
   const seg = `<div class="kseg" id="stRange">${ST_RANGES.map(([v, l]) => `<button type="button" data-r="${v}" aria-pressed="${v === range}">${l}</button>`).join('')}</div>`;
   const head = `<div class="card"><div class="row between"><h2>Statistik</h2>${seg}</div>
@@ -117,20 +121,37 @@ async function viewStatistik() {
     <thead><tr><th>Tag</th><th class="num">Punkte</th><th class="num">±</th><th class="num">Platz</th><th class="num" title="gewonnene Plätze gegen den Vortag">Plätze ↑</th><th class="num">Förderung/Tag</th><th class="num">Stufen G/F</th><th>Collector</th></tr></thead>
     <tbody>${dayRows}</tbody></table></div></div>`;
 
-  const hs = [...rows].reverse().find(r => r.hs)?.hs;
-  const hsCard = `<div class="card"><h3>Highscores je Kategorie</h3>${hs ? stHighscore(hs)
-    : '<p class="small muted">Kommt mit D8: Der Collector liest dann die Seite „Mein Imperium“ (stat_main.php?cmd=orden) mit allen Kategorien, Punkten und Platz (doku/stand/atlas-statistik.md).</p>'}</div>`;
+  const hsFull = latest?.[0]?.hs, hsRows = rows.filter(r => r.hs);
+  const cats = [...new Set(hsRows.flatMap(r => Object.keys(r.hs)))].filter(k => k !== 'total');
+  const hsCard = `<div class="cols2"><div class="card"><h3>Highscores je Kategorie${hsFull?.at ? ` <span class="small muted">Stand ${esc(dt(hsFull.at))}</span>` : ''}</h3>
+    ${hsFull && !hsFull.error ? stHighscore(hsFull)
+      : hsFull?.error ? `<p class="small err">${esc(hsFull.error)}</p>`
+      : '<p class="small muted">Noch keine Werte: Der Collector liest die Highscores ab Version 0.4.16 von der Seite „Mein Imperium“ (stat_main.php?cmd=orden), mit dem normalen Imperium-Abruf alle 20 min.</p>'}</div>
+    ${cats.length ? `<div class="card"><h3>Platz je Kategorie <span class="small muted">(Kategorien mit Punkten)</span></h3>${stChart(
+      ['total', ...cats].slice(0, 8).map((k, i) => ({ name: ST_HS[k] || k, color: ST_HSCOL[i % ST_HSCOL.length], pts: hsRows.map(r => [T(r), r.hs[k]?.[1] ?? null]) })),
+      { inv: true })}</div>` : ''}</div>`;
 
   $('#view').innerHTML = head + `<div class="card">${tiles}</div>` + charts + hsCard + table;
   stBind();
 }
 
-// Platzhalter bis D8 das Format festlegt: Objekt {kategorie: {p, r}} als Tabelle
+// Kategorien des Highscores (Schlüssel wie die Auswahl der Highscore-Liste, doku/wissen/statistik-monitor.md)
+const ST_HS = { building: 'Gebäude', research: 'Forschung', fleet: 'Flotte', defence: 'Verteidigung', exploration: 'Entdeckung',
+  prosecution: 'Kopfgeld', battle: 'Kampf', trade: 'Handel', war: 'Krieg', alliance: 'Allianz', firepower: 'Feuerkraft',
+  artefacts: 'Aggregate', darkenergy: 'Dunkle Energie', ascension: 'Ascension', total: 'Summe' };
+const ST_HSCOL = ['var(--accent)', '#c0713a', '#3aa06a', '#8a5cc0', '#d4a017', '#c0392b', '#5d6b80', '#3a8fc0'];
+// Volle Tabelle: Zeilen = Kategorien, Spalten global und Prestige (Punkte, Platz); Summe zuletzt, fett
 function stHighscore(hs) {
-  const rows = Object.entries(hs).filter(([, v]) => v && typeof v === 'object' && ('p' in v || 'r' in v));
-  return rows.length ? `<table class="wide small"><thead><tr><th>Kategorie</th><th class="num">Punkte</th><th class="num">Platz</th></tr></thead><tbody>
-    ${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${esc(fmt(v.p))}</td><td class="num">${esc(fmt(v.r))}</td></tr>`).join('')}</tbody></table>`
-    : '<p class="small muted">Keine Werte.</p>';
+  const secs = ['global', 'prestige', ...Object.keys(hs).filter(k => !['global', 'prestige', 'points', 'status', 'at', 'error'].includes(k)
+    && hs[k] && typeof hs[k] === 'object')].filter(k => hs[k]);
+  const keys = [...new Set(secs.flatMap(k => Object.keys(hs[k])))].sort((a, b) => (a === 'total') - (b === 'total'));
+  if (!keys.length) return '<p class="small muted">Keine Werte.</p>';
+  const name = { global: 'Global', prestige: 'Prestige' };
+  return `${hs.points != null ? `<p class="small">${esc(fmt(hs.points))} Punkte${hs.status ? ` · ${esc(hs.status)}` : ''}</p>` : ''}
+    <table class="wide small"><thead><tr><th>Kategorie</th>${secs.map(k => `<th class="num">${esc(name[k] || k)}</th><th class="num">Platz</th>`).join('')}</tr></thead><tbody>
+    ${keys.map(k => `<tr${k === 'total' ? ' style="font-weight:600"' : ''}><td>${esc(ST_HS[k] || k)}</td>${secs.map(s => {
+      const v = hs[s][k]; return `<td class="num${v && !v.p ? ' muted' : ''}">${esc(v ? fmt(v.p) : '')}</td><td class="num${v && !v.p ? ' muted' : ''}">${esc(v ? fmt(v.r) : '')}</td>`;
+    }).join('')}</tr>`).join('')}</tbody></table>`;
 }
 
 function stBind() {
