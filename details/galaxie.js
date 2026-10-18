@@ -10,7 +10,10 @@ const PL_TYPE = { STPL: 'Standard', JUPL: 'Dschungel', FOPL: 'Wald', RKPL: 'Fels
   CRPL: 'Kristall', MUPL: 'Staub', ASFI: 'Asteroidenfeld', JPGT: 'Sprungtor', PRSR: 'Gebetsschrein', ARNA: 'Arena',
   SMOS: 'Kleines Mutterschiff', LMOS: 'Großes Mutterschiff', IMOS: 'Imperiales Mutterschiff' };
 const PL_STATUS = { geschuetzt: 'geschützt', aktiv: 'aktiv', inaktiv: 'inaktiv', gesperrt: 'gesperrt', urlaub: 'Urlaub' };
-const PL_FIELD = { neu: 'neu', typ: 'Typ', name: 'Name', besitzer: 'Besitzer', allianz: 'Allianz', status: 'Status', weg: 'Bahn leer', zurueck: 'wieder da' };
+const PL_FIELD = { neu: 'neu', typ: 'Typ', name: 'Name', besitzer: 'Besitzer', allianz: 'Allianz', status: 'Status', weg: 'Bahn leer', zurueck: 'wieder da',
+  pid: 'neue Planet-ID', bild: 'Bild', verschoben: 'verschoben' };   // pid/bild/verschoben ab Migration Planeten-DB 2 (P1)
+// Änderungstext einer Zeile aus planet_changes: alt → neu, dazu der Hinweis (note, z. B. „neue Kolonie“ oder der verschobene Planet)
+const plChgText = c => `${c.old && c.new ? `${esc(c.old)} → ${esc(c.new)}` : esc(c.old || c.new)}${c.note ? ` <span class="muted">· ${esc(c.note)}</span>` : ''}`;
 const SYS_ORBITS = 14;
 // SCOL-Regel aus doku/stand/scol-ziel.md (Nutzer 15.10.): Rohstoffe zuerst; CLPL nur prospektiert; gleicher Rang → Bahn 5/6 vor 8/3 vor 1/11–13
 const SCOL_RANK = { VUPL: 1, LVPL: 1, JUPL: 2, CLPL: 3, RKPL: 4, FOPL: 5 };
@@ -30,7 +33,7 @@ async function loadSysData(sys) {
   const [planets, changes, prospect] = await Promise.all([
     Cloud.q('planets', { ...where, order: 'orbit' }),
     Cloud.q('planet_changes', { ...where, order: 't.desc,id.desc', limit: 60 }),
-    Cloud.q('planet_prospect', { ...where, select: 'orbit,reports,probes,last_report' }).catch(() => []),
+    Cloud.q('planet_prospect', { ...where, select: 'orbit,reports,probes,last_report', reports: 'gt.0' }).catch(() => []),
   ]);
   S.sysCache[`${sys.galaxy}:${sys.system}`] = { key, sys, planets, changes, prospect };
   return { key, sys, planets, changes, prospect, values: await values };
@@ -161,7 +164,7 @@ function systemCard(S0, g, s, hm) {
       <span class="small muted os" title="zuletzt gesehen ${esc(dt(p.last_seen))}">${esc(ago(p.last_seen))}</span>${typeof prbButton === 'function' ? prbButton({ ...p, coords: `${g}:${s}:${b}` }, true) : ''}</div>`;   // Sonden: details/sonden.js
   }).join('');
   const chRow = c => `<tr><td class="small muted nowrap">${esc(dt(c.t))}</td><td class="num">${c.orbit}</td><td class="small">${esc(PL_FIELD[c.field] || c.field)}</td>
-    <td class="small wrapall">${c.old && c.new ? `${esc(c.old)} → ${esc(c.new)}` : esc(c.old || c.new)}</td></tr>`;
+    <td class="small wrapall">${plChgText(c)}</td></tr>`;
   const ch = changes.length ? `<h3>Verlauf <span class="muted small">neueste zuerst</span></h3><table class="small chg"><tr><th>Zeit</th><th class="num">Bahn</th><th>Was</th><th>Änderung</th></tr>${changes.slice(0, 10).map(chRow).join('')}</table>
     ${changes.length > 10 ? `<details class="sub" data-open="syschg"${S.plOpen?.syschg ? ' open' : ''}><summary class="small">ältere (${changes.length - 10}${changes.length >= 60 ? '+' : ''})</summary><table class="small chg">${changes.slice(10).map(chRow).join('')}</table></details>` : ''}`
     : '<p class="small muted">Noch keine Änderungen.</p>';

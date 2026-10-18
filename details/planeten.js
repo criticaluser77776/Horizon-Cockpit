@@ -3,9 +3,10 @@
    Nachbau der Ansicht aus horizon-system-planet-database.user.js: DB-Browser (9722 ff.: Filter, Vorlagen, Sortierung in bis zu
    drei Stufen, Favoriten, Vergleich, Statistik), Planet-Detail mit den 15 Prospektionswerten (Farben 16407–16530, Bauzeit-Faktor
    16351), Spieler (18597) und Verlauf über alle Systeme (Ersatz für den Ereignis-Browser 16654 ff.).
-   Daten: planets, planet_prospect, prospect_reports, planet_changes – nur lesend. Favoriten, Vergleich, Filter und Vorlagen je
-   Browser in localStorage. Noch ohne P1 (Migration Planeten-DB 2): keine Kennung je Bericht (aktiv/inaktiv/leer), kein
-   „verschoben“, Spieler aus planets berechnet. Typnamen, Status und Verlaufsarten aus galaxie.js (PL_TYPE, PL_STATUS, PL_FIELD). */
+   Daten: planets, planet_prospect, prospect_reports, planet_changes, planet_players – nur lesend. Favoriten, Vergleich, Filter und
+   Vorlagen je Browser in localStorage. Seit P1 (Migration 20261018150001 Planeten-DB 2): Berichte aktiv/inaktiv/leer nach der
+   Kennung des Planeten, „verschoben“/„neue Planet-ID“/„Bild“ im Verlauf, Spieler aus der View planet_players.
+   Typnamen, Status und Verlaufsarten aus galaxie.js (PL_TYPE, PL_STATUS, PL_FIELD, plChgText). */
 
 const PD_GROUPS = [
   ['Grundressourcen', ['Metallvorkommen', 'Mineralvorkommen', 'Treibstoffvorkommen']],
@@ -63,9 +64,10 @@ async function pdData(force) {
     planets.push(...page);
     if (page.length < 1000) break;
   }
-  const prospect = await Cloud.q('planet_prospect', { account_id: a, select: 'galaxy,system,orbit,reports,probes,last_report,vals' }).catch(() => []);
+  const prospect = await Cloud.q('planet_prospect', { account_id: a, select: 'galaxy,system,orbit,reports,probes,last_report,vals,inactive_reports,empty_reports' }).catch(() => []);
   const pr = new Map(prospect.map(x => [pdKey(x), x]));
-  for (const p of planets) { p.coords = pdKey(p); p.pr = pr.get(p.coords) || null; p.v = pdVals(p.pr); }
+  // pr nur mit aktiven Berichten (sonst gilt der Planet als nicht prospektiert); prAll zeigt auch die inaktiven
+  for (const p of planets) { p.coords = pdKey(p); p.prAll = pr.get(p.coords) || null; p.pr = p.prAll?.reports > 0 ? p.prAll : null; p.v = pdVals(p.pr); }
   return (S.pd = { acc: S.acc, at: Date.now(), planets, byKey: new Map(planets.map(p => [p.coords, p])) });
 }
 
@@ -83,7 +85,7 @@ async function viewPlanetDb(rest = []) {
     <span class="small muted">${fmt(d.planets.length)} Planeten erfasst · ${fmt(d.planets.filter(p => p.pr).length)} prospektiert · Stand ${esc(clockT(d.at))}</span>
     <button id="pdReload" class="small" title="Daten neu laden">↻</button></div>`;
   if (sub === 'verlauf') await pdVerlauf(d, nav);
-  else if (sub === 'spieler') pdSpieler(d, nav);
+  else if (sub === 'spieler') await pdSpieler(d, nav);
   else if (sub === 'statistik') pdStatistik(d, nav);
   else if (sub === 'vergleich') pdVergleich(d, nav);
   else pdBrowser(d, nav, sub === 'p' ? rest[1] : null);
@@ -273,10 +275,28 @@ function pdStats(list) {
     <p class="small muted">Zeile in der Liste antippen zeigt hier den Planeten: 15 Werte, Berichte, Verlauf.</p></div>`;
 }
 
+// Bericht passt zum heutigen Planeten? Gleiche Regel wie die View planet_prospect: main_p_id (und Typ nicht umgeformt) → Bild →
+// Name+Typ; ohne Kennung gilt der Bericht; Bahn leer → inaktiv. Rückgabe [aktiv, Grund].
+function pdRepActive(r, p) {
+  if (!p.present) return [false, 'Bahn leer'];
+  if (r.main_p_id && p.main_p_id) {
+    if (String(r.main_p_id) !== String(p.main_p_id)) return [false, `anderer Planet (ID ${r.main_p_id})`];
+    const moved = pdKey(r) !== p.coords ? `verschoben von ${pdKey(r)}` : 'gleiche Planet-ID';
+    return r.planet_type && p.type && r.planet_type !== p.type ? [false, `umgeformt (${r.planet_type} → ${p.type})`] : [true, moved];
+  }
+  if (r.image && p.image) return r.image === p.image ? [true, 'gleiches Bild'] : [false, 'Bild geändert'];
+  if (r.planet_name && r.planet_type && p.name && p.type)
+    return r.planet_name === p.name && r.planet_type === p.type ? [true, 'Name und Typ gleich'] : [false, 'Name oder Typ geändert'];
+  return [true, 'ohne Kennung'];
+}
+
 async function pdDetail(p) {
   const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${p.galaxy}`, system: `eq.${p.system}`, orbit: `eq.${p.orbit}` };
+  // Berichte dieser Bahn und – nach einer Verschiebung – die Berichte mit derselben Planet-ID von der alten Stelle
+  const rw = p.main_p_id ? { account_id: where.account_id, or: `(and(galaxy.eq.${p.galaxy},system.eq.${p.system},orbit.eq.${p.orbit}),main_p_id.eq.${p.main_p_id})` } : where;
   const [reports, changes] = await Promise.all([
-    Cloud.q('prospect_reports', { ...where, select: 'report_at,probes,vals,src_id', order: 'report_at.desc', limit: 50 }).catch(() => []),
+    Cloud.q('prospect_reports', { ...rw, select: 'galaxy,system,orbit,report_at,probes,vals,src_id,planet_type,planet_name,main_p_id,image,prospector',
+      order: 'report_at.desc', limit: 50 }).catch(() => []),
     Cloud.q('planet_changes', { ...where, order: 't.desc,id.desc', limit: 50 }),
   ]);
   const fav = pdFav().has(p.coords), cmp = pdCmpList().includes(p.coords);
@@ -284,10 +304,17 @@ async function pdDetail(p) {
       <td class="num"${pdTone(k, p.v[k])}>${pdFmt(k, p.v[k])}</td></tr>`).join('')}`).join('')
     + `<tr><th colspan="2" class="pdgrp">Berechnet</th></tr><tr><td title="Baugeschwindigkeit ÷ Gebäudekosten: > 1 baut schneller als ein Standardplanet">${PD_BZF}</td>
       <td class="num"${pdTone(PD_BZF, p.v[PD_BZF])}>${pdFmt(PD_BZF, p.v[PD_BZF])}</td></tr>` : '';
-  const rep = reports.map(r => `<tr><td class="small nowrap">${esc(dt(r.report_at))}</td><td class="num">${fmt(r.probes)}</td>
-    <td class="num">${Object.keys(r.vals || {}).length || '<span class="muted">leer</span>'}</td></tr>`).join('');
+  const rep = reports.map(r => {
+    const [on, why] = pdRepActive(r, p), n = Object.keys(r.vals || {}).length;
+    return `<tr${on ? '' : ' class="muted"'}><td class="small nowrap">${esc(dt(r.report_at))}</td><td class="num">${fmt(r.probes)}</td>
+      <td class="num">${n || '<span class="muted">leer</span>'}</td><td class="small">${on ? 'aktiv' : 'inaktiv'} <span class="muted">· ${esc(why)}</span></td>
+      <td class="small">${esc(r.prospector || '')}</td></tr>`;
+  }).join('');
   const chg = changes.map(c => `<tr><td class="small muted nowrap">${esc(dt(c.t))}</td><td class="small">${esc(PL_FIELD[c.field] || c.field)}</td>
-    <td class="small wrapall">${c.old && c.new ? `${esc(c.old)} → ${esc(c.new)}` : esc(c.old || c.new)}</td></tr>`).join('');
+    <td class="small wrapall">${plChgText(c)}</td></tr>`).join('');
+  const pa = p.prAll;
+  const prHead = !pa ? '' : `<span class="muted small">${p.pr ? `${pa.reports} aktive${pa.reports === 1 ? 'r' : ''} Bericht${pa.reports === 1 ? '' : 'e'}
+    · ${fmt(pa.probes)} Sonden (⌀ ${fmt(pa.probes / pa.reports)}) · zuletzt ${esc(dt(pa.last_report))}` : 'kein aktiver Bericht'}${pa.empty_reports ? ` · ${pa.empty_reports} leer` : ''}${pa.inactive_reports ? ` · ${pa.inactive_reports} inaktiv` : ''}</span>`;
   return `<div class="card pddet"><div class="row between"><h2>${esc(p.name || 'Planet')} <span class="muted small">${p.coords}</span></h2>
       <span class="row"><button data-dfav title="Favorit">${fav ? '★' : '☆'}</button><button data-dcmp>${cmp ? 'aus Vergleich' : 'zum Vergleich'}</button><button data-dclose title="schließen">✕</button></span></div>
     <p class="small">${p.type ? `<span class="ptype t-${esc(p.type)}">${esc(p.type)}</span> ${esc(typeLabel(p))}` : '<span class="muted">Typ unbekannt</span>'}
@@ -295,12 +322,14 @@ async function pdDetail(p) {
       ${p.present ? '' : ` · <b>Bahn leer seit ${esc(dt(p.changed_at))}</b>`}</p>
     <p class="small muted">Erstmals ${esc(dt(p.first_seen))} · zuletzt ${esc(dt(p.last_seen))}${p.main_p_id ? ` · Planet-ID ${p.main_p_id}` : ''}
       · <a href="#/galaxie/${p.galaxy}/${p.system}">System ${p.galaxy}:${p.system} in der Galaxie</a></p>
-    <h3>Prospektion ${p.pr ? `<span class="muted small">${p.pr.reports} Bericht${p.pr.reports === 1 ? '' : 'e'} · ${fmt(p.pr.probes)} Sonden (⌀ ${fmt(p.pr.probes / p.pr.reports)}) · zuletzt ${esc(dt(p.pr.last_report))}</span>` : ''}</h3>
+    <h3>Prospektion ${prHead}</h3>
     ${vals ? `<table class="wide small pdvals">${vals}</table><p class="small muted">Gewichtetes Mittel nach Sondenzahl, je Wert nur über die Berichte, die ihn enthalten.
       Grün/rot = besser/schlechter als ein Standardplanet (Farbregeln aus der alten Planeten-DB).</p>`
+      : pa ? '<p class="small muted">Alle Berichte gehören zu einem früheren Planeten auf dieser Bahn (inaktiv) – neu prospektieren.</p>'
       : '<p class="small muted">Noch nicht prospektiert. Prospektionssonden (PRDR) brauchen Werft 3, Kommunikationstechnik 13 und Sensortechnik 1 (sonden.md).</p>'}
-    ${rep ? `<details class="sub"><summary class="small">Berichte (${reports.length})</summary><table class="wide small"><tr><th>Zeit</th><th class="num">Sonden</th><th class="num">Werte</th></tr>${rep}</table>
-      <p class="small muted">Alle Berichte zählen; aktiv/inaktiv nach einem Planetenwechsel kommt mit der Migration Planeten-DB 2 (P1).</p></details>` : ''}
+    ${rep ? `<details class="sub"><summary class="small">Berichte (${reports.length})</summary><table class="wide small"><tr><th>Zeit</th><th class="num">Sonden</th><th class="num">Werte</th><th>Gilt</th><th>von</th></tr>${rep}</table>
+      <p class="small muted">Ins Mittel gehen nur aktive Berichte: gleiche Planet-ID (und nicht umgeformt), sonst gleiches Bild, sonst gleicher Name und Typ.
+      Leere Berichte zählen als Bericht, liefern aber keine Werte.</p></details>` : ''}
     <h3>Verlauf</h3>${chg ? `<table class="wide small"><tr><th>Zeit</th><th>Was</th><th>Änderung</th></tr>${chg}</table>` : '<p class="small muted">Keine Änderungen.</p>'}
     ${pdActions(p)}</div>`;
 }
@@ -416,27 +445,22 @@ function pdVergleich(d, nav) {
   $('#pdCmpClear')?.addEventListener('click', () => { pdPut('hz.pldb.cmp', []); route(true); });
 }
 
-/* ---------- Spieler: aus planets berechnet (View planet_players kommt mit P1) ---------- */
-function pdSpieler(d, nav) {
-  const by = new Map();
-  for (const p of d.planets) {
-    if (!p.owner || !p.present) continue;
-    const x = by.get(p.owner) || { name: p.owner, n: 0, gal: new Set(), first: p.first_seen, last: p.last_seen, ally: '', status: '', at: '' };
-    x.n++; x.gal.add(p.galaxy);
-    if (p.first_seen < x.first) x.first = p.first_seen;
-    if (p.last_seen >= x.at) { x.at = p.last_seen; x.ally = p.alliance; x.status = p.status; }
-    if (p.last_seen > x.last) x.last = p.last_seen;
-    by.set(p.owner, x);
-  }
+/* ---------- Spieler: View planet_players (P1); Galaxien aus den geladenen Planeten ---------- */
+async function pdSpieler(d, nav) {
+  const gal = new Map();
+  for (const p of d.planets) if (p.owner && p.present) (gal.get(p.owner) || gal.set(p.owner, new Set()).get(p.owner)).add(p.galaxy);
+  const rows = await Cloud.q('planet_players', { account_id: `eq.${S.acc}`, order: 'planets.desc,owner', limit: 2000 }).catch(() => null);
   const me = account()?.player || '';
-  const list = [...by.values()].sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
-  $('#view').innerHTML = `${nav}<div class="card"><h2>Spieler <span class="muted small">${list.length} mit Planeten in den erfassten Systemen</span></h2>
+  const list = (rows || []).map(x => ({ name: x.owner, n: x.planets, gal: gal.get(x.owner) || new Set(), first: x.first_seen, last: x.last_seen,
+    ally: x.alliance, status: x.status }));
+  $('#view').innerHTML = `${nav}<div class="card"><h2>Spieler <span class="muted small">${list.length} in den erfassten Systemen</span></h2>
+    ${rows === null ? '<p class="warn small">Spielerliste nicht lesbar (View planet_players).</p>' : ''}
     ${list.length ? `<table class="wide small"><tr><th>Spieler</th><th>Allianz</th><th>Status</th><th class="num">Planeten</th><th>Galaxien</th><th>erstmals</th><th>zuletzt</th><th></th></tr>
-      ${list.map(x => `<tr${x.name === me ? ' class="own"' : ''}><td><b>${esc(x.name)}</b></td><td>${esc(x.ally)}</td><td>${esc(PL_STATUS[x.status] || x.status)}</td><td class="num">${x.n}</td>
+      ${list.map(x => `<tr${x.name === me ? ' class="own"' : x.n ? '' : ' class="muted"'}><td><b>${esc(x.name)}</b></td><td>${esc(x.ally)}</td><td>${esc(PL_STATUS[x.status] || x.status)}</td><td class="num">${x.n}</td>
         <td>${[...x.gal].sort((a, b) => a - b).join(', ')}</td><td class="nowrap">${esc(dt(x.first))}</td><td class="nowrap">${esc(dt(x.last))}</td>
         <td class="nowrap"><button class="link" data-pl="${esc(x.name)}">Planeten</button> · <button class="link" data-vl="${esc(x.name)}">Verlauf</button></td></tr>`).join('')}</table>`
-      : '<p class="muted">Noch keine Planeten mit Besitzer erfasst.</p>'}
-    <p class="small muted">Berechnet aus den erfassten Planeten; Allianz und Status vom zuletzt gesehenen Planeten des Spielers.</p></div>`;
+      : rows === null ? '' : '<p class="muted">Noch keine Planeten mit Besitzer erfasst.</p>'}
+    <p class="small muted">Allianz und Status vom zuletzt gesehenen Planeten des Spielers; Planeten = heute belegte Bahnen (grau: zurzeit keine).</p></div>`;
   $('#view').querySelectorAll('[data-pl]').forEach(b => b.addEventListener('click', () => {
     pdPut('hz.pldb.f', { ...pdF(), q: b.dataset.pl, occ: '' }); location.hash = '#/planeten';
   }));
@@ -454,7 +478,7 @@ async function pdVerlauf(d, nav) {
   if (f.s) p.system = `eq.${+f.s}`;
   if (+f.days) p.t = `gte.${new Date(Date.now() - f.days * 864e5).toISOString()}`;
   const q = f.q.replace(/[,.:()*"\\]/g, ' ').trim().replace(/\s+/g, ' ');   // Sonderzeichen der PostgREST-Logik (or=…) entfernen
-  if (q) p.or = `(old.ilike.*${q}*,new.ilike.*${q}*)`;
+  if (q) p.or = `(old.ilike.*${q}*,new.ilike.*${q}*,note.ilike.*${q}*)`;
   const rows = await Cloud.q('planet_changes', p);
   const opt = (v, t, cur) => `<option value="${esc(v)}"${String(v) === String(cur) ? ' selected' : ''}>${esc(t)}</option>`;
   $('#view').innerHTML = `${nav}<div class="card"><form id="pdVf" class="pdf">
@@ -467,7 +491,7 @@ async function pdVerlauf(d, nav) {
     ${rows.length ? `<table class="wide small"><tr><th>Zeit</th><th>Koord.</th><th>Planet</th><th>Was</th><th>Änderung</th><th>Quelle</th></tr>
       ${rows.map(c => { const k = pdKey(c), pl = d.byKey.get(k); return `<tr><td class="nowrap muted">${esc(dt(c.t))}</td><td class="nowrap"><a href="#/planeten/p/${k}">${k}</a></td>
         <td>${esc(pl?.name || '')}${pl?.type ? ` <span class="ptype t-${esc(pl.type)}">${esc(pl.type)}</span>` : ''}</td><td>${esc(PL_FIELD[c.field] || c.field)}</td>
-        <td class="wrapall">${c.old && c.new ? `${esc(c.old)} → ${esc(c.new)}` : esc(c.old || c.new)}</td><td class="muted">${esc(c.source)}</td></tr>`; }).join('')}</table>`
+        <td class="wrapall">${plChgText(c)}</td><td class="muted">${esc(c.source)}</td></tr>`; }).join('')}</table>`
       : '<p class="muted">Keine Änderungen im gewählten Zeitraum.</p>'}</div>`;
   const form = $('#pdVf');
   const save = () => {
