@@ -179,6 +179,9 @@
       <div class="card"><h2>Kampfsimulator <span class="small muted">Nachbau des offiziellen Simulators, Daten Runde 8 (${H.CU.units ? Object.keys(H.CU.units).length : 0} Einheiten)</span></h2>
         <p class="small muted">Nur Rechnung im Browser, keine Aktion im Spiel. Forschung „unser Techstand“: ${unser ? `Live-Stand ${esc(when(unser.at))}` : 'kein Live-Stand gefunden – alle Stufen 1'}.
         Bewertet wird Aufwand gegen Ertrag in Rohstoffen (E+M+T), nicht der Sieg an sich.</p>
+        <p class="small muted"><b>Genauigkeit</b> (Eichung an 12 Zeitungsberichten, kampfsystem.md Abschnitt 13): Gewinnquoten brauchbar, die
+        <b>Verluste des Siegers eher zu niedrig</b> – der Simulator unterschätzt den Schaden des Verlierers; wenige robuste Schiffe
+        (z. B. 5–10 DSTR) verlieren hier oft alles oder nichts. Knappe Ergebnisse mit „Gegner ±3“ gegenprüfen.</p>
         <div class="pdf">
           <label>Läufe (Monte-Carlo)<input type="number" min="1" max="5000" class="pdn" value="${K.n}" data-f="opt" data-o="n"></label>
           <label>Seed<input type="number" min="1" class="pdn" value="${K.seed}" data-f="opt" data-o="seed"></label>
