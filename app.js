@@ -806,15 +806,39 @@ async function takeNewPlan(o, sess) {
   } catch (e) { toast(e.message); }
 }
 
-/* ---------- Neuen Plan vorschlagen (B3, 13.10.) ----------
-   Auftrag „optimierer“ → Supabase (pg_net) startet den Workflow sim-optimize.yml in GitHub Actions: neuester Snapshot →
-   Optimierer → Ergebnis-PR → Entwurf hier unter Pläne. Läuft zusätzlich täglich 05:17. Dauer etwa 30–90 min. */
-const OPT_ST = { neu: 'angefordert', in_arbeit: 'rechnet', beantwortet: 'fertig', abgelehnt: 'nicht gelaufen', zurueckgezogen: 'zurückgezogen' };
-function optCard(req, own) {
-  const busy = req && ['neu', 'in_arbeit'].includes(req.status) && Date.now() - new Date(req.created_at) < 3 * 3600e3;
-  return `<div class="card"><div class="row between"><h2>Neuer Plan</h2>${req ? `<span class="tag">${esc(OPT_ST[req.status] || req.status)}</span>` : ''}</div>
-    <p class="muted small">Automatischer Lauf und Knopf ausgesetzt (17.10.): Pläne mit Kolonien rechnet Claude von Hand; das Ergebnis erscheint hier als Entwurf.</p>
-    ${req ? `<div class="small wrapall">Zuletzt ${esc(when(req.created_at))}${busy ? ' (läuft)' : ''}${req.answer ? `: ${esc(tidy(req.answer))}` : ''}</div>` : ''}</div>`;
+/* ---------- Neuer Plan: Planlauf auf Work (18.10.) ----------
+   Seit 18.10. rechnet der PC „Work“ die Optimierer-Läufe (tools/sim_work.py): täglich 05:17 bei neuem Snapshot und auf
+   Auftrag „Plan rechnen“. Der Knopf stellt den Auftrag über public.plan_rechnen (nur Owner; höchstens einer offen), der
+   Stand kommt aus public.planlauf_status – dieselben Daten wie im Autobuilder-Panel. Ergebnis: Entwurf hier unter Pläne. */
+const SIMPH = { start: 'läuft', fertig: 'fertig', ausgefallen: 'fiel aus', ausgelassen: 'ausgelassen', fehler: 'Fehler' };
+function optCard(pl, own) {
+  const lines = [];
+  let open = null;
+  if (!pl?.now) lines.push('Stand nicht abrufbar');
+  else {
+    const w = (pl.work || [])[0], ws = w?.state || {}, wt = w ? new Date(w.at) : 0, age = Date.now() - wt;
+    const running = ws.phase === 'start' && age < 3 * 3600e3;
+    lines.push(!w ? 'Work: kein Lebenszeichen' : running ? `Work: rechnet seit ${clockT(wt)}`
+      : age > 15 * 60e3 ? `Work: aus (zuletzt ${clockT(wt)})` : `Work: bereit (${ago(wt)})`);
+    if (ws.auto) lines.push(`Auto-Lauf: ${ws.auto}`);
+    if (ws.sperre && !/^frei/i.test(ws.sperre)) lines.push(`Sim-Sperre: ${ws.sperre}`);
+    const l = ws.last;
+    if (l?.at) lines.push(`Letzter Lauf: ${clockT(l.at)} ${SIMPH[l.phase] || l.phase}${l.minutes != null ? ` (${l.minutes} min)` : ''}`);
+    for (const q of pl.offen || []) {
+      const work = q.kind !== 'optimierer';
+      if (work && !open) open = q;
+      lines.push(`${work ? 'Auftrag' : 'GitHub-Lauf'}: ${q.status === 'in_arbeit' ? 'in Arbeit' : 'angefordert'} seit ${clockT(q.created_at)}`);
+    }
+  }
+  return `<div class="card"><div class="row between"><h2>Neuer Plan</h2>${open ? '<span class="tag">angefordert</span>' : ''}</div>
+    <p class="muted small">Work rechnet neue Pläne (täglich 05:17 bei neuem Snapshot oder auf Knopfdruck, ≈ 1 h); das Ergebnis erscheint hier als Entwurf. Freigeben und starten weiterhin du.</p>
+    ${lines.map(t => `<div class="small wrapall">${esc(tidy(t))}</div>`).join('')}
+    ${own ? `<div class="row" style="margin-top:6px"><button id="optGo"${open || !pl?.now ? ' disabled' : ''} title="${open ? 'Ein Plan-Lauf ist schon angefordert' : 'Work rechnet einen neuen Plan (≈ 1 h, niedrige Priorität)'}">Work rechnen lassen</button></div>` : ''}</div>`;
+}
+async function optAsk() {
+  if (!confirm('Work soll jetzt einen neuen Plan rechnen (≈ 1 h, niedrige Priorität).\nDer Entwurf erscheint danach hier unter Pläne; freigeben und starten weiterhin du.\nAnfordern?')) return;
+  try { const r = await Cloud.rpc('plan_rechnen', { p_account: S.acc, p_note: 'Cockpit' }); toast(r.text || (r.ok ? 'Angefordert' : 'Nicht angefordert')); route(true); }
+  catch (e) { toast(e.message); }
 }
 
 /* ---------- Planabweichung (B4, 14.10.) ----------
@@ -845,8 +869,7 @@ async function viewPlans(rest = []) {
     Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', order: 'id.desc', limit: 8 }),
     loadWissen().catch(() => null),
     S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
-    Cloud.q('requests', { account_id: acc, kind: 'eq.optimierer', order: 'created_at.desc', limit: 1,
-      select: 'id,status,answer,created_at' }).catch(() => []),
+    Cloud.rpc('planlauf_status', { p_account: acc }).catch(() => null),
   ]);
   if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   if (plans.some(p => !planNo(p.id))) await loadNums(true);   // neuer Plan seit dem letzten Zählen
@@ -883,7 +906,7 @@ async function viewPlans(rest = []) {
       ${own && run(p) ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(p.id)}">Abbrechen</button></div>` : ''}
       ${own && p.kind === 'build' && p.plan_hash ? `<div class="small" style="margin-top:6px"><a href="details/#/plaene/edit/${esc(p.id)}" target="_blank" rel="noopener">Plan ändern (Atlas, neuer Entwurf) →</a></div>` : ''}
     </div>`;
-  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W, drift) + optCard(opt[0], own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W, drift) + optCard(opt, own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude; gezeigt werden nur Baupläne, die das Ziel früher erreichen als der aktive Plan${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${cur.length ? cur.map(item).join('') : `<p class="muted">${old.length ? 'Kein freigegebener Plan und kein offener Entwurf.' : 'Noch keine Pläne. Der Optimierer legt jeden neuen Bauplan hier als Entwurf ab.'}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
@@ -898,6 +921,7 @@ async function viewPlans(rest = []) {
   }));
   $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
   $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
+  $('#optGo')?.addEventListener('click', optAsk);
   $('#npNo')?.addEventListener('click', async () => {
     if (!confirm('Entwurf verwerfen?')) return;
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
@@ -970,7 +994,7 @@ async function fillPushCard() {
    Aufträge (requests) an Claude: Owner stellt sie hier, eine Claude-Sitzung mit Wächter (tools/watch.py) wird geweckt,
    übernimmt (request_claim) und antwortet (request_answer, ggf. mit Planentwurf). Antworten kommen auch als Push. */
 const RQ_ST = { neu: 'neu', in_arbeit: 'in Arbeit', beantwortet: 'beantwortet', abgelehnt: 'abgelehnt', zurueckgezogen: 'zurückgezogen' };
-const RQ_KIND = { optimierer: 'Neuer Plan' };
+const RQ_KIND = { optimierer: 'Neuer Plan', plan_rechnen: 'Plan-Lauf Work' };
 const RQ_TGT = { any: 'beliebige Claude-Sitzung', sim: 'Simulations-PC', remote: 'Remote-PC' };
 async function viewClaude() {
   const rq = await Cloud.q('requests', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 40,
