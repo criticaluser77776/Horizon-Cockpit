@@ -151,7 +151,6 @@ async function route(soft) {
   const fn = VIEWS[tab] || viewLage;
   const on = VIEWS[tab] ? TAB_OF[tab] || tab : 'lage';
   document.querySelectorAll('nav.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === on));
-  navShow();
   if (soft !== true) $('#view').innerHTML = '<p class="muted pad">Lädt …</p>';
   try { await loadNums(); await fn(rest); } catch (e) {
     if (e instanceof LoginNeeded) return renderLogin(e.message);
@@ -168,24 +167,6 @@ setInterval(() => {
   if (document.activeElement?.matches?.('input,select,textarea')) return;
   route(true);
 }, 30000);
-
-// Reiterleiste seitlich verschiebbar: aktiven Reiter sichtbar machen, Ränder ausblenden, solange dort noch Reiter liegen
-function navFade() {
-  const n = $('#tabs');
-  if (!n) return;
-  n.classList.toggle('more-l', n.scrollLeft > 2);
-  n.classList.toggle('more-r', n.scrollLeft + n.clientWidth < n.scrollWidth - 2);
-}
-function navShow() {
-  const n = $('#tabs'), a = n?.querySelector('a.on');
-  if (!a) return;
-  const l = a.offsetLeft, pad = 32;   // offsetParent ist die Leiste (fixed bzw. sticky)
-  if (l - pad < n.scrollLeft) n.scrollLeft = Math.max(0, l - pad);
-  else if (l + a.offsetWidth + pad > n.scrollLeft + n.clientWidth) n.scrollLeft = l + a.offsetWidth + pad - n.clientWidth;
-  navFade();
-}
-$('#tabs')?.addEventListener('scroll', navFade, { passive: true });
-window.addEventListener('resize', navFade);
 
 // Badge „Meldungen“ (C1): ungesehene Ereignisse „hoch“ + offene Entscheidungen
 async function updateBadge() {
