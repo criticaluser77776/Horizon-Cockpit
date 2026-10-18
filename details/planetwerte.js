@@ -1,6 +1,9 @@
 'use strict';
 /* Planetenwerte im Reiter „Galaxie“ (Paket C, 17.10.2026): Grundwerte der eigenen Kolonien in % der Heimat (STPL = 100 %),
    gemessen vom Collector (ab 0.4.12) gleich nach der Kolonisierung – immer Stufe n gegen Stufe n, sonst „offen“.
+   Ab Collector 0.4.14 nach der Bedeutung der Prospektionswerte (doku/wissen/statistik-monitor.md): T-Stoff ohne Bahn,
+   Wohnraumkosten = Infrastruktur, Bodenfläche = Bauplatz der Infrastruktur, Besiedelbarkeit und Atmosphäre (Solar)
+   gemessen, Bauplanet-Faktor neu (Migration 20261018090001).
    Daten: Tabelle planet_values (eine Zeile je Planet und Wert, Migration 20261017110001). Knopf „Planetenwerte messen“
    (nur Owner): Kommando planetwerte {planet, ungebaut?} an den Collector mit frischem Lebenszeichen im Spiel; er misst den im
    Spiel gewählten Planeten und wechselt ihn nie selbst. Ablauf am Tag der Landung: doku/stand/planeten-erfassung.md.
@@ -8,13 +11,16 @@
    loadSessions, toast, route). */
 (function () {
   const MIN_VER = '0.4.12';
-  const MAIN = { metal: 'Erz', mineral: 'Mineral', fuel: 'T-Stoff', buildCost: 'Baukosten', buildSpeed: 'Baugeschwindigkeit',
-    researchCost: 'Forschungskosten', ground: 'Bauplatz', housingCost: 'Wohnkosten' };
-  const REST = { orbMetal: 'Erz Umlaufbahn', orbMineral: 'Mineral Umlaufbahn', orbFuel: 'T-Stoff Umlaufbahn', colonizable: 'Kolonisierbarkeit',
-    atmosphere: 'Atmosphäre', moon: 'Mond', artefacts: 'Artefakte' };
-  const METHOD = { 'hilfe-produktion': 'Hilfe: Produktion gleicher Stufe', kosten: 'Kosten der nächsten Stufen', 'kosten-wohnkomplex': 'Kosten Wohnkomplex',
-    bauleistung: 'Bauleistung (Statistik)', forschungskosten: 'Kosten der nächsten Forschung', 'bauplatz-gesamt': 'Bauplatz gesamt',
-    'typ-median': 'Median des Typs', prospektion: 'erst mit Prospektion' };
+  const MAIN = { metal: 'Erz', mineral: 'Mineral', fuel: 'T-Stoff (ohne Bahn)', buildCost: 'Gebäudekosten', buildSpeed: 'Baugeschwindigkeit',
+    buildPlanet: 'Bauplanet-Faktor', researchCost: 'Forschungskosten', ground: 'Bodenfläche (Bauplatz Infrastruktur)',
+    housingCost: 'Wohnraumkosten (Infrastruktur)', colonizable: 'Besiedelbarkeit (Arbeiter)', atmosphere: 'Atmosphäre: Wirkung auf Solar' };
+  const REST = { orbMetal: 'Erz Umlaufbahn', orbMineral: 'Mineral Umlaufbahn', orbFuel: 'T-Stoff Umlaufbahn', moon: 'Mond', artefacts: 'Artefakte' };
+  const METHOD = { 'hilfe-produktion': 'Hilfe: Produktion gleicher Stufe', 'hilfe-produktion-bahn': 'Hilfe: Raffinerie ÷ Bahnfaktor',
+    kosten: 'Kosten der nächsten Stufen', 'kosten-wohnkomplex': 'Kosten Wohnkomplex', 'kosten-infrastruktur': 'Kosten Infrastruktur',
+    'hilfe-tonnage-infrastruktur': 'Hilfe: Tonnage Infrastruktur', 'hilfe-bauplatz-infrastruktur': 'Hilfe: Bauplatz Infrastruktur',
+    'hilfe-arbeiter-wohnkomplex': 'Hilfe: Arbeiter Wohnkomplex', 'hilfe-solar-bahn': 'Hilfe: Solar ÷ Bahnfaktor',
+    abgeleitet: 'Baugeschwindigkeit ÷ Gebäudekosten', bauleistung: 'Bauleistung (Statistik)', forschungskosten: 'Kosten der nächsten Forschung',
+    'bauplatz-gesamt': 'Bauplatz gesamt', 'typ-median': 'Median des Typs', prospektion: 'erst mit Prospektion' };
 
   const coords = (g, s, b) => `${g}:${s}:${b}`;
   const val = v => !v ? '<span class="muted">–</span>'
@@ -41,13 +47,13 @@
       const at = Object.values(vs).map(v => v.measured_at).sort().pop();
       return `<h3>Bahn ${p.orbit} ${esc(any.planet_type || p.type || '')} <span class="muted small">${esc(p.name || '')} · gemessen ${esc(dt(at))} (${esc(ago(at))})</span></h3>
         <table class="small pw"><tr class="muted"><td>Wert</td><td class="num">Kolonie</td><td>Messung</td></tr>${Object.entries(MAIN).map(([k, n]) => row(k, n, vs[k])).join('')}</table>
-        <details class="sub"><summary class="small muted">Umlaufbahn, Kolonisierbarkeit, Atmosphäre, Mond, Artefakte</summary>
+        <details class="sub"><summary class="small muted">Umlaufbahn, Mond, Artefakte</summary>
           <table class="small pw">${Object.entries(REST).map(([k, n]) => row(k, n, vs[k])).join('')}</table></details>`;
     }).join('');
     const opts = mine.map(p => `<option value="${esc(coords(g, s, p.orbit))}"${p.orbit === homeOrbit ? '' : ' selected'}>Bahn ${p.orbit}${p.orbit === homeOrbit ? ' (Heimat)' : ''} ${esc(p.name || '')}</option>`).join('');
     return `<div class="card" id="pwCard"><h2>Planetenwerte <span class="muted small">in % der Heimat (STPL = 100 %)</span></h2>
       ${blocks || '<p class="small muted">Noch keine Kolonie gemessen.</p>'}
-      <p class="small muted">Kosten und Bauzeit: über 100 % heißt teurer bzw. langsamer als die Heimat. Verglichen wird immer dieselbe Stufe; fehlt sie auf einer Seite, bleibt der Wert offen.</p>
+      <p class="small muted">Kosten: über 100 % heißt teurer als die Heimat; Baugeschwindigkeit, Bauplanet-Faktor und Erträge: über 100 % heißt besser. Verglichen wird immer dieselbe Stufe; fehlt sie auf einer Seite, bleibt der Wert offen.</p>
       ${isOwner() ? `<form id="pwForm" class="row" style="margin-top:6px;flex-wrap:wrap;gap:6px">
         <select name="planet" aria-label="Planet">${opts}</select>
         <label class="small"><input type="checkbox" name="ungebaut"> ungebaute Stufen zählen</label>
