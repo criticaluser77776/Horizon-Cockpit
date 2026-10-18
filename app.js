@@ -484,8 +484,11 @@ const nfActive = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at, 10) && x.a
 const bannerDev = sess => sess.devs.find(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game' && x.ab.state?.banner?.n);
 // Ab Autobuilder 0.5.20 (Freigabe Nutzer 15.10.2026): Ist kein Gerät eingeloggt und die Banner sind fällig, loggt ein ausgeloggtes
 // Gerät nach Tippen und Bestätigen einmal ein, ruft die Banner auf und loggt ohne Lauf wieder aus. Bevorzugt das Gerät mit dem Lauf.
-// Schläft ein Lauf, lehnt der Autobuilder den Banner-Login ab („Auto-Login des Laufs steht an“ bzw. „Lauf liegt bei …“,
-// Kommandos 152/153 am 17.10.) → dann kein Login-Knopf, sondern Hinweis auf die Weckzeit; die Banner danach im Spiel tippen.
+// Schläft ein Lauf: ab Autobuilder 0.5.46 (Nutzer 18.10.2026) loggt das Gerät mit dem Lauf trotzdem ein, ruft die Banner auf
+// und schläft danach bis zur alten Weckzeit weiter (wie beim Login für eine Antwort). Ältere Autobuilder lehnen das ab („Auto-
+// Login des Laufs steht an“) – dann bleibt nur der Hinweis auf die Weckzeit. Ein anderes ausgeloggtes Gerät nie: Der Login
+// würde den Lauf stören (der Autobuilder lehnt ihn ebenfalls ab).
+const BANNER_SLEEP_VER = '0.5.46';
 const bannerSleep = sess => {
   const r = sess.run, d = sess.devs.find(x => x.ab && isFresh(x.ab.at) && x.ab.state?.sleeping);
   if (r?.state !== 'schlaeft' && !d) return null;
@@ -493,9 +496,11 @@ const bannerSleep = sess => {
 };
 const bannerLoginDev = sess => {
   const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
-  if (live.some(x => x.ab.state?.page === 'game') || bannerSleep(sess)) return null;
+  if (live.some(x => x.ab.state?.page === 'game')) return null;
   const out = live.filter(x => x.ab.state?.page === 'login');
-  return out.find(x => x.holds) || out[0] || null;
+  if (!bannerSleep(sess)) return out.find(x => x.holds) || out[0] || null;
+  const own = out.find(x => x.holds) || out.find(x => x.ab.state?.sleeping);   // holds = Gerät des Laufs
+  return own && verCmp(own.ab.version, BANNER_SLEEP_VER) >= 0 ? own : null;
 };
 const bannerDue = sess => Math.max(0, ...sess.devs.filter(d => d.ab && isFresh(d.ab.at, 24 * 60)).map(d => +d.ab.state?.bannerDue || 0));
 const bannerLoginNow = sess => { const due = bannerDue(sess); return due && due < Date.now() + 15 * 60e3 ? bannerLoginDev(sess) : null; };
@@ -503,10 +508,10 @@ function bannerCard(sess) {
   const x = bannerDev(sess), b = x?.ab.state.banner;
   if (!b) {
     const due = bannerDue(sess), lx = bannerLoginNow(sess), zz = due && due < Date.now() + 15 * 60e3 ? bannerSleep(sess) : null;
-    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">${lx ? 'Gerät ausgeloggt' : zz ? 'Lauf schläft' : 'keine offen'}</span></div>
+    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">${zz ? 'Lauf schläft' : lx ? 'Gerät ausgeloggt' : 'keine offen'}</span></div>
       <p class="small">Nächste erwartet ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(dt(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).</p>
-      ${zz ? `<p class="small">Banner nach dem Aufwachen${zz.wake ? ` (<b>${esc(clockT(zz.wake))}</b>, ${new Date(zz.wake) > Date.now() ? `in ${esc(dur((new Date(zz.wake) - Date.now()) / 1000))}` : 'jetzt'})` : ''}: Der Lauf${zz.name ? ` auf ${esc(zz.name)}` : ''} schläft und loggt dann selbst ein – ein Login für die Banner jetzt würde ihn stören, der Autobuilder lehnt ihn ab.</p>` : ''}
-      ${lx && isOwner() ? `<p class="small">${esc(lx.name)} ist ausgeloggt. Der Autobuilder loggt dafür einmal ein, ruft die Banner auf und loggt danach wieder aus (läuft dort ein Lauf, macht dieser weiter).</p>
+      ${zz && !lx ? `<p class="small">Banner nach dem Aufwachen${zz.wake ? ` (<b>${esc(clockT(zz.wake))}</b>, ${new Date(zz.wake) > Date.now() ? `in ${esc(dur((new Date(zz.wake) - Date.now()) / 1000))}` : 'jetzt'})` : ''}: Der Lauf${zz.name ? ` auf ${esc(zz.name)}` : ''} schläft und loggt dann selbst ein; ein Login für die Banner jetzt braucht dort Autobuilder ab ${BANNER_SLEEP_VER}.</p>` : ''}
+      ${lx && isOwner() ? `<p class="small">${esc(lx.name)} ist ausgeloggt. Der Autobuilder loggt dafür einmal ein, ruft die Banner auf und loggt danach wieder aus${zz ? `; der schlafende Lauf schläft danach bis ${zz.wake ? `<b>${esc(clockT(zz.wake))}</b>` : 'zu seiner Weckzeit'} weiter` : ' (läuft dort ein Lauf, macht dieser weiter)'}.</p>
       <div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Einloggen und Banner öffnen</button></div>` : ''}</div>` : '';
   }
   return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(when(b.since))}</span></div>
@@ -517,7 +522,8 @@ function bannerCard(sess) {
 async function sendBanner(sess) {
   const x = bannerDev(sess) || bannerLoginNow(sess), login = x && !bannerDev(sess);
   if (!x) return toast('Kein Gerät mit aktiven Bannern erreichbar');
-  if (!confirm(login ? `${x.name} ist ausgeloggt. Jetzt einmal einloggen, die Banner aufrufen und danach wieder ausloggen?\n\nEin Spiel auf einem anderen Gerät wird dabei abgemeldet.`
+  const zz = login && bannerSleep(sess);
+  if (!confirm(login ? `${x.name} ist ausgeloggt. Jetzt einmal einloggen, die Banner aufrufen und danach wieder ausloggen?${zz ? `\nDer schlafende Lauf schläft danach bis ${zz.wake ? clockT(zz.wake) : 'zu seiner Weckzeit'} weiter.` : ''}\n\nEin Spiel auf einem anderen Gerät wird dabei abgemeldet.`
     : `Banner auf ${x.name} jetzt einmal aufrufen?`)) return;
   try {
     await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
