@@ -119,7 +119,7 @@ async function viewGalaxy(rest = []) {
         name="s" type="number" min="1" max="9999" value="${s}" inputmode="numeric" aria-label="System" title="System"><button class="gbtn galok" title="System anzeigen">↵</button></form>
       ${navBtn(next, '▶', 'Nächstes System mit Planeten:')}
       <p class="small muted galsum">${withPl.length ? `Erfasst mit Planeten: ${withPl.length} System${withPl.length > 1 ? 'e' : ''}${inGal.length ? `, in Galaxie ${g}: ${inGal.map(x => `<a href="#/galaxie/${x.galaxy}/${x.system}"${x.system === s ? ' class="on"' : ''}>${x.system}</a>`).join(' · ')}` : ` (keins in Galaxie ${g})`}` : 'Noch kein System mit Planeten erfasst.'}</p></div>
-    ${systemCard(data, g, s, hm)}`;
+    ${systemCard(data, g, s, hm)}${typeof glsCard === 'function' ? glsCard(g, s) : ''}`;   // System/Bereich lesen: details/galaxielesen.js
   const v = $('#view');
   window.HzPlanetwerte?.bind(v);   // Planetenwerte: details/planetwerte.js
   v.querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () => galGo(...b.dataset.go.split('/'))));
@@ -139,8 +139,8 @@ async function viewGalaxy(rest = []) {
 }
 
 function systemCard(S0, g, s, hm) {
-  if (!S0) return `<div class="card"><h2>System ${g}:${s}</h2><p class="muted small">Nicht erfasst. Der Collector liest bisher nur das eigene System
-    (bei jeder Erfassung); fremde Systeme kommen erst mit einem Scan auf Anforderung.</p></div>`;
+  if (!S0) return `<div class="card"><h2>System ${g}:${s}</h2><p class="muted small">Nicht erfasst. Der Collector liest das eigene System
+    bei jeder Erfassung; fremde Systeme ${isOwner() ? 'mit „System lesen“ bzw. „Bereich lesen“ unten' : 'liest er auf Anforderung des Owners'} (Collector ab 0.4.21).</p></div>`;
   const { sys, planets, changes } = S0;
   const me = account()?.player || '';
   const byOrbit = new Map(planets.map(p => [p.orbit, p]));
