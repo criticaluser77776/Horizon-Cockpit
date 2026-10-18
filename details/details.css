@@ -55,3 +55,6 @@ body.atlas .badge { position: static; }
 .prbdlg { max-width: 520px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); }
 .prbdlg::backdrop { background: rgba(0, 0, 0, .45); }
 .prbdlg h2 { margin-top: 0; }
+/* Statistik (statistik.js, D3) */
+.atlas svg.stchart { max-width: none; font-size: 12px; }
+.atlas .stkey { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }

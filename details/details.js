@@ -3,10 +3,10 @@
    Nur Desktop-Browser am PC: kein Service Worker, kein Push, keine Installation. Anmeldung gemeinsam mit dem Cockpit
    (gleicher Origin, localStorage hz.access/hz.device/hz.acc) – angemeldet wird nur im Cockpit. Schreibt grundsätzlich nicht;
    Ausnahmen: Ereignisse ausblenden/gesehen (owner/viewer) und lesende Kommandos (Planetenwerte messen, nur Owner, mit Rückfrage).
-   Reiter in eigenen Dateien (imperium.js, galaxie.js, planeten.js mit der Planeten-DB, ereignisse.js, plaene.js mit Werft/Def und Plan-Editor, verbrauch.js;
+   Reiter in eigenen Dateien (imperium.js, galaxie.js, planeten.js mit der Planeten-DB, ereignisse.js, plaene.js mit Werft/Def und Plan-Editor, verbrauch.js, statistik.js (D3);
    Kompendium aus kompendium.js, Werft-Vorschau aus werft.js, Planetenwerte aus planetwerte.js – seit C1 hier statt im Cockpit). */
 
-const VIEWS = { imperium: viewImperium, galaxie: viewGalaxy, planeten: viewPlanetDb, ereignisse: viewEvents, plaene: viewPlans, werft: viewWerft, wissen: viewKompendium, verbrauch: viewVerbrauch };
+const VIEWS = { imperium: viewImperium, statistik: viewStatistik, galaxie: viewGalaxy, planeten: viewPlanetDb, ereignisse: viewEvents, plaene: viewPlans, werft: viewWerft, wissen: viewKompendium, verbrauch: viewVerbrauch };
 const START = 'imperium';
 
 // Neue Atlas-Version online? version.js frisch lesen (höchstens alle 10 min, beim Start und beim Zurückkehren in den Tab)
