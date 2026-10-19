@@ -874,7 +874,7 @@ async function viewPlans(rest = []) {
     Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', order: 'id.desc', limit: 8 }),
     loadWissen().catch(() => null),
     S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
-    Cloud.rpc('planlauf_status', { p_account: acc }).catch(() => null),
+    Cloud.rpc('planlauf_status', { p_account: S.acc }).catch(() => null),
   ]);
   if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   if (plans.some(p => !planNo(p.id))) await loadNums(true);   // neuer Plan seit dem letzten Zählen
