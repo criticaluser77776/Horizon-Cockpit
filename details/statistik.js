@@ -140,18 +140,23 @@ const ST_HS = { building: 'Gebäude', research: 'Forschung', fleet: 'Flotte', de
   prosecution: 'Kopfgeld', battle: 'Kampf', trade: 'Handel', war: 'Krieg', alliance: 'Allianz', firepower: 'Feuerkraft',
   artefacts: 'Aggregate', darkenergy: 'Dunkle Energie', ascension: 'Ascension', total: 'Summe' };
 const ST_HSCOL = ['var(--accent)', '#c0713a', '#3aa06a', '#8a5cc0', '#d4a017', '#c0392b', '#5d6b80', '#3a8fc0'];
-// Volle Tabelle: Zeilen = Kategorien, Spalten global und Prestige (Punkte, Platz); Summe zuletzt, fett
+// Je Abschnitt (Global, Prestige, …) eine Tabelle: Kategorie, Punkte, Platz (Platz nur, wenn die Seite einen nennt –
+// Prestige hat keinen); Summe zuletzt, fett
 function stHighscore(hs) {
   const secs = ['global', 'prestige', ...Object.keys(hs).filter(k => !['global', 'prestige', 'points', 'status', 'at', 'error'].includes(k)
-    && hs[k] && typeof hs[k] === 'object')].filter(k => hs[k]);
-  const keys = [...new Set(secs.flatMap(k => Object.keys(hs[k])))].sort((a, b) => (a === 'total') - (b === 'total'));
-  if (!keys.length) return '<p class="small muted">Keine Werte.</p>';
-  const name = { global: 'Global', prestige: 'Prestige' };
+    && hs[k] && typeof hs[k] === 'object')].filter(k => hs[k] && Object.keys(hs[k]).length);
+  if (!secs.length) return '<p class="small muted">Keine Werte.</p>';
+  const name = { global: 'Globaler Highscore', prestige: 'Prestige-Highscore' };
+  const tab = s => {
+    const keys = Object.keys(hs[s]).sort((a, b) => (a === 'total') - (b === 'total'));
+    const rank = keys.some(k => hs[s][k]?.r != null);
+    return `<table class="wide small"><thead><tr><th>${esc(name[s] || s)}</th><th class="num">Punkte</th>${rank ? '<th class="num">Platz</th>' : ''}</tr></thead><tbody>
+      ${keys.map(k => { const v = hs[s][k] || {}, m = !v.p ? ' muted' : '';
+        return `<tr${k === 'total' ? ' style="font-weight:600"' : ''}><td>${esc(ST_HS[k] || k)}</td><td class="num${m}">${esc(v.p != null ? fmt(v.p) : '')}</td>${
+          rank ? `<td class="num${m}">${esc(v.r != null ? fmt(v.r) : '')}</td>` : ''}</tr>`; }).join('')}</tbody></table>`;
+  };
   return `${hs.points != null ? `<p class="small">${esc(fmt(hs.points))} Punkte${hs.status ? ` · ${esc(hs.status)}` : ''}</p>` : ''}
-    <table class="wide small"><thead><tr><th>Kategorie</th>${secs.map(k => `<th class="num">${esc(name[k] || k)}</th><th class="num">Platz</th>`).join('')}</tr></thead><tbody>
-    ${keys.map(k => `<tr${k === 'total' ? ' style="font-weight:600"' : ''}><td>${esc(ST_HS[k] || k)}</td>${secs.map(s => {
-      const v = hs[s][k]; return `<td class="num${v && !v.p ? ' muted' : ''}">${esc(v ? fmt(v.p) : '')}</td><td class="num${v && !v.p ? ' muted' : ''}">${esc(v ? fmt(v.r) : '')}</td>`;
-    }).join('')}</tr>`).join('')}</tbody></table>`;
+    ${secs.map(tab).join('')}`;
 }
 
 function stBind() {
