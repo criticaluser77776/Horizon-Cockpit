@@ -67,6 +67,8 @@ function stDays(rows) {
 }
 
 async function viewStatistik() {
+  // Unterreiter wie der Statistik-Monitor im Spiel (statistik-monitor.js); „Verlauf“ ist die bisherige Ansicht
+  if (smTab() !== 'verlauf') return viewStatMonitor(`<div class="card"><h2>Statistik</h2>${smTabs()}</div>`);
   const range = stGet(), days = +range;
   const von = new Date(Date.now() - days * 864e5).toISOString();
   // Reihe + volle Highscore-Tabelle des neuesten Stands (eine Zeile, nur das Feld empire.highscore; Collector ab 0.4.16)
@@ -77,7 +79,7 @@ async function viewStatistik() {
   const rows = res?.rows || [];
   const seg = `<div class="kseg" id="stRange">${ST_RANGES.map(([v, l]) => `<button type="button" data-r="${v}" aria-pressed="${v === range}">${l}</button>`).join('')}</div>`;
   const head = `<div class="card"><div class="row between"><h2>Statistik</h2>${seg}</div>
-    <p class="small muted">${rows.length} Stände${res?.step && res.step !== 'snapshot' ? ` (je ${esc({ hour: 'Stunde', '3h': '3 Stunden', '6h': '6 Stunden', day: 'Tag' }[res.step] || res.step)} der letzte)` : ''}
+    ${smTabs()}<p class="small muted">${rows.length} Stände${res?.step && res.step !== 'snapshot' ? ` (je ${esc({ hour: 'Stunde', '3h': '3 Stunden', '6h': '6 Stunden', day: 'Tag' }[res.step] || res.step)} der letzte)` : ''}
       aus den Live-Snapshots des Collectors · ${rows.length ? `${esc(dt(rows[0].t))} bis ${esc(dt(rows[rows.length - 1].t))}` : 'keine Daten im Zeitraum'}</p></div>`;
   if (!rows.length) { $('#view').innerHTML = head; return stBind(); }
 
@@ -160,6 +162,7 @@ function stHighscore(hs) {
 }
 
 function stBind() {
+  smBindTabs();
   $('#stRange')?.addEventListener('click', e => {
     const b = e.target.closest('button[data-r]');
     if (!b) return;
