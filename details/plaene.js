@@ -426,17 +426,122 @@ async function createEdited(E, P, errs) {
 /* ---------- Atlas: Pläne (Archiv) ----------
    Aktiver Bauplan mit ganzer Schrittliste samt Ausführungen und Abweichungsgrafik; alle Baupläne (auch ältere) mit Details,
    Plan-Editor-Link und Löschen (nur Owner, nie freigegebene/aktive). Freigeben & Co. nur im Cockpit. */
+/* Neuer Lauf auf Work mit Einstellungen (Teil A, 20.10.2026): „Mit aktuellen Einstellungen rechnen“ stellt den Auftrag über
+   public.plan_rechnen(p_params) (nur Owner, höchstens einer offen). Darunter eingeklappt alle Einstellungen, vorbelegt mit dem
+   Standard (simparams.js = tools/sim_params.py). Ergebnis nur als Entwurf (sim/auf-….json); result.json, täglicher Lauf und
+   Autobuilder bleiben. Der Formularzustand liegt in S.simlauf, damit das stille Neuladen (60 s) nichts verwirft. */
+const SL_FIELDS = [
+  ['Ziel', [
+    ['ziel', 'Ziel', 'sel', [['scol', 'SCOL (1. Kolonieschiff)'], ['kolo3', 'Kolopunkt 3'], ['kolo4', 'Kolopunkt 4'], ['kolo5', 'Kolopunkt 5']]],
+    ['kolo', 'Kolonien Bahn:Typ:Rolle', 'txt', 'z. B. 5:JUPL:rohstoff, 6:RKPL:rohstoff · Platzhalter K:STPL:auto · Rolle rohstoff/kolozentrum/auto'],
+    ['platzbahn', 'Platzbahn (Flugzeit der Platzhalter)', 'num', 'leer = 6'],
+    ['kolopflicht', 'Mindeststufen je Kolonie', 'txt', 'z. B. *:b:metalmine:10, 1:b:researchcenter:heimat'],
+  ]],
+  ['Flotte', [
+    ['flotte', 'Flotte Typ:Anzahl', 'txt', 'z. B. PFLS:1, PTRN:2 · leer = keine'],
+    ['flottebis', 'Flotte wann', 'sel', [['nach', 'nach dem Ziel'], ['kolo3', 'bis Kolopunkt 3']]],
+    ['werft', 'Werft-Stufe höchstens', 'num', ''],
+  ]],
+  ['Bauregeln', [
+    ['pflicht', 'Pflicht art:id:stufe', 'txt', 'z. B. b:spaceobservatory:2 (b Gebäude, r Forschung)'],
+    ['verbot', 'Verbot art:id', 'txt', 'kommt in keinem Plan vor'],
+    ['aus', 'Aus (bauen, aber 0 %)', 'txt', 'z. B. b:fissionreactor'],
+    ['bunker', 'Bunker-Stufe', 'num', ''],
+    ['rabatt', 'Rabatt (0…0,5)', 'num', ''],
+    ['makroziele', 'Makro-Ziele', 'num', ''],
+    ['makro', 'Makro-Iterationen', 'num', ''],
+  ]],
+  ['Motivationsvideo', [
+    ['movi_modus', 'Video', 'sel', [['aus', 'ohne'], ['auto', 'bester Zeitpunkt (auto)'], ['zeit', 'fester Zeitpunkt']]],
+    ['movi_zeit', 'Zeitpunkt (Planstunde oder ISO)', 'txt', 'nur bei „fester Zeitpunkt“'],
+    ['movi_faktor', 'Faktor', 'num', 'Standard 24'],
+    ['movi_schiff', 'Schiffbau beschleunigt', 'sel', [['ja', 'ja'], ['nein', 'nein']]],
+    ['movi_neustart', 'Laufende Aufträge neu starten', 'sel', [['nein', 'nein'], ['ja', 'ja']]],
+  ]],
+  ['Aufwand', [
+    ['aufwand_stufe', 'Rechenaufwand', 'sel', [['schnell', 'schnell (≈ ¼ h)'], ['normal', 'normal (≈ 1 h, wie täglich)'], ['gruendlich', 'gründlich (≈ 2–3 h)'], ['eigen', 'eigene Werte']]],
+    ['aufwand_iter', 'iter', 'num', 'nur bei „eigene Werte“'], ['aufwand_rounds', 'rounds', 'num', ''],
+    ['aufwand_patience', 'patience', 'num', ''], ['aufwand_kicks', 'kicks', 'num', ''],
+  ]],
+  ['Startplan', [
+    ['seeds', 'Startpläne (Dateien in analyse/sim/)', 'txt', 'z. B. result.json, kolo3-stpl-live1821.json'],
+  ]],
+  ['Erweitert', [
+    ['lager', 'Lager', 'sel', [['', 'Standard (getrennt)'], ['getrennt', 'getrennt'], ['kolopool', 'Kolonien gemeinsam'], ['pool', 'alles gemeinsam']]],
+    ['kolominen', 'Minen je Kolonie höchstens', 'txt', 'z. B. 16 oder 16:1 (nur Kolonie 1)'],
+    ['kolohilfe', 'Hilfsgebäude Kolonien', 'txt', 'leer = aus · ja = Bauhof bis 5 · constructionfacility:6, infrastructure:2'],
+    ['versorgung', 'Versorgung', 'sel', [['', 'Standard (voll)'], ['voll', 'voll (100 %)'], ['aus', 'aus (nur Vergleich)']]],
+    ['bis', 'Simulieren bis (Stunde oder ISO)', 'txt', 'leer = bis zum Ziel'],
+    ['mass', 'Maß', 'sel', [['', 'Standard (Landung)'], ['landung', 'Landung'], ['foerderung', 'Förderung bei „bis“']]],
+  ]],
+];
+function slState() {
+  if (!S.simlauf) S.simlauf = { form: HZ_SIMPARAMS.toForm(HZ_SIMPARAMS.defaults()), open: false };
+  return S.simlauf;
+}
+function slField([k, label, type, opt], f) {
+  const v = f[k] ?? '';
+  const ctl = type === 'sel'
+    ? `<select data-sl="${k}">${opt.map(([o, t]) => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`
+    : `<input data-sl="${k}" value="${esc(v)}"${type === 'num' ? ' inputmode="decimal"' : ''}${opt ? ` placeholder="${esc(opt)}" title="${esc(opt)}"` : ''}>`;
+  return `<label class="f"><span>${esc(label)}</span>${ctl}</label>`;
+}
+const slSummary = (d, errs) => `<div class="small" style="margin:6px 0">${d.length ? `Abweichend vom Standard: <b>${esc(d.join(' · '))}</b>` : 'Standard-Einstellungen (wie der tägliche Lauf)'}</div>
+  ${errs.length ? `<div class="small warn">${errs.map(esc).join('<br>')}</div>` : ''}`;
+function simlaufCard(pl, own) {
+  const st = slState(), P = HZ_SIMPARAMS.fromForm(st.form), errs = HZ_SIMPARAMS.check(P), d = HZ_SIMPARAMS.diff(P);
+  const w = (pl?.work || [])[0], ws = w?.state || {}, age = w ? Date.now() - new Date(w.at) : Infinity;
+  const open = (pl?.offen || []).find(q => q.kind !== 'optimierer');
+  const lines = [!pl?.now ? 'Stand nicht abrufbar' : !w ? 'Work: kein Lebenszeichen'
+    : ws.phase === 'start' && age < 3 * 3600e3 ? `Work: rechnet seit ${dt(w.at)}` : age > 15 * 60e3 ? `Work: aus (zuletzt ${dt(w.at)})` : 'Work: bereit'];
+  if (ws.sperre && !/^frei/i.test(ws.sperre)) lines.push(`Sim-Sperre: ${ws.sperre}`);
+  if (open) lines.push(`Auftrag ${open.status === 'in_arbeit' ? 'in Arbeit' : 'angefordert'} seit ${dt(open.created_at)}`);
+  return `<div class="card"><div class="row between"><h2>Neuer Lauf auf Work</h2>${open ? '<span class="tag">angefordert</span>' : ''}</div>
+    <p class="muted small">Work rechnet mit diesen Einstellungen einen Plan. Das Ergebnis erscheint unten als Entwurf (eigene Datei, der tägliche Lauf und der aktive Plan bleiben). Freigeben und starten weiterhin im Cockpit.</p>
+    ${lines.map(t => `<div class="small">${esc(t)}</div>`).join('')}
+    <div id="slSum">${slSummary(d, errs)}</div>
+    ${own ? `<div class="row" style="margin-top:6px;gap:8px"><button id="slGo"${open || errs.length || !pl?.now ? ' disabled' : ''} data-block="${open || !pl?.now ? 1 : ''}">Mit aktuellen Einstellungen rechnen</button>
+      <button id="slReset" class="small">Standard</button></div>` : ''}
+    <details id="slDet"${st.open ? ' open' : ''} style="margin-top:8px"><summary>Einstellungen</summary>
+      ${SL_FIELDS.map(([g, fs]) => `<h3>${esc(g)}</h3><div class="cols2">${fs.map(x => slField(x, st.form)).join('')}</div>`).join('')}
+    </details></div>`;
+}
+function simlaufWire(el, pl) {
+  const st = slState(), card = el.querySelector('#slDet')?.closest('.card');
+  if (!card) return;
+  const redraw = () => { const n = document.createElement('div'); n.innerHTML = simlaufCard(pl, isOwner()); card.replaceWith(n.firstElementChild); simlaufWire(el, pl); };
+  card.querySelector('#slDet').addEventListener('toggle', e => { st.open = e.target.open; });
+  const upd = () => {
+    const P = HZ_SIMPARAMS.fromForm(st.form), errs = HZ_SIMPARAMS.check(P);
+    card.querySelector('#slSum').innerHTML = slSummary(HZ_SIMPARAMS.diff(P), errs);
+    const go = card.querySelector('#slGo');
+    if (go) go.disabled = !!go.dataset.block || errs.length > 0;
+  };
+  card.querySelectorAll('[data-sl]').forEach(c => c.addEventListener(c.tagName === 'SELECT' ? 'change' : 'input', () => { st.form[c.dataset.sl] = c.value; upd(); }));
+  card.querySelector('#slReset')?.addEventListener('click', () => { st.form = HZ_SIMPARAMS.toForm(HZ_SIMPARAMS.defaults()); redraw(); });
+  card.querySelector('#slGo')?.addEventListener('click', async () => {
+    const P = HZ_SIMPARAMS.fromForm(st.form), d = HZ_SIMPARAMS.diff(P);
+    if (!confirm(`Work soll jetzt einen Plan rechnen${d.length ? ` (${d.join(' · ')})` : ' (Standard-Einstellungen)'}.\nDas Ergebnis erscheint als Entwurf unter Pläne; freigeben und starten weiterhin du.\nAnfordern?`)) return;
+    try {
+      const r = await Cloud.rpc('plan_rechnen', { p_account: S.acc, p_note: d.length ? `Atlas: ${d.join(' · ')}`.slice(0, 300) : 'Atlas', p_params: P });
+      toast(r.text || (r.ok ? 'Angefordert' : 'Nicht angefordert'));
+      route(true);
+    } catch (e) { toast(e.message); }
+  });
+}
+
 const ATLAS_RUN = p => ['freigegeben', 'aktiv'].includes(p.status);
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
-  const [plans, heads, sess, W, homes] = await Promise.all([
+  const [plans, heads, sess, W, homes, pl] = await Promise.all([
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', order: 'created_at.desc', limit: 200,
       select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1, select: 'id,status,title,plan_hash' }),
     loadSessions(),
     loadWissen().catch(() => null),
     S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
+    Cloud.rpc('planlauf_status', { p_account: S.acc }).catch(() => null),
   ]);
   if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   if (plans.some(p => !planNo(p.id))) await loadNums(true);
@@ -480,11 +585,13 @@ async function viewPlans(rest = []) {
       ${planDetails(p)}
       ${own ? `<div class="row between" style="margin-top:6px">${p.plan_hash ? `<a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a>` : '<span></span>'}
         ${ATLAS_RUN(p) ? '' : `<button class="danger small" data-del="${esc(p.id)}">Löschen</button>`}</div>` : ''}</div>`;
+  html += simlaufCard(pl, own);
   html += `<div class="card"><h2>Alle Baupläne <span class="muted small">${plans.length}, neueste zuerst</span></h2>
     <p class="muted small">Freigeben, Verwerfen und Abbrechen im Cockpit. Hier: ansehen, als neuen Entwurf ändern, nicht laufende löschen (Owner).</p>
     ${plans.length ? plans.map(item).join('') : '<p class="muted">Noch keine Pläne.</p>'}</div>`;
   $('#view').innerHTML = html;
   planTabsWire($('#view'));
+  simlaufWire($('#view'), pl);
   $('#view').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => deletePlan(plans.find(x => x.id === b.dataset.del))));
 }
 
