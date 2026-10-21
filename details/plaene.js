@@ -446,6 +446,7 @@ const SL_FIELDS = [
     ['pflicht', 'Pflicht art:id:stufe', 'txt', 'z. B. b:spaceobservatory:2 (b Gebäude, r Forschung)'],
     ['verbot', 'Verbot art:id', 'txt', 'kommt in keinem Plan vor'],
     ['aus', 'Aus (bauen, aber 0 %)', 'txt', 'z. B. b:fissionreactor'],
+    ['techcap', 'Obergrenze heben art:id:stufe', 'txt', 'z. B. r:refinerytech:11 (samt Voraussetzungen) · leer = Standard-Obergrenzen'],
     ['bunker', 'Bunker-Stufe', 'num', ''],
     ['rabatt', 'Rabatt (0…0,5)', 'num', ''],
     ['makroziele', 'Makro-Ziele', 'num', ''],

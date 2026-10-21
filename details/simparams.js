@@ -12,7 +12,7 @@
   const DEFAULTS = {
     v: 1, ziel: 'kolo3', kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff'], platzbahn: null, kolopflicht: [],
     flotte: ['PFLS:1', 'PTRN:2'], flottebis: 'nach', werft: 1,
-    pflicht: ['b:spaceobservatory:2'], verbot: [], aus: ['b:fissionreactor'], bunker: 3, rabatt: 0.1, makroziele: 1, makro: 30,
+    pflicht: ['b:spaceobservatory:2'], verbot: [], aus: ['b:fissionreactor'], techcap: ['r:refinerytech:11'], bunker: 3, rabatt: 0.1, makroziele: 1, makro: 30,
     movi: null, aufwand: { stufe: 'normal', ...AUFWAND.normal }, seeds: ['result.json', 'kolo3-stpl-live1821.json'],
     lager: null, kolominen: null, kolohilfe: null, versorgung: null, bis: null, mass: null,
   };
@@ -24,6 +24,7 @@
     pflicht: new RegExp(`^[br]:${ID}:\\d{1,2}$`),
     verbot: new RegExp(`^[br]:${ID}$`),
     aus: new RegExp(`^b:${ID}$`),
+    techcap: new RegExp(`^[br]:${ID}:\\d{1,2}$`),
     kolohilfe: new RegExp(`^${ID}:\\d{1,2}$`),
     seeds: /^[\w.-]{1,80}\.json$/,
   };
@@ -32,7 +33,7 @@
     versorgung: ['voll', 'aus'], mass: ['landung', 'foerderung'] };
   const INTS = { platzbahn: [1, 15], werft: [1, 10], bunker: [0, 10], makroziele: [0, 5], makro: [0, 300] };
   const AUF_MAX = { iter: 2000, rounds: 10, patience: 500, kicks: 500 };
-  const LISTS = ['kolo', 'kolopflicht', 'flotte', 'pflicht', 'verbot', 'aus', 'seeds'];
+  const LISTS = ['kolo', 'kolopflicht', 'flotte', 'pflicht', 'verbot', 'aus', 'techcap', 'seeds'];
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const splitList = s => String(s || '').split(/[,\s]+/).map(x => x.trim()).filter(Boolean);
