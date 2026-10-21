@@ -186,13 +186,15 @@ const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, nf, effs, gds] = await Promise.all([
+  const [heads, sess, nf, effs, gds, movis] = await Promise.all([
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     loadNotfall(),
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
+    loadDecisions('id,t,text,data:data->decision,answer:data->answer').then(l => l.filter(e => /Motivationsvideo/i.test(e.text || ''))
+      .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision)).catch(() => []),
   ]);
   // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
   const head = heads[0];
@@ -209,7 +211,7 @@ async function viewLage() {
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen, Baustellen je Stufe
   S.build = liveBuild(live, abLive, gds[0]);
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  $('#view').innerHTML = overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + notfallCard(sess, nf, d) + bannerCard(sess)
+  $('#view').innerHTML = overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + notfallCard(sess, nf, d) + bannerCard(sess) + moviCard(sess, abLive, movis)
     + '<p class="small muted pad">Planeten, Gebäude, Forschung: <a href="details/#/imperium" target="_blank" rel="noopener">Imperium im Atlas →</a></p>';
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
   bindNotfall(sess, nf);
@@ -518,6 +520,29 @@ function bannerCard(sess) {
     <p>${esc(b.n)} von 3 Votes offen auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Vote ${esc(s.slot)}: ${esc(s.host || 'Ziel unbekannt')}`).join('<br>')}</div>
     ${(b.slots || []).some(s => s.url || s.href || s.src) ? `<details class="sub"><summary class="small muted">Details</summary><div class="small muted wrapall">${(b.slots || []).map(s => esc(s.url || s.href || s.src || '')).join('<br>')}</div></details>` : ''}
     ${isOwner() ? '<div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Banner jetzt öffnen</button></div>' : ''}</div>`;
+}
+/* Motivationsvideo (Autobuilder 0.5.53): nur Hinweis, abspielen darf nur der Nutzer (im Spiel oder über die Entscheidung unter
+   Meldungen). Läuft ein Video, zeigt die Karte das (Lebenszeichen movi). Sonst bei offenem Video: lohnt, wenn Baustelle und
+   Forschung mit langen Aufträgen belegt sind (Simulation PR 374: Gewinn vor allem aus Aufträgen im Video-Fenster) und ein
+   Live-Lauf mit Autobuilder ab 0.5.53 die verkürzten Restzeiten sofort nachlegt. Werft sieht die Lage hier nicht. */
+const MOVI_VER = '0.5.53', MOVI_LONG = 2 * 3600e3;
+function moviCard(sess, abLive, movis) {
+  const on = sess.devs.map(x => x.ab && isFresh(x.ab.at, 10) && x.ab.state?.movi).find(m => m && m.until > Date.now());
+  if (on) return `<div class="card"><div class="row between"><h2>Motivationsvideo</h2><span class="muted small">läuft</span></div>
+    <p class="small">Erkannt seit <b>${esc(clockT(on.from))}</b>${on.f ? ` (Tempo ≈ ×${esc(on.f)})` : ''}, gilt bis <b>${esc(clockT(on.until))}</b>. Der Autobuilder prüft alle 20 s, legt sofort nach und loggt nicht aus.</p></div>`;
+  const v = movis[0];
+  if (!v) return '';
+  const jobs = abLive?.jobs || [], left = k => Math.max(0, ...jobs.filter(j => j.k === k).map(j => j.end - Date.now()));
+  const b = left('b'), r = left('r'), long = [b, r].filter(x => x >= MOVI_LONG).length;
+  const run = sess.devs.find(x => x.ab && isFresh(x.ab.at, 10) && x.ab.state?.running && x.ab.state?.mode === 'live');
+  const runOk = run && verCmp(run.ab.version, MOVI_VER) >= 0 && !run.ab.state.pausedAt;
+  const verdict = long === 2 && runOk ? 'lohnt jetzt' : long ? 'lohnt teilweise' : 'lohnt noch nicht';
+  const q = (k, x) => x > 0 ? `${k} noch ${esc(dur(x / 1000))}` : `${k} frei`;
+  return `<div class="card"><div class="row between"><h2>Motivationsvideo</h2><span class="muted small">${verdict}</span></div>
+    <p class="small">Video verfügbar seit ${esc(dt(v.t))}, verfällt ${esc(dt(new Date(v.t).getTime() + 14 * 86400e3))}. Lage: ${q('Baustelle', b)}, ${q('Forschung', r)} (Werft hier nicht sichtbar).</p>
+    <p class="small">${runOk ? 'Live-Lauf aktiv – der Autobuilder erkennt das Video und legt im Fenster sofort nach.'
+      : run ? `Live-Lauf ohne Nachlegen im Video (${run.ab.state.pausedAt ? 'pausiert' : `Autobuilder ${esc(run.ab.version)}, nötig ab ${MOVI_VER}`}).` : 'Kein Live-Lauf – im Video-Fenster startet niemand neue Aufträge.'}
+    Am meisten bringt es, wenn Baustelle und Forschung lange Aufträge haben (ab ${MOVI_LONG / 3600e3} h). Abspielen nur von Hand: im Spiel oder unter Meldungen.</p></div>`;
 }
 async function sendBanner(sess) {
   const x = bannerDev(sess) || bannerLoginNow(sess), login = x && !bannerDev(sess);
