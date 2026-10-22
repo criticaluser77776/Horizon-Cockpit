@@ -458,9 +458,9 @@ const SL_FIELDS = [
   ['Motivationsvideo', [
     ['movi_modus', 'Video', 'sel', [['aus', 'ohne'], ['auto', 'bester Zeitpunkt (auto)'], ['zeit', 'fester Zeitpunkt']]],
     ['movi_zeit', 'Zeitpunkt (Planstunde oder ISO)', 'txt', 'nur bei „fester Zeitpunkt“'],
-    ['movi_faktor', 'Faktor', 'num', 'Standard 24'],
+    ['movi_faktor', 'Faktor', 'num', 'Standard 25 (live gemessen 21.10.)'],
     ['movi_schiff', 'Schiffbau beschleunigt', 'sel', [['ja', 'ja'], ['nein', 'nein']]],
-    ['movi_neustart', 'Laufende Aufträge neu starten', 'sel', [['nein', 'nein'], ['ja', 'ja']]],
+    ['movi_neustart', 'Im Video nachlegen (Autobuilder ab 0.5.53)', 'sel', [['ja', 'ja'], ['nein', 'nein (Video ohne Live-Lauf)']]],
   ]],
   ['Aufwand', [
     ['aufwand_stufe', 'Rechenaufwand', 'sel', [['schnell', 'schnell (≈ ¼ h)'], ['normal', 'normal (≈ 1 h)'], ['gruendlich', 'gründlich (≈ 2–3 h)'], ['eigen', 'eigene Werte (Standard 40/2/20/10)']]],

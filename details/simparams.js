@@ -64,8 +64,8 @@
       ? { stufe: 'eigen', ...Object.fromEntries(Object.keys(AUF_MAX).map(k => [k, numOrNull(f[`aufwand_${k}`])])) }
       : { stufe: st, ...AUFWAND[st] };
     p.movi = !f.movi_modus || f.movi_modus === 'aus' ? null : {
-      zeit: f.movi_modus === 'auto' ? 'auto' : zeit(f.movi_zeit), faktor: numOrNull(f.movi_faktor) ?? 24,
-      schiff: f.movi_schiff !== 'nein', neustart: f.movi_neustart === 'ja' };
+      zeit: f.movi_modus === 'auto' ? 'auto' : zeit(f.movi_zeit), faktor: numOrNull(f.movi_faktor) ?? 25,
+      schiff: f.movi_schiff !== 'nein', neustart: f.movi_neustart !== 'nein' };
     return p;
   }
 
@@ -86,9 +86,9 @@
     for (const k of Object.keys(AUF_MAX)) f[`aufwand_${k}`] = String(p.aufwand[k]);
     f.movi_modus = !p.movi ? 'aus' : p.movi.zeit === 'auto' ? 'auto' : 'zeit';
     f.movi_zeit = p.movi && p.movi.zeit !== 'auto' ? String(p.movi.zeit) : '';
-    f.movi_faktor = String(p.movi?.faktor ?? 24);
+    f.movi_faktor = String(p.movi?.faktor ?? 25);
     f.movi_schiff = p.movi?.schiff === false ? 'nein' : 'ja';
-    f.movi_neustart = p.movi?.neustart ? 'ja' : 'nein';
+    f.movi_neustart = p.movi?.neustart === false ? 'nein' : 'ja';
     return f;
   }
 
