@@ -1047,22 +1047,22 @@ async function fillPushCard() {
 }
 
 /* ---------- Claude-Kanal (B6, 14.10.) ----------
-   Aufträge (requests) an Claude: Owner stellt sie hier, eine Claude-Sitzung mit Wächter (tools/watch.py) wird geweckt,
-   übernimmt (request_claim) und antwortet (request_answer, ggf. mit Planentwurf). Antworten kommen auch als Push. */
+   Aufträge (requests) an Claude: Owner stellt sie hier (Ziel immer „any“), die Claude-Wache auf Work (tools/claude_wache.py,
+   seit 22.10.) oder eine Claude-Sitzung mit Wächter (tools/watch.py) übernimmt (request_claim) und antwortet (request_answer,
+   ggf. mit Planentwurf). Antworten kommen auch als Push. */
 const RQ_ST = { neu: 'neu', in_arbeit: 'in Arbeit', beantwortet: 'beantwortet', abgelehnt: 'abgelehnt', zurueckgezogen: 'zurückgezogen' };
 const RQ_KIND = { optimierer: 'Neuer Plan', plan_rechnen: 'Plan-Lauf Work' };
-const RQ_TGT = { any: 'beliebige Claude-Sitzung', sim: 'Simulations-PC', remote: 'Remote-PC' };
+const RQ_TGT = { sim: 'Simulations-PC', remote: 'Remote-PC' };  // nur noch für alte Aufträge; neue gehen an „any“
 async function viewClaude() {
   const rq = await Cloud.q('requests', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 40,
     select: 'id,kind,target,text,status,answer,plan_ids,created_at,answered_at' });
   const own = isOwner();
   $('#view').innerHTML = `${own ? `<div class="card"><h2>Auftrag an Claude</h2>
       <form id="rqForm"><textarea name="text" rows="4" maxlength="8000" placeholder="Frage oder Auftrag, z. B. „Rechne den Plan neu ab dem neuesten Snapshot“" style="width:100%"></textarea>
-      <div class="row" style="margin-top:6px">an <select name="target">${Object.entries(RQ_TGT).map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join('')}</select>
-      <button class="primary">Senden</button></div></form>
-      <p class="muted small">Claude sieht den Auftrag, sobald eine Sitzung mit Wächter läuft, und antwortet hier (mit Push). Pläne gibt Claude nie frei und schickt keine Kommandos an Skripte – das bleibt bei dir.</p></div>` : ''}
+      <div class="row" style="margin-top:6px"><button class="primary">Senden</button></div></form>
+      <p class="muted small">Die Claude-Wache auf Work holt den Auftrag innerhalb etwa einer Minute ab (höchstens 5 am Tag) und antwortet hier (mit Push). Pläne gibt Claude nie frei und schickt keine Kommandos an Skripte – das bleibt bei dir.</p></div>` : ''}
     <div class="card"><h2>Aufträge</h2>${rq.length ? rq.map(r => `<div class="list-item"><div class="row between">
-      <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(RQ_KIND[r.kind] || r.kind)}</span> ` : ''}<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span></span>
+      <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(RQ_KIND[r.kind] || r.kind)}</span> ` : ''}${r.target !== 'any' ? `<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span>` : ''}</span>
       <span class="muted small nowrap">${esc(when(r.created_at))}</span></div>
       <div class="wrapall" style="white-space:pre-wrap">${esc(tidy(r.text))}</div>
       ${r.answer ? `<div class="msgbody small"><b>Antwort</b>${r.answered_at ? ` <span class="muted">${esc(when(r.answered_at))}</span>` : ''}<br>${esc(tidy(r.answer))}</div>` : ''}
@@ -1074,7 +1074,7 @@ async function viewClaude() {
     const text = e.target.text.value.trim();
     if (!text) return;
     try {
-      await Cloud.rest('requests', { method: 'POST', prefer: 'return=minimal', body: { account_id: S.acc, kind: 'frage', target: e.target.target.value, text } });
+      await Cloud.rest('requests', { method: 'POST', prefer: 'return=minimal', body: { account_id: S.acc, kind: 'frage', target: 'any', text } });
       toast('Auftrag gesendet'); route(true);
     } catch (err) { toast(err.message); }
   });
