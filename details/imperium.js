@@ -22,7 +22,7 @@ function getdataCard(g, nm) {
     const why = s => s.never ? (/^Voraussetzung/.test(s.why || '') ? `${esc(s.why)} fehlt` : s.why ? `${esc(s.why)} reicht nie` : 'nicht absehbar') : s.why === 'jetzt' ? '' : esc(s.why || '');
     html += `<p>Weckzeit: <b>${w.at ? (new Date(w.at) <= Date.now() ? 'jetzt startbar' : esc(when(w.at))) : '–'}</b>
       <span class="muted small">Plan ${esc(w.hash || '')}</span></p><table class="small">${w.steps.map(s => `<tr>
-      <td><span class="tag">${s.k === 'b' ? 'Bau' : 'Forschung'}</span> #${esc(s.n)} ${esc(s.text)}${s.beyond ? ' <span class="tag">hinter „bis #“</span>' : ''}</td>
+      <td><span class="tag">${s.k === 'b' ? 'Bau' : 'Forschung'}${s.planet ? ` ${esc(s.planet)}` : ''}</span> #${esc(s.n)} ${esc(s.text)}${s.beyond ? ' <span class="tag">hinter „bis #“</span>' : ''}</td>
       <td class="num">${s.at ? (new Date(s.at) <= Date.now() ? '<b>jetzt</b>' : esc(clockT(s.at))) : '–'} <span class="muted">${why(s)}</span></td></tr>`).join('')}</table>`;
   } else html += '<p class="small muted">Kein aktiver Bauplan oder Plan vollständig.</p>';
   if (c) {
