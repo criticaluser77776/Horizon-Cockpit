@@ -388,15 +388,15 @@ function planTabsWire(root) {
   root?.querySelectorAll('[data-pltab]').forEach(b => b.addEventListener('click', () => { S.planTab = b.dataset.pltab; route(true); }));
 }
 // Kopfzeile Imperium: je Reiter der nächste offene Schritt (Zeit tm(tau) inkl. Abweichung), fällige Kolonie-Schritte markiert
-function planEmpire(plan, tabs, isDone, tm, now = Date.now()) {
+function planEmpire(plan, tabs, isDone, tm, now = Date.now(), col = false) {
   const rows = tabs.filter(t => t.k !== 'alle').map(t => {
     const i = plan.steps.findIndex((s, j) => s[0] !== 's' && planInTab(plan, t.k, s, j + 1) && !isDone(j + 1));
     const s = plan.steps[i], at = s ? tm(s[3]) : null;
     const nx = !s ? '<span class="muted">alle Schritte erledigt</span>'
       : `nächster #${i + 1} ${esc(s[5])} · ${esc(dt(at))}${t.kol && at < now ? ' <span class="tag mittel">fällig</span>' : ''}`;
-    return `<div><b>${esc(t.t)}</b>${t.kol ? ' <span class="muted">(von Hand bis M3)</span>' : ''}: ${nx}</div>`;
+    return `<div><b>${esc(t.t)}</b>${t.kol && !col ? ' <span class="muted">(von Hand)</span>' : ''}: ${nx}</div>`;
   });
-  return `<div class="small" style="margin:4px 0">${rows.join('')}<div class="muted">Der Autobuilder baut auf der Heimat; Kolonie-Schritte bis M3 von Hand, Forschung global.</div></div>`;
+  return `<div class="small" style="margin:4px 0">${rows.join('')}<div class="muted">${col ? 'Der Autobuilder baut auf Heimat und Kolonien (Option „Kolonie-Schritte ausführen“), Forschung global.' : 'Der Autobuilder baut auf der Heimat; Kolonie-Schritte von Hand (Option „Kolonie-Schritte ausführen“ aus), Forschung global.'}</div></div>`;
 }
 
 /* ---------- Spieldaten (Gebäude und Forschung, Datenbank Runde 7); Reiter Kompendium in kompendium.js ---------- */

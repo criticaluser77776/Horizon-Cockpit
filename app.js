@@ -635,7 +635,7 @@ function stepsTable(plan, st, execs, W, tab, shift = 0) {
   const fcs = !tab || tab === 'alle' || tab === 'heim' ? factorChanges(plan) : [];   // Faktoren gelten für die Heimat
   const row = r => {
     const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : (st.halts || []).includes(r.n) ? '⏸' : '';
-    return `<tr class="step${isDone(r.n) ? ' muted' : ''}${r.n === until ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${planAway(plan, r.n) && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, planAway(plan, r.n)))}</span>` : ''}${planAway(plan, r.n) && !isDone(r.n) ? ' <span class="muted">· von Hand</span>' : ''}${r.n === until ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
+    return `<tr class="step${isDone(r.n) ? ' muted' : ''}${r.n === until ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${planAway(plan, r.n) && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, planAway(plan, r.n)))}</span>` : ''}${planAway(plan, r.n) && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${r.n === until ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
   };
   const fcRow = fc => `<tr class="muted"><td></td><td>⚙ Faktor ${fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(fc.tau)}>${tp(fc.tau)}</td></tr>`;
@@ -703,7 +703,7 @@ function abCard(active, sess, cmds, own, execs, W, drift) {
     const hstTab = { ...hst, until: (tg && hst.untilBy?.[tg]) || hst.until, halts };
     html += `<div class="row between" style="margin-top:10px"><h3 style="margin:0">Nächste Planschritte <span class="muted small">bis ${esc(hst.until ? untilTxt(hst.until, hst.untilBy, plan) : '#–')}</span></h3>
       <a class="small" href="details/#/plaene" target="_blank" rel="noopener">alle im Atlas</a></div>
-      ${multi ? planEmpire(plan, tabs, isDone, tau => t0 + tau * 3600e3) + planTabsHtml(tabs, tab)
+      ${multi ? planEmpire(plan, tabs, isDone, tau => t0 + tau * 3600e3, Date.now(), !!hst.colony) + planTabsHtml(tabs, tab)
         : home?.coords ? `<div class="small muted" style="margin:4px 0">Planet ${esc(`${home.name || 'Planet'} (${home.coords})`)} · Forschung gilt für alle Planeten („global“)</div>` : ''}
       ${(() => { const sh = planShift(drift); return Math.abs(sh) >= 0.05 ? `<div class="small muted" style="margin:4px 0">Zeiten inkl. Abweichung: ${sh > 0 ? 'Verzug' : 'Vorlauf'} ${esc(hrs(sh))} gegen den Plan (reine Planzeit als Tooltip)</div>` : ''; })()}
       ${halts.length ? `<div class="small" style="margin:4px 0">⏸ Haltepunkte vor #${halts.map(n => esc(n)).join(', #')}${(plan.halts || []).length || (plan.haltKeys || []).length ? '' : ' <span class="muted">(vom Vorplan übernommen)</span>'}</div>` : ''}

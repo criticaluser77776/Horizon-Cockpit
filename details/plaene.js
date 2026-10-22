@@ -53,7 +53,7 @@ function stepsTable(plan, st, execs, all, W, tab, shift = 0) {
     if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
     const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
     const kol = planAway(plan, r.n);
-    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) ? ' <span class="muted">· von Hand</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${e.carried ? " · aus Vorplan (gleiche Kennung)" : ""}</div>` : ''}</td>
+    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st?.colony ? ' <span class="muted">· von Hand</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${e.carried ? " · aus Vorplan (gleiche Kennung)" : ""}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
   }).join('')}</table>`;
 }
@@ -572,7 +572,7 @@ async function viewPlans(rest = []) {
     html += `<div class="cols2"><div class="card"><div class="row between"><h2>${testPlan ? `Testplan ${esc(tpn)} <span class="tag">lokal</span>` : `${esc(planLabel(active.id))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span>`}</h2>
       <span class="small">${COCKPIT_LINK('#/plaene', '„bis #“, Start/Stopp im Cockpit')}</span></div>
       <p class="small">${esc(tidy(testPlan ? `${plan.created || ''} · id ${plan.id}` : active.title || ''))}</p>${runBody(sess)}
-      ${multi ? `<h3>Imperium</h3>${planEmpire(plan, tabs, planStepDone(plan, hst, ex), tau => t0 + tau * 3600e3)}${planTabsHtml(tabs, tab)}`
+      ${multi ? `<h3>Imperium</h3>${planEmpire(plan, tabs, planStepDone(plan, hst, ex), tau => t0 + tau * 3600e3, Date.now(), !!hst?.colony)}${planTabsHtml(tabs, tab)}`
         : `<div class="small muted" style="margin:4px 0">Planet ${esc((plan.planet || S.home)?.name || 'Heimat')} ${esc((plan.planet || S.home)?.coords || '')} · Forschung gilt für alle Planeten („global“)</div>`}
       ${Math.abs(sh) >= 0.05 ? `<div class="small muted" style="margin:4px 0">Zeiten inkl. Abweichung: ${sh > 0 ? 'Verzug' : 'Vorlauf'} ${esc(hrs(sh))} (reine Planzeit als Tooltip)</div>` : ''}
       <h3>${multi && tab !== 'alle' ? `${esc(tabs.find(t => t.k === tab).t)}: ${plan.steps.filter((s, i) => s[0] !== 's' && planInTab(plan, tab, s, i + 1)).length} von` : 'Alle'} ${plan.steps.length} Planschritte mit Ausführungen</h3>${stepsTable(plan, hst, ex, true, W, tab, sh)}</div>
