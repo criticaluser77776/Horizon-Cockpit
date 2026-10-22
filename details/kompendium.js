@@ -89,7 +89,7 @@
   function model(p) {
     const req = Array.isArray(p.pflicht) ? new Set(p.pflicht) : null;
     const s = p.steps.map((x, i) => ({ i, k: x[0], id: x[1], l: x[2], t0: x[3], t1: x[4], name: x[5] || '', c: x[6] || [0, 0, 0],
-      req: req && x[0] !== 's' ? req.has(`${x[0]}:${x[1]}:${x[2]}`) : null, pl: planAway(p, i + 1) }));   // pl: Kolonie (M5), sonst null
+      req: req && x[0] !== 's' ? req.has(`${x[0]}:${x[1]}:${x[2]}`) : null, pl: planAway(p, i + 1), rp: planResPlanet(p, i + 1) }));   // pl: Kolonie (M5), rp: Startplanet der Forschung (M6), sonst null
     const hours = p.hours || Math.max(...s.map(x => x.t1));
     const f = []; let cur = {};
     (p.factors || []).forEach(([t, ch], j, a) => { cur = { ...cur, ...ch }; const to = j + 1 < a.length ? a[j + 1][0] : hours; if (to > t) f.push([t, to, { ...cur }]); });
@@ -179,7 +179,7 @@
       const tm = r.s && r.s.i in LR ? 'läuft bis ' + esc(hm(new Date(Date.parse(LV.at) + LR[r.s.i] * 1000))) : esc(hm(at(r.t)));
       if (r.ch) { html += `<tr class="kfac"><td></td><td class="num">${tm}</td><td colspan="5">⚙ ${r.ch.map(([id, o, v]) => `${esc(bName(id))} ${pct(o)} → <b>${pct(v)}</b>`).join(', ')}</td></tr>`; continue; }
       const s = r.s;
-      html += `<tr${LD.has(s.i) ? ' class="kdone"' : ''}><td class="num">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}${s.pl ? ` <span class="tag aktiv">${esc(M.plName(s.pl))}</span>` : ''}
+      html += `<tr${LD.has(s.i) ? ' class="kdone"' : ''}><td class="num">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}${s.pl ? ` <span class="tag aktiv">${esc(M.plName(s.pl))}</span>` : ''}${s.rp ? ` <span class="tag aktiv" title="Forschung startet auf ${esc(s.rp)}">startet auf ${esc(M.plName(s.rp))}</span>` : ''}
         <div class="small muted">Dauer ${hrs(s.t1 - s.t0)}${s.req == null ? '' : s.req ? ' · <span class="pill req">Pflicht</span>' : ' · <span class="pill opt">Investition</span>'}</div>${rmob(s.c)}</td>${res3(s.c)}</tr>`;
     }
     const fb = (v, l) => `<button type="button" data-f="${v}" aria-pressed="${f === v}">${l}</button>`;

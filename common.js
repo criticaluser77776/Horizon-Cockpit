@@ -363,6 +363,10 @@ async function loadPlanExecs(accId, planId, plan) {
   return [...own, ...more].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
 }
 const planTabName = (plan, c) => (Array.isArray(plan.planets) && plan.planets.find(p => p?.coords === c)?.name) || c;
+// Forschungs-Startplanet (M6): plan.researchPlanet {Nr: Koordinaten} nur für Forschung, die auf einer Kolonie startet (dort
+// günstiger, Simulator --forschort); Forschung bleibt global (Reiter „Forschung (global)“, Kennung r:…). null = Heimat.
+const planResPlanet = (plan, n) => { const c = plan?.researchPlanet?.[n]; return plan?.steps?.[n - 1]?.[0] === 'r' && typeof c === 'string' ? c : null; };
+const planResTag = (plan, n) => { const c = planResPlanet(plan, n); return c ? ` <span class="tag aktiv" title="Forschung startet auf ${esc(c)}">startet auf ${esc(planTabName(plan, c))}</span>` : ''; };
 // „bis“ je Reiter (M8, Autobuilder ab 0.5.65): Gruppe eines Schritts wie grpOf im Autobuilder – 'r' Forschung, Koordinaten
 // (Kolonie), sonst 'h' (Heimat mit Schiffen). Reiter 'heim' = Gruppe 'h', 'alle' = keine Gruppe (gemeinsames „bis #“).
 const planGrp = (plan, n) => plan.steps[n - 1]?.[0] === 'r' ? 'r' : planAway(plan, n) || 'h';

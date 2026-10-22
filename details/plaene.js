@@ -53,7 +53,7 @@ function stepsTable(plan, st, execs, all, W, tab, shift = 0) {
     if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
     const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
     const kol = planAway(plan, r.n);
-    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st?.colony ? ' <span class="muted">· von Hand</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${e.carried ? " · aus Vorplan (gleiche Kennung)" : ""}</div>` : ''}</td>
+    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st?.colony ? ' <span class="muted">· von Hand</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${e.carried ? " · aus Vorplan (gleiche Kennung)" : ""}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
   }).join('')}</table>`;
 }
@@ -271,7 +271,7 @@ function renderPlanEdit(own) {
     return `${r.halt && !out ? `<tr class="halt"><td></td><td colspan="2">⏸ Haltepunkt: Autobuilder hält vor #${no} an</td></tr>` : ''}
       <tr class="step${out ? ' skip' : ''}${!out && bad.has(no - 1) ? ' bad' : ''}" data-i="${i}">
       <td class="num">${out ? '–' : '#' + no}</td>
-      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}<div class="small muted">${r.ins ? '<b>neu eingefügt</b>' : `war #${r.n0}`}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
+      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + (r.n0 ? planResTag(E.orig, r.n0) : '') : ''}<div class="small muted">${r.ins ? '<b>neu eingefügt</b>' : `war #${r.n0}`}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
       <td class="acts">${own ? `<button data-a="up" title="nach oben"${i ? '' : ' disabled'}>↑</button><button data-a="down" title="nach unten"${i < E.rows.length - 1 ? '' : ' disabled'}>↓</button><button data-a="halt" title="Haltepunkt davor"${r.halt ? ' class="on"' : ''}>⏸</button><button data-a="skip" title="${r.ins ? 'wieder entfernen' : 'überspringen'}"${r.skip ? ' class="on"' : ''}>✕</button>` : ''}</td></tr>`;
   }).join('');
   const lim = Object.entries(E.limits).map(([t, [a, b]]) => `<div class="row between small"><span>${esc(nm(t))}: ${a}–${b} %</span>${own ? `<button class="link" data-lim-del="${esc(t)}">entfernen</button>` : ''}</div>`).join('');
@@ -399,6 +399,9 @@ async function createEdited(E, P, errs) {
   // (eine Liste aus Plänen vor M1 gilt nicht und fällt weg)
   delete payload.stepPlanet;
   if (o.stepPlanet && !Array.isArray(o.stepPlanet)) payload.stepPlanet =Object.fromEntries(P.keep.map((r, i) => [i + 1, o.stepPlanet[r.n0]]).filter(x => x[1]));
+  // Forschungs-Startplanet (M6, plan.researchPlanet {Nr: Koordinaten}) ebenso; eingefügte Forschung startet auf der Heimat
+  delete payload.researchPlanet;
+  if (o.researchPlanet) { const rp = Object.fromEntries(P.keep.map((r, i) => [i + 1, r.n0 ? planResPlanet(o, r.n0) : null]).filter(x => x[1])); if (Object.keys(rp).length) payload.researchPlanet = rp; }
   // Haltepunkte zusätzlich über die feste Kennung (M7, Autobuilder ab 0.5.47): gelten auch, wenn sich Nummern verschieben
   delete payload.haltKeys;
   if (P.halts.length) { const ks = planStepKeys(payload); payload.haltKeys = P.halts.map(n => ks[n - 1]).filter(Boolean); }
