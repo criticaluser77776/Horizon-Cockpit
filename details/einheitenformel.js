@@ -1,5 +1,5 @@
 'use strict';
-/* Einheitenwerte mit Forschung (Nutzer 20.10.2026, doku/stand/plan-atlas-sim-einheiten.md „Entscheid Rechengrundlage“):
+/* Einheitenwerte mit Forschung (Nutzer 20.10.2026, doku/stand/erledigt/plan-atlas-sim-einheiten.md „Entscheid Rechengrundlage“):
    Grundwerte nur aus getData (auf Forschung Stufe 1 zurückgerechnet, analyse/build_einheiten.py), unsere Werte immer selbst
    gerechnet. Gegenprobe: Hilfeseiten der baubaren Einheiten (analyse/live/einheiten-*.json, Tests einheiten_formel.test.js).
    Gesichert (live 20.10. PFLS/PTRN/PTNK): Panzerung × (1 + (Materialtechnik − 1)/30); Treibstoffverbrauch × (1 − 0,03 · (Antrieb − 1)),

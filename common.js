@@ -296,7 +296,7 @@ async function loadSessions() {
 function runBody(sess) {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
-  let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis #${esc(r.until ?? '–')}
+  let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis ${esc(untilTxt(r.until, r.until_by))}
     auf <b>${esc(r.name || 'unbekanntem Gerät')}</b>${r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : ''}${pauseTag(r)}</p>`;
   if (r.paused_at && s.hand) html += `<p class="small warn">In der Pause von Hand: ${esc(s.hand)}</p>`;
   if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(tidy(r.reason))}</p>`;
@@ -346,18 +346,41 @@ function planStepKeys(plan) {
 }
 // Ausführungen des Plans (executions mit plan_id) plus die aus anderen Plänen mit gleicher Kennung (data.key, Autobuilder ab
 // 0.5.47): so behält ein neuer Plan den Stand unveränderter Planeten. step = Nummer in diesem Plan.
+// Fremde Ausführungen nur mit den Kennungen dieses Plans, in Blöcken zu 60 (URL-Länge); vorher alle mit Kennung, begrenzt auf
+// die neuesten 1000 (Review C3: wächst mit jedem Plan um 150–300).
 async function loadPlanExecs(accId, planId, plan) {
-  const [own, keyed] = await Promise.all([
+  const keys = [...new Set(planStepKeys(plan))], blocks = [];
+  for (let i = 0; i < keys.length; i += 60) blocks.push(keys.slice(i, i + 60));
+  const [own, ...keyedBlocks] = await Promise.all([
     Cloud.q('executions', { account_id: accId, plan_id: `eq.${planId}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }),
-    Cloud.q('executions', { account_id: accId, or: `(plan_id.is.null,plan_id.neq.${planId})`, 'data->>key': 'not.is.null', ok: 'is.true',
-      select: 't,action,src_name,key:data->>key', order: 't.desc', limit: 1000 }).catch(() => []),
+    ...blocks.map(b => Cloud.q('executions', { account_id: accId, or: `(plan_id.is.null,plan_id.neq.${planId})`, ok: 'is.true',
+      'data->>key': `in.(${b.map(k => `"${k}"`).join(',')})`, select: 't,action,src_name,key:data->>key', order: 't.desc', limit: 1000 }).catch(() => [])),
   ]);
+  const keyed = keyedBlocks.flat().sort((a, b) => Date.parse(b.t) - Date.parse(a.t));
   const no = new Map(planStepKeys(plan).map((k, i) => [k, i + 1])), have = new Set(own.filter(e => e.step).map(e => e.step));
   const more = [];
   for (const e of keyed) { const n = no.get(e.key); if (n && !have.has(n)) { have.add(n); more.push({ t: e.t, step: n, action: e.action, src_name: e.src_name, carried: true }); } }
   return [...own, ...more].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
 }
 const planTabName = (plan, c) => (Array.isArray(plan.planets) && plan.planets.find(p => p?.coords === c)?.name) || c;
+// „bis“ je Reiter (M8, Autobuilder ab 0.5.65): Gruppe eines Schritts wie grpOf im Autobuilder – 'r' Forschung, Koordinaten
+// (Kolonie), sonst 'h' (Heimat mit Schiffen). Reiter 'heim' = Gruppe 'h', 'alle' = keine Gruppe (gemeinsames „bis #“).
+const planGrp = (plan, n) => plan.steps[n - 1]?.[0] === 'r' ? 'r' : planAway(plan, n) || 'h';
+const planGroups = plan => [...new Set(['h', ...(plan?.steps || []).map((s, i) => planGrp(plan, i + 1))])];
+const tabGrp = k => !k || k === 'alle' ? null : k === 'heim' ? 'h' : k;
+const grpName = (plan, g) => g === 'h' ? 'Heimat' : g === 'r' ? 'Forschung' : plan ? planTabName(plan, g) : g;
+// „#40“ oder „#40 (Heimat #35, Yontaurza V #50)“ – nur Reiter mit anderer Grenze (wie untilTxt im Autobuilder);
+// by = {Gruppe: Nummer} aus Lebenszeichen (untilBy) oder Lauf (runs.until_by)
+function untilTxt(until, by, plan) {
+  const d = by && typeof by === 'object' ? Object.entries(by).filter(([, n]) => n !== until) : [];
+  return `#${until ?? '–'}` + (d.length ? ` (${d.map(([g, n]) => `${grpName(plan, g)} #${n}`).join(', ')})` : '');
+}
+// Autobuilder-Version v mindestens w („0.5.65“)?
+function verGe(v, w) {
+  const a = String(v || '').split('.').map(Number), b = w.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  return true;
+}
 // Reiter-Leiste (Klick setzt S.planTab, eigene Wahl unabhängig vom Planeten im Reiter Imperium)
 const planTabsHtml = (tabs, cur) => `<div class="kseg pltabs" style="margin:4px 0">${tabs.map(t => `<button type="button" data-pltab="${esc(t.k)}" aria-pressed="${t.k === cur}">${esc(t.t)}</button>`).join('')}</div>`;
 const planTabCur = tabs => tabs.some(t => t.k === S.planTab) ? S.planTab : 'alle';

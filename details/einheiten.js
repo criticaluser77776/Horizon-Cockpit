@@ -1,5 +1,5 @@
 'use strict';
-/* Horizon Atlas – Reiter Einheiten (20.10.2026, doku/stand/plan-atlas-sim-einheiten.md Teil B). Nur lesend.
+/* Horizon Atlas – Reiter Einheiten (20.10.2026, doku/stand/erledigt/plan-atlas-sim-einheiten.md Teil B). Nur lesend.
    Alle 185 Schiffe und Verteidigungsanlagen mit allen Werten: Grundwerte aus getData (einheiten-daten.js, analyse/build_einheiten.py),
    „unser Stand“ selbst gerechnet mit der Forschung aus dem neuesten Live-Stand (einheitenformel.js), Live-Gegenprobe (Hilfeseite),
    Kosten live oder „ungeprüft“ (Wiki/ships.json), Bestand aus state_latest → empire.ships/defence.

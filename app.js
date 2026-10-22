@@ -311,7 +311,7 @@ function empireRes(d, hrs) {
 function overviewCard(sess, d, live, abLive, nm, W, extra = '') {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   const runTxt = !r ? 'kein Lauf'
-    : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis #${esc(r.until ?? '–')} · ${esc(r.name || '?')}`
+    : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis ${esc(untilTxt(r.until, r.until_by))} · ${esc(r.name || '?')}`
       + (r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : '')
       + (['laeuft', 'schlaeft'].includes(r.state) && s.ahead != null ? ` · Vorlauf ${esc(fmt(s.ahead, 1))} h` : '') + pauseTag(r);
   let html = `<div class="card${r?.state === 'verloren' || !d ? ' warn' : ''}"><div class="row between"><h2>Überblick</h2>
@@ -378,7 +378,7 @@ function nfDevRow(x, nf) {
   const hang = age >= HANG_MIN;
   let txt = hang ? `hängt / Browser zu (${ago(x.last)})`
     : abAge >= 3 && colAge < HANG_MIN ? `Autobuilder antwortet nicht – „Neu laden“`
-    : `${s.page === 'login' ? 'ausgeloggt' : 'im Spiel'} · ${s.running ? `${s.mode === 'live' ? 'baut' : 'Probe'} bis #${s.until}` : 'angehalten'}`;
+    : `${s.page === 'login' ? 'ausgeloggt' : 'im Spiel'} · ${s.running ? `${s.mode === 'live' ? 'baut' : 'Probe'} bis ${untilTxt(s.until, s.untilBy)}` : 'angehalten'}`;
   // Plan des Geräts gegen den Plan im Cockpit
   let plan = '';
   if (s.plan && !hang) {
@@ -634,7 +634,7 @@ function stepsTable(plan, st, execs, W, tab, shift = 0) {
   for (const r of steps) { const g = groups[groups.length - 1]; if (g && !(gap && near(g[g.length - 1].n) && !near(r.n))) g.push(r); else groups.push([r]); }
   const fcs = !tab || tab === 'alle' || tab === 'heim' ? factorChanges(plan) : [];   // Faktoren gelten für die Heimat
   const row = r => {
-    const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
+    const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : (st.halts || []).includes(r.n) ? '⏸' : '';
     return `<tr class="step${isDone(r.n) ? ' muted' : ''}${r.n === until ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' : ''}${planAway(plan, r.n) && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, planAway(plan, r.n)))}</span>` : ''}${planAway(plan, r.n) && !isDone(r.n) ? ' <span class="muted">· von Hand</span>' : ''}${r.n === until ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
   };
@@ -644,6 +644,14 @@ function stepsTable(plan, st, execs, W, tab, shift = 0) {
     const list = [...g, ...fcs.filter(fc => fc.tau >= lo && fc.tau <= hi).map(fc => ({ tau: fc.tau, fc }))].sort((a, b) => a.tau - b.tau || (a.fc ? -1 : 1));
     return list.map(r => r.fc ? fcRow(r.fc) : row(r)).join('');
   }).join('<tr class="muted"><td></td><td>…</td><td></td></tr>')}</table>`;
+}
+// „bis“ für den Start: gemeinsames until und eigene Reiter-Grenzen by {Gruppe: Nummer} (nur abweichende). Ohne Eingabe im
+// Cockpit (S.abSel.by) der Stand des Autobuilders (Lebenszeichen untilBy, ab 0.5.65), sonst der des Laufs.
+function abLimits(plan, st, run) {
+  const until = S.abSel?.until || st.until || run?.until || 10;
+  const src = S.abSel?.by || (st.plan === plan.id ? st.untilBy : null) || run?.until_by || {};
+  const gs = planGroups(plan);
+  return { until, by: Object.fromEntries(Object.entries(src).filter(([g, n]) => gs.includes(g) && Number.isInteger(n) && (S.abSel?.by || n !== until))) };
 }
 function abCard(active, sess, cmds, own, execs, W, drift) {
   const plan = active?.payload, run = sess.run;
@@ -666,8 +674,11 @@ function abCard(active, sess, cmds, own, execs, W, drift) {
            ${own ? `<button class="primary" data-cmd="adopt"${st.running ? ' disabled title="erst stoppen"' : ''}>Plan auf ${esc(target.name)} übernehmen</button>` : ''}`
         : '<p class="muted small">Der Collector bietet den Plan beim nächsten Abgleich an (bis 1 min).</p>';
     } else if (own) {
-      html += `<div class="row" style="margin:8px 0">bis # <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(S.abSel?.until || st.until || run?.until || 10)}" style="width:5em">
-        <button data-cmd="dry">Probelauf</button> <button class="primary" data-cmd="live">Start</button> <button class="danger" data-cmd="stop">Stopp</button></div>
+      // M8: „bis #“ gilt im gewählten Reiter (eigene Grenze, „wie Alle“ löscht sie), im Reiter Alle für alle übrigen
+      const L = abLimits(plan, st, run), g = planMulti(plan) ? tabGrp(planTabCur(planTabs(plan, S.home))) : null;
+      html += `<div class="row" style="margin:8px 0">bis #${g ? ` <span class="muted">(${esc(grpName(plan, g))})</span>` : ''} <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(g ? L.by[g] ?? L.until : L.until)}" style="width:5em">
+        ${g && L.by[g] != null ? '<button id="abAsAll" title="Grenze dieses Reiters löschen, es gilt wieder „bis #“ von Alle">wie Alle</button> ' : ''}<button data-cmd="dry">Probelauf</button> <button class="primary" data-cmd="live">Start</button> <button class="danger" data-cmd="stop">Stopp</button></div>
+        ${Object.keys(L.by).length ? `<div class="small" style="margin:-4px 0 4px">Start bis ${esc(untilTxt(L.until, L.by, plan))}</div>` : ''}
         <div class="muted small" id="abStep"></div>`;
     }
   }
@@ -687,12 +698,16 @@ function abCard(active, sess, cmds, own, execs, W, drift) {
     const t0 = Date.parse(plan.startTime) + planShift(drift) * 3600e3;
     const isDone = (() => { const o = (hst.open || []).filter(Number.isInteger), f = o.length ? Math.min(...o) : null, d = new Set(execs.filter(e => e.step).map(e => e.step));
       return n => d.has(n) || (f != null && n < f && !planAway(plan, n)); })();
-    html += `<div class="row between" style="margin-top:10px"><h3 style="margin:0">Nächste Planschritte <span class="muted small">bis #${esc(hst.until || '–')}</span></h3>
+    // Grenze im Reiter (M8) und Haltepunkte inkl. vom Vorplan übernommener (Lebenszeichen halts, ab 0.5.65; Review C1)
+    const tg = tabGrp(tab), halts = Array.isArray(hst.halts) ? hst.halts.filter(Number.isInteger) : [];
+    const hstTab = { ...hst, until: (tg && hst.untilBy?.[tg]) || hst.until, halts };
+    html += `<div class="row between" style="margin-top:10px"><h3 style="margin:0">Nächste Planschritte <span class="muted small">bis ${esc(hst.until ? untilTxt(hst.until, hst.untilBy, plan) : '#–')}</span></h3>
       <a class="small" href="details/#/plaene" target="_blank" rel="noopener">alle im Atlas</a></div>
       ${multi ? planEmpire(plan, tabs, isDone, tau => t0 + tau * 3600e3) + planTabsHtml(tabs, tab)
         : home?.coords ? `<div class="small muted" style="margin:4px 0">Planet ${esc(`${home.name || 'Planet'} (${home.coords})`)} · Forschung gilt für alle Planeten („global“)</div>` : ''}
       ${(() => { const sh = planShift(drift); return Math.abs(sh) >= 0.05 ? `<div class="small muted" style="margin:4px 0">Zeiten inkl. Abweichung: ${sh > 0 ? 'Verzug' : 'Vorlauf'} ${esc(hrs(sh))} gegen den Plan (reine Planzeit als Tooltip)</div>` : ''; })()}
-      ${stepsTable(plan, hst, execs, W, tab, planShift(drift))}
+      ${halts.length ? `<div class="small" style="margin:4px 0">⏸ Haltepunkte vor #${halts.map(n => esc(n)).join(', #')}${(plan.halts || []).length || (plan.haltKeys || []).length ? '' : ' <span class="muted">(vom Vorplan übernommen)</span>'}</div>` : ''}
+      ${stepsTable(plan, hstTab, execs, W, tab, planShift(drift))}
       ${own ? `<div class="row between small" style="margin-top:6px"><span class="muted">Tipp auf einen Schritt = „bis #“</span><a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a></div>` : ''}`;
   }
   return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
@@ -702,7 +717,7 @@ function abCard(active, sess, cmds, own, execs, W, drift) {
 const CMD_DE = { start: 'Start', stop: 'Stopp', adopt: 'Plan übernehmen', reload: 'Neu laden', snapshot: 'Lage lesen', factors: 'Faktoren sichern',
   factor: 'Faktor', banner: 'Werbebanner', pause: 'Pause', weiter: 'Weiter' };
 const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3>${cmds.map(c => `<div class="list-item small"><div class="row between">
-    <span><b>${esc(c.cmd === 'start' && c.args?.mode === 'dry' ? 'Probelauf' : CMD_DE[c.cmd] || c.cmd)}</b>${c.args?.accept ? ' (von Hand übernehmen)' : ''}${c.args?.until ? ' bis #' + esc(c.args.until) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</span>
+    <span><b>${esc(c.cmd === 'start' && c.args?.mode === 'dry' ? 'Probelauf' : CMD_DE[c.cmd] || c.cmd)}</b>${c.args?.accept ? ' (von Hand übernehmen)' : ''}${c.args?.until ? ' bis ' + esc(untilTxt(c.args.until, c.args.untilBy)) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</span>
     <span class="muted nowrap">${esc(when(c.created_at))}</span></div>
     <div><span class="tag">${esc(c.status)}</span> <span class="muted">${esc(tidy(c.result))}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</span></div></div>`).join('')}`;
 
@@ -724,24 +739,31 @@ function watchCmds(cmds, since = Date.now(), el = '#abCmds', filter = {}) {
 
 async function sendCmd(active, cmd, sess) {
   const plan = active.payload;
-  const until = +($('#abUntil')?.value || 0);
-  const step = plan.steps[until - 1];
   const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
   // Stopp geht an den Halter eines laufenden Laufs, sonst an das gewählte Gerät
   const holder = sess.devs.find(x => x.holds && ['laeuft', 'schlaeft', 'verloren'].includes(sess.run?.state));
   const PAUSE = ['pause', 'weiter', 'weiter_ok'];
   const tgt = (cmd === 'stop' || PAUSE.includes(cmd)) && holder ? holder : PAUSE.includes(cmd) ? null : live.find(x => x.device === $('#abDev')?.value);
   if (!tgt) return toast('Kein Gerät erreichbar');
-  const args = cmd === 'stop' || cmd === 'pause' || cmd === 'weiter' ? {} : cmd === 'weiter_ok' ? { accept: true } : cmd === 'adopt' ? { plan: plan.id } : { mode: cmd, until, plan: plan.id };
+  // M8: eigene Reiter-Grenzen → untilBy mit allen Gruppen (null = alle wie until, löscht alte Reiter-Grenzen). Ein Autobuilder
+  // vor 0.5.65 kennt untilBy nicht: Er bekommt als until die kleinste Grenze (hält eher zu früh als zu spät).
+  const L = abLimits(plan, tgt.ab?.state || {}, sess.run), byOn = Object.keys(L.by).length > 0;
+  const full = byOn ? Object.fromEntries(planGroups(plan).map(g => [g, L.by[g] ?? L.until])) : null;
+  const newAb = verGe(tgt.ab?.state?.v, '0.5.65');
+  const until = byOn && !newAb ? Math.min(...Object.values(full)) : L.until;
+  const step = plan.steps[until - 1];
+  const args = cmd === 'stop' || cmd === 'pause' || cmd === 'weiter' ? {} : cmd === 'weiter_ok' ? { accept: true } : cmd === 'adopt' ? { plan: plan.id }
+    : { mode: cmd, until, plan: plan.id, ...(newAb ? { untilBy: full } : {}) };
   const login = tgt.ab?.state?.page === 'login';
   if (cmd === 'live' || cmd === 'dry') {
-    if (!step) return toast(`„bis #“ zwischen 1 und ${plan.steps.length}`);
+    if (!step || (full && Object.values(full).some(n => !plan.steps[n - 1]))) return toast(`„bis #“ zwischen 1 und ${plan.steps.length}`);
+    if (byOn && !newAb && !confirm(`${tgt.name} hat Autobuilder ${tgt.ab?.state?.v || '?'} und kennt kein „bis“ je Reiter – er läuft für alle Reiter nur bis #${until}. Trotzdem?`)) return;
     // B11: Ein Probelauf darf keinen Live-Lauf eines anderen Geräts übernehmen (Autobuilder ab 0.5.16 und ab_sync lehnen ab)
     const r = sess.run;
     if (cmd === 'dry' && r && r.mode === 'live' && ['laeuft', 'schlaeft', 'verloren'].includes(r.state) && r.device !== tgt.device)
       return alert(`Probelauf auf ${tgt.name} nicht möglich: Der Live-Lauf bis #${r.until ?? '?'} liegt bei ${r.name || 'einem anderen Gerät'} (${RUNST[r.state] || r.state}).\n`
         + `Ein Probelauf würde ihn übernehmen und dort anhalten. Erst den Live-Lauf stoppen oder den Probelauf auf ${r.name || 'diesem Gerät'} starten.`);
-    if (!confirm(`${cmd === 'live' ? 'LIVE-Start' : 'Probelauf'} bis #${until} (${step[5]}) auf ${tgt.name}?`
+    if (!confirm(`${cmd === 'live' ? 'LIVE-Start' : 'Probelauf'} bis ${byOn && newAb ? untilTxt(until, L.by, plan) : `#${until}`} (${step[5]}) auf ${tgt.name}?`
       + (login ? `\n${tgt.name} ist ausgeloggt: Mit Auto-Login meldet es sich jetzt im Spiel an – ein anderer eingeloggter PC fliegt dabei raus.` : '')
       + (cmd === 'live' ? '\nDer Autobuilder baut danach selbständig im Spiel.' : ''))) return;
   } else if (!confirm(cmd === 'stop' ? `Autobuilder auf ${tgt.name} anhalten?`
@@ -959,11 +981,15 @@ async function viewPlans(rest = []) {
   planTabsWire($('#view'));
   $('#abDev')?.addEventListener('change', e => { S.abSel = { ...S.abSel, dev: e.target.value }; route(true); });
   watchCmds(cmds);
+  // M8: Eingabe im Reiter einer Gruppe = deren Grenze (alle bisherigen Grenzen werden dabei zur eigenen Auswahl), sonst until
+  const abGrp = () => planMulti(active?.payload) ? tabGrp(planTabCur(planTabs(active.payload, S.home))) : null;
+  const abBase = () => { const tg = sess.devs.find(x => x.device === $('#abDev')?.value)?.ab?.state || {}; return abLimits(active.payload, tg, sess.run); };
   const showStep = () => {
-    const n = +$('#abUntil').value, s = active?.payload?.steps?.[n - 1];
-    S.abSel = { ...S.abSel, until: n };
+    const n = +$('#abUntil').value, s = active?.payload?.steps?.[n - 1], g = abGrp();
+    S.abSel = g ? { ...S.abSel, by: { ...abBase().by, [g]: n } } : { ...S.abSel, until: n, by: S.abSel?.by || abBase().by };
     $('#abStep').textContent = s ? `#${n}: ${s[5]}` : '';
   };
+  $('#abAsAll')?.addEventListener('click', () => { const by = { ...abBase().by }; delete by[abGrp()]; S.abSel = { ...S.abSel, by }; route(true); });
   if ($('#abUntil')) {
     $('#abUntil').addEventListener('input', showStep);
     const s = active?.payload?.steps?.[+$('#abUntil').value - 1]; $('#abStep').textContent = s ? `#${$('#abUntil').value}: ${s[5]}` : '';
