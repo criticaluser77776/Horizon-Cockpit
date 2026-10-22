@@ -460,7 +460,7 @@ const SL_FIELDS = [
     ['movi_neustart', 'Laufende Aufträge neu starten', 'sel', [['nein', 'nein'], ['ja', 'ja']]],
   ]],
   ['Aufwand', [
-    ['aufwand_stufe', 'Rechenaufwand', 'sel', [['schnell', 'schnell (≈ ¼ h)'], ['normal', 'normal (≈ 1 h, wie täglich)'], ['gruendlich', 'gründlich (≈ 2–3 h)'], ['eigen', 'eigene Werte']]],
+    ['aufwand_stufe', 'Rechenaufwand', 'sel', [['schnell', 'schnell (≈ ¼ h)'], ['normal', 'normal (≈ 1 h)'], ['gruendlich', 'gründlich (≈ 2–3 h)'], ['eigen', 'eigene Werte (Standard 40/2/20/10)']]],
     ['aufwand_iter', 'iter', 'num', 'nur bei „eigene Werte“'], ['aufwand_rounds', 'rounds', 'num', ''],
     ['aufwand_patience', 'patience', 'num', ''], ['aufwand_kicks', 'kicks', 'num', ''],
   ]],
@@ -474,6 +474,9 @@ const SL_FIELDS = [
     ['versorgung', 'Versorgung', 'sel', [['', 'Standard (voll)'], ['voll', 'voll (100 %)'], ['aus', 'aus (nur Vergleich)']]],
     ['bis', 'Simulieren bis (Stunde oder ISO)', 'txt', 'leer = bis zum Ziel'],
     ['mass', 'Maß', 'sel', [['', 'Standard (Landung)'], ['landung', 'Landung'], ['foerderung', 'Förderung bei „bis“']]],
+    ['gewicht', 'Gewicht Förderung E, M, T', 'txt', 'z. B. 1, 2, 4 (Händlerkurs) · leer = jede Einheit gleich · nur mit Maß Förderung'],
+    ['kololive', 'Gelandete Kolonien aus dem Snapshot', 'sel', [['ja', 'übernehmen'], ['nein', 'nicht übernehmen']]],
+    ['flugfaktor', 'Flugfaktor SCOL', 'num', 'z. B. 0,043 (geeicht, ≈ 14 min) · leer = Modellwert'],
   ]],
 ];
 function slState() {

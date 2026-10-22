@@ -1,7 +1,7 @@
 'use strict';
 /* Horizon Atlas – Einstellungen eines Parameter-Laufs auf Work (Teil A, 20.10.2026, doku/stand/atlas-sim-parameter.md).
    Reine Logik ohne DOM (Test Horiversum/tests/sim_params.test.js): Standardwerte = tools/sim_params.py DEFAULTS
-   (= heutige DEFAULT_ARGS in tools/sim_actions.py), Formularfelder ↔ Einstellungen, Prüfung mit denselben Mustern wie Work.
+   (= DEFAULT_ARGS in tools/sim_actions.py), Formularfelder ↔ Einstellungen, Prüfung mit denselben Mustern wie Work.
    Gesendet werden feste JSON-Felder über public.plan_rechnen(p_params); Work prüft sie noch einmal (Positivliste). */
 (function (root) {
   const AUFWAND = {
@@ -10,11 +10,14 @@
     gruendlich: { iter: 300, rounds: 4, patience: 60, kicks: 100 },
   };
   const DEFAULTS = {
-    v: 1, ziel: 'kolo3', kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff'], platzbahn: null, kolopflicht: [],
-    flotte: ['PFLS:1', 'PTRN:2'], flottebis: 'nach', werft: 1,
-    pflicht: ['b:spaceobservatory:2'], verbot: [], aus: ['b:fissionreactor'], techcap: ['r:refinerytech:11'], bunker: 3, rabatt: 0.1, makroziele: 1, makro: 30,
-    movi: null, aufwand: { stufe: 'normal', ...AUFWAND.normal }, seeds: ['result.json', 'kolo3-stpl-live1821.json'],
-    lager: null, kolominen: null, kolohilfe: null, versorgung: null, bis: null, mass: null,
+    v: 1, ziel: 'kolo4', kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
+    kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:2'], flottebis: 'nach', werft: 1,
+    pflicht: ['b:spaceobservatory:2'], verbot: [], aus: ['b:fissionreactor'], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
+    bunker: 3, rabatt: 0.1, makroziele: 1, makro: 1,
+    movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 2, patience: 20, kicks: 10 },
+    seeds: ['plan48b-1021.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
+    lager: 'getrennt', kolominen: '16', kolohilfe: true, versorgung: 'voll', bis: '2026-11-05T22:00:00Z', mass: 'foerderung',
+    gewicht: [1, 2, 4], kololive: true, flugfaktor: 0.043,
   };
   const ID = '[a-z][a-z0-9_]{1,39}';
   const PAT = {
@@ -52,6 +55,10 @@
     const kh = String(f.kolohilfe || '').trim();
     p.kolohilfe = kh === '' ? null : /^(ja|standard)$/i.test(kh) ? true : splitList(kh);
     p.bis = zeit(f.bis);
+    const g = splitList(f.gewicht);
+    p.gewicht = g.length ? g.map(x => Number(x.replace(',', '.'))) : null;
+    p.kololive = f.kololive === 'ja' ? true : null;
+    p.flugfaktor = numOrNull(f.flugfaktor);
     const st = f.aufwand_stufe || 'normal';
     p.aufwand = st === 'eigen'
       ? { stufe: 'eigen', ...Object.fromEntries(Object.keys(AUF_MAX).map(k => [k, numOrNull(f[`aufwand_${k}`])])) }
@@ -72,6 +79,9 @@
     f.kolominen = p.kolominen || '';
     f.kolohilfe = p.kolohilfe === true ? 'ja' : (p.kolohilfe || []).join(', ');
     f.bis = p.bis == null ? '' : String(p.bis);
+    f.gewicht = (p.gewicht || []).join(', ');
+    f.kololive = p.kololive ? 'ja' : 'nein';
+    f.flugfaktor = p.flugfaktor == null ? '' : String(p.flugfaktor);
     f.aufwand_stufe = p.aufwand.stufe;
     for (const k of Object.keys(AUF_MAX)) f[`aufwand_${k}`] = String(p.aufwand[k]);
     f.movi_modus = !p.movi ? 'aus' : p.movi.zeit === 'auto' ? 'auto' : 'zeit';
@@ -102,12 +112,17 @@
     if (p.kolominen != null && !/^\d{1,2}(:[1-4])?$/.test(p.kolominen)) e.push('kolominen: Form 16 oder 16:1');
     if (Array.isArray(p.kolohilfe)) for (const x of p.kolohilfe) if (!PAT.kolohilfe.test(x)) e.push(`kolohilfe: „${x}“ (Form gebäude:stufe oder „ja“)`);
     if (p.bis != null && !(typeof p.bis === 'string' || (Number.isFinite(p.bis) && p.bis >= 0 && p.bis <= 2000))) e.push('bis: Planstunde oder ISO-Zeit');
+    if (p.gewicht != null && !(p.gewicht.length === 3 && p.gewicht.every(x => Number.isFinite(x) && x >= 0 && x <= 100))) e.push('Gewicht: drei Zahlen E, M, T (0…100)');
+    if (p.kololive != null && p.kololive !== true) e.push('Gelandete Kolonien: ja oder leer');
+    if (p.flugfaktor != null && !(Number.isFinite(p.flugfaktor) && p.flugfaktor >= 0.001 && p.flugfaktor <= 5)) e.push('Flugfaktor: Zahl 0,001…5');
     const kz = p.ziel !== 'scol';
     if (!kz) {
       if (p.kolopflicht.length) e.push('Kolonie-Pflichten nur mit Ziel Kolopunkt 3/4/5');
       if (p.flotte.length) e.push('Flotte nur mit Ziel Kolopunkt 3/4/5');
       if (p.kolohilfe != null) e.push('kolohilfe nur mit Ziel Kolopunkt 3/4/5');
+      if (p.kololive != null) e.push('Gelandete Kolonien nur mit Ziel Kolopunkt 3/4/5');
     } else if (p.kolo.length < +p.ziel.slice(4) - 1) e.push(`Kolonien: für ${p.ziel} mindestens ${+p.ziel.slice(4) - 1} Ziele`);
+    if (p.gewicht != null && p.mass !== 'foerderung') e.push('Gewicht nur mit Maß Förderung');
     if (p.mass === 'foerderung' && p.bis == null) e.push('Maß Förderung braucht „bis“');
     if (p.versorgung != null && !p.kolopflicht.length) e.push('Versorgung nur mit Kolonie-Pflichten');
     return e;
