@@ -7,6 +7,8 @@
    Daten: Tabelle planet_values (eine Zeile je Planet und Wert, Migration 20261017110001). Knopf „Planetenwerte messen“
    (nur Owner): Kommando planetwerte {planet, ungebaut?} an den Collector mit frischem Lebenszeichen im Spiel; er misst den im
    Spiel gewählten Planeten und wechselt ihn nie selbst. Ablauf am Tag der Landung: doku/stand/planeten-erfassung.md.
+   STPL (22.10.2026, Nutzer): Ein Standardplanet ist der Bezug, seine Grundwerte stehen ohne Messung überall auf 100 %
+   (Karte und Planet-Detail, auch fremde STPL); Umlaufbahn, Mond und Artefakte bleiben planetenabhängig und damit offen.
    Läuft vor app.js; nutzt zur Laufzeit dessen Helfer ($, esc, fmt, dt, ago, Cloud, S, account, isOwner, isFresh, verCmp,
    loadSessions, toast, route). */
 (function () {
@@ -20,12 +22,14 @@
     'hilfe-tonnage-infrastruktur': 'Hilfe: Tonnage Infrastruktur', 'hilfe-bauplatz-infrastruktur': 'Hilfe: Bauplatz Infrastruktur',
     'hilfe-arbeiter-wohnkomplex': 'Hilfe: Arbeiter Wohnkomplex', 'hilfe-solar-bahn': 'Hilfe: Solar ÷ Bahnfaktor',
     abgeleitet: 'Baugeschwindigkeit ÷ Gebäudekosten', bauleistung: 'Bauleistung (Statistik)', forschungskosten: 'Kosten der nächsten Forschung',
-    'bauplatz-gesamt': 'Bauplatz gesamt', 'typ-median': 'Median des Typs', prospektion: 'erst mit Prospektion' };
+    'bauplatz-gesamt': 'Bauplatz gesamt', 'typ-median': 'Median des Typs', prospektion: 'erst mit Prospektion', stpl: 'Standardplanet = Bezug' };
+  // Grundwerte eines STPL ohne Messung: überall 100 % (nur MAIN, siehe Kopf)
+  const STPL = Object.fromEntries(Object.keys(MAIN).map(k => [k, { pct: 100, status: 'stpl', method: 'stpl' }]));
 
   const coords = (g, s, b) => `${g}:${s}:${b}`;
   const val = v => !v ? '<span class="muted">–</span>'
     : v.status === 'offen' ? '<span class="tag">offen</span>'
-    : `<b>${esc(fmt(v.pct, 1))} %</b>${v.status === 'typ-median' ? ' <span class="tag">Median</span>' : ''}`;
+    : `<b>${esc(fmt(v.pct, 1))} %</b>${v.status === 'typ-median' ? ' <span class="tag">Median</span>' : v.status === 'stpl' ? ' <span class="tag">STPL</span>' : ''}`;
   // Spalte „Messung“: gemessen → Methode, Stufe, Notiz; offen → nur der Grund
   const info = v => !v ? '' : v.status === 'offen' ? v.note || METHOD[v.method] || ''
     : [METHOD[v.method] || v.method, v.level != null ? `Stufe ${v.level}` : '', v.note].filter(Boolean).join(' · ');
@@ -42,7 +46,10 @@
     if (!mine.length) return '';
     const by = {};
     for (const v of S0.values || []) (by[v.orbit] ||= {})[v.key] = v;
-    const blocks = mine.filter(p => by[p.orbit]).map(p => {
+    const std = p => !by[p.orbit] && p.type === 'STPL';
+    const blocks = mine.filter(p => by[p.orbit] || std(p)).map(p => {
+      if (std(p)) return `<h3>Bahn ${p.orbit} STPL <span class="muted small">${esc(p.name || '')} · Standardplanet, Bezug für alle Kolonien</span></h3>
+        <table class="small pw"><tr class="muted"><td>Wert</td><td class="num">Planet</td><td>Messung</td></tr>${Object.entries(MAIN).map(([k, n]) => row(k, n, STPL[k])).join('')}</table>`;
       const vs = by[p.orbit], any = Object.values(vs)[0];
       const at = Object.values(vs).map(v => v.measured_at).sort().pop();
       return `<h3>Bahn ${p.orbit} ${esc(any.planet_type || p.type || '')} <span class="muted small">${esc(p.name || '')} · gemessen ${esc(dt(at))} (${esc(ago(at))})</span></h3>
@@ -52,7 +59,7 @@
     }).join('');
     const opts = mine.map(p => `<option value="${esc(coords(g, s, p.orbit))}"${p.orbit === homeOrbit ? '' : ' selected'}>Bahn ${p.orbit}${p.orbit === homeOrbit ? ' (Heimat)' : ''} ${esc(p.name || '')}</option>`).join('');
     return `<div class="card" id="pwCard"><h2>Planetenwerte <span class="muted small">in % der Heimat (STPL = 100 %)</span></h2>
-      ${blocks || '<p class="small muted">Noch keine Kolonie gemessen.</p>'}
+      ${blocks}${mine.some(p => by[p.orbit]) ? '' : '<p class="small muted">Noch keine Kolonie gemessen.</p>'}
       <p class="small muted">Kosten: über 100 % heißt teurer als die Heimat; Baugeschwindigkeit, Bauplanet-Faktor und Erträge: über 100 % heißt besser. Verglichen wird immer dieselbe Stufe; fehlt sie auf einer Seite, bleibt der Wert offen.</p>
       ${isOwner() ? `<form id="pwForm" class="row" style="margin-top:6px;flex-wrap:wrap;gap:6px">
         <select name="planet" aria-label="Planet">${opts}</select>
@@ -79,8 +86,10 @@
     const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${p.galaxy}`, system: `eq.${p.system}`, orbit: `eq.${p.orbit}` };
     const [rows, home] = await Promise.all([Cloud.q('planet_values', { ...where, order: 'key' }).catch(() => []), homeOf()]);
     const own = p.present && me && p.owner === me;
-    if (!own && !rows.length) return '';
     const head = '<h3>Planetenwerte <span class="muted small">in % der Heimat (STPL = 100 %)</span></h3>';
+    if (!rows.length && p.type === 'STPL') return `${head}<p class="small muted">Standardplanet${p.coords === home ? ' (Heimat)' : ''} – Bezug für alle Kolonien, Grundwerte ohne Messung 100 %.</p>
+      <table class="wide small pw"><tr class="muted"><td>Wert</td><td class="num">Planet</td><td>Messung</td></tr>${Object.entries(MAIN).map(([k, n]) => row(k, n, STPL[k])).join('')}</table>`;
+    if (!own && !rows.length) return '';
     const link = `<a href="#/galaxie/${p.galaxy}/${p.system}">Karte „Planetenwerte“ in der Galaxie</a>`;
     if (!rows.length) return p.coords === home
       ? `${head}<p class="small muted">Heimat – Bezug für alle Kolonien (100 %).</p>`
