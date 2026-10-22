@@ -294,10 +294,11 @@ async function pdDetail(p) {
   const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${p.galaxy}`, system: `eq.${p.system}`, orbit: `eq.${p.orbit}` };
   // Berichte dieser Bahn und – nach einer Verschiebung – die Berichte mit derselben Planet-ID von der alten Stelle
   const rw = p.main_p_id ? { account_id: where.account_id, or: `(and(galaxy.eq.${p.galaxy},system.eq.${p.system},orbit.eq.${p.orbit}),main_p_id.eq.${p.main_p_id})` } : where;
-  const [reports, changes] = await Promise.all([
+  const [reports, changes, pw] = await Promise.all([
     Cloud.q('prospect_reports', { ...rw, select: 'galaxy,system,orbit,report_at,probes,vals,src_id,planet_type,planet_name,main_p_id,image,prospector',
       order: 'report_at.desc', limit: 50 }).catch(() => []),
     Cloud.q('planet_changes', { ...where, order: 't.desc,id.desc', limit: 50 }),
+    window.HzPlanetwerte?.section(p).catch(() => '') || '',   // Planetenwerte eigener Planeten: details/planetwerte.js
   ]);
   const fav = pdFav().has(p.coords), cmp = pdCmpList().includes(p.coords);
   const vals = p.v ? PD_GROUPS.map(([g, ks]) => `<tr><th colspan="2" class="pdgrp">${g}</th></tr>${ks.map(k => `<tr><td>${esc(k)}</td>
@@ -330,6 +331,7 @@ async function pdDetail(p) {
     ${rep ? `<details class="sub"><summary class="small">Berichte (${reports.length})</summary><table class="wide small"><tr><th>Zeit</th><th class="num">Sonden</th><th class="num">Werte</th><th>Gilt</th><th>von</th></tr>${rep}</table>
       <p class="small muted">Ins Mittel gehen nur aktive Berichte: gleiche Planet-ID (und nicht umgeformt), sonst gleiches Bild, sonst gleicher Name und Typ.
       Leere Berichte zählen als Bericht, liefern aber keine Werte.</p></details>` : ''}
+    ${pw}
     <h3>Verlauf</h3>${chg ? `<table class="wide small"><tr><th>Zeit</th><th>Was</th><th>Änderung</th></tr>${chg}</table>` : '<p class="small muted">Keine Änderungen.</p>'}
     ${pdActions(p)}</div>`;
 }

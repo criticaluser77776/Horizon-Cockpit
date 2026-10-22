@@ -62,6 +62,39 @@
           Auf der Heimat frischt die Messung den Bezug auf (Gegenprobe = 100 %). „Ungebaute Stufen“ erst nach der Live-Prüfung setzen; die Einstellung bleibt im Collector gespeichert.</p>` : ''}</div>`;
   }
 
+  // Heimat = erster Planet des Imperiums im Live-Stand (je Account gemerkt)
+  async function homeOf() {
+    if (S.pwHome?.acc !== S.acc) {
+      const r = await Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live', select: 'pl:data->empire->planets' }).catch(() => []);
+      const pl = Array.isArray(r[0]?.pl) ? r[0].pl : [];
+      S.pwHome = { acc: S.acc, coords: pl.find(p => /^\d+:\d+:\d+$/.test(p?.coords || ''))?.coords || null };
+    }
+    return S.pwHome.coords;
+  }
+
+  // Abschnitt im Planet-Detail der Planeten-DB (planeten.js pdDetail): Werte genau dieses Planeten; nur eigene Planeten
+  // und Planeten mit Werten, sonst ''. Messen bleibt die Karte im Reiter „Galaxie“.
+  async function section(p) {
+    const me = account()?.player || '';
+    const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${p.galaxy}`, system: `eq.${p.system}`, orbit: `eq.${p.orbit}` };
+    const [rows, home] = await Promise.all([Cloud.q('planet_values', { ...where, order: 'key' }).catch(() => []), homeOf()]);
+    const own = p.present && me && p.owner === me;
+    if (!own && !rows.length) return '';
+    const head = '<h3>Planetenwerte <span class="muted small">in % der Heimat (STPL = 100 %)</span></h3>';
+    const link = `<a href="#/galaxie/${p.galaxy}/${p.system}">Karte „Planetenwerte“ in der Galaxie</a>`;
+    if (!rows.length) return p.coords === home
+      ? `${head}<p class="small muted">Heimat – Bezug für alle Kolonien (100 %).</p>`
+      : `${head}<p class="small muted">Noch nicht gemessen. Der Collector misst beim ersten Besuch des Autobuilders auf diesem Planeten, sofort per Knopf in der ${link}.</p>`;
+    const vs = Object.fromEntries(rows.map(v => [v.key, v]));
+    const at = rows.map(v => v.measured_at).sort().pop();
+    const done = Object.keys(MAIN).filter(k => k !== 'buildPlanet' && vs[k]?.status === 'gemessen').length;
+    return `${head}<p class="small muted">${done} von 10 gemessen · zuletzt ${esc(dt(at))} (${esc(ago(at))})</p>
+      <table class="wide small pw"><tr class="muted"><td>Wert</td><td class="num">Kolonie</td><td>Messung</td></tr>${Object.entries(MAIN).map(([k, n]) => row(k, n, vs[k])).join('')}</table>
+      <details class="sub"><summary class="small muted">Umlaufbahn, Mond, Artefakte</summary>
+        <table class="wide small pw">${Object.entries(REST).map(([k, n]) => row(k, n, vs[k])).join('')}</table></details>
+      <p class="small muted">Kosten: über 100 % heißt teurer als die Heimat; Baugeschwindigkeit, Bauplanet-Faktor und Erträge: über 100 % heißt besser. Messen: ${link}.</p>`;
+  }
+
   async function measure(form) {
     const planet = form.planet.value, ungebaut = form.ungebaut.checked;
     const sess = await loadSessions().catch(() => null);
@@ -82,5 +115,5 @@
     if (f) f.addEventListener('submit', e => { e.preventDefault(); measure(f); });
   }
 
-  window.HzPlanetwerte = { card, bind };
+  window.HzPlanetwerte = { card, bind, section };
 })();
