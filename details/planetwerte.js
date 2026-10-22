@@ -1,5 +1,5 @@
 'use strict';
-/* Planetenwerte im Reiter „Galaxie“ (Paket C, 17.10.2026): Grundwerte der eigenen Kolonien in % der Heimat (STPL = 100 %),
+/* Planetenwerte im Reiter „Planeten-DB“ (Paket C, 17.10.2026; bis 22.10.2026 im Reiter „Galaxie“): Grundwerte der eigenen Kolonien in % der Heimat (STPL = 100 %),
    gemessen vom Collector (ab 0.4.12) gleich nach der Kolonisierung – immer Stufe n gegen Stufe n, sonst „offen“.
    Ab Collector 0.4.14 nach der Bedeutung der Prospektionswerte (doku/wissen/statistik-monitor.md): T-Stoff ohne Bahn,
    Wohnraumkosten = Infrastruktur, Bodenfläche = Bauplatz der Infrastruktur, Besiedelbarkeit und Atmosphäre (Solar)
@@ -9,8 +9,8 @@
    Spiel gewählten Planeten und wechselt ihn nie selbst. Ablauf am Tag der Landung: doku/stand/planeten-erfassung.md.
    STPL (22.10.2026, Nutzer): Ein Standardplanet ist der Bezug, seine Grundwerte stehen ohne Messung überall auf 100 %
    (Karte und Planet-Detail, auch fremde STPL); Umlaufbahn, Mond und Artefakte bleiben planetenabhängig und damit offen.
-   Tabelle (22.10.2026, Nutzer): links unter dem System eine Tabelle, Zeilen = Werte, Spalten = eigene Planeten des Systems (Heimat
-   zuerst) und die Planeten der Vergleichsauswahl der Planeten-DB (hz.pldb.cmp, bis 8); je Zelle Messung vor Prospektion vor STPL.
+   Tabelle (22.10.2026, Nutzer): in der Planeten-DB (Suche) links unter der Planetenliste, Zeilen = Werte, Spalten = alle eigenen
+   Planeten (Heimat zuerst) und die Planeten der Vergleichsauswahl (hz.pldb.cmp, bis 8); je Zelle Messung vor Prospektion vor STPL.
    Läuft vor app.js; nutzt zur Laufzeit dessen Helfer ($, esc, fmt, dt, ago, Cloud, S, account, isOwner, isFresh, verCmp,
    loadSessions, toast, route). */
 (function () {
@@ -82,31 +82,28 @@
     return `<div class="pdscroll"><table class="small pw pwt"><tr><th></th>${cols.map(head).join('')}</tr>${rows(MAIN)}
       <tr><th colspan="${cols.length + 1}" class="pdgrp">Umlaufbahn, Mond, Artefakte <span class="muted small">(nur Prospektion)</span></th></tr>${rows(REST)}</table></div>`;
   }
-  // Spalten aus dem Systemstand (sofort) – Prospektion und Vergleich lädt fill() nach
-  function sysCols(S0, g, s, homeOrbit) {
+  // Spalten = eigene Planeten aus der Planeten-DB (planeten.js pdData), Koordinaten-Reihenfolge; Heimat, Messung, Prospektion
+  // und Vergleich lädt fill() nach
+  function ownCols(planets) {
     const me = account()?.player || '';
-    const by = {};
-    for (const v of S0?.values || []) (by[v.orbit] ||= {})[v.key] = v;
-    return (S0?.planets || []).filter(p => p.present && me && p.owner === me)
-      .sort((a, b) => (b.orbit === homeOrbit) - (a.orbit === homeOrbit) || a.orbit - b.orbit)
-      .map(p => ({ coords: coords(g, s, p.orbit), orbit: p.orbit, name: p.name, type: p.type, home: p.orbit === homeOrbit, meas: by[p.orbit] || null,
-        at: by[p.orbit] ? Object.values(by[p.orbit]).map(v => v.measured_at).sort().pop() : null, pros: null }));
+    return (planets || []).filter(p => p.present && me && p.owner === me)
+      .sort((a, b) => a.galaxy - b.galaxy || a.system - b.system || a.orbit - b.orbit)
+      .map(p => ({ coords: coords(p.galaxy, p.system, p.orbit), name: p.name, type: p.type, meas: null, pros: null }));
   }
   let last = null;   // Spalten der zuletzt gezeigten Karte (für fill)
 
-  // Karte links unter dem System: eine Tabelle aller eigenen Planeten des Systems (+ Vergleichsauswahl) + Messknopf
-  function card(S0, g, s, homeOrbit) {
-    const cols = sysCols(S0, g, s, homeOrbit);
+  // Karte links unter der Planetenliste der Planeten-DB: eine Tabelle aller eigenen Planeten (+ Vergleichsauswahl) + Messknopf
+  function card(planets) {
+    const cols = ownCols(planets);
     last = null;
     if (!cols.length) return '';
-    last = { g, s, cols };
-    const opts = cols.map(c => `<option value="${esc(c.coords)}"${c.home ? '' : ' selected'}>Bahn ${c.orbit}${c.home ? ' (Heimat)' : ''} ${esc(c.name || '')}</option>`).join('');
-    const n = cmpList().filter(k => !cols.some(c => c.coords === k)).length;
+    last = { cols };
+    const opts = cols.map(c => `<option value="${esc(c.coords)}">${esc(c.coords)} ${esc(c.name || '')}</option>`).join('');
     return `<div class="card" id="pwCard"><h2>Planetenwerte <span class="muted small">in % der Heimat (STPL = 100 %)</span></h2>
       <div id="pwTable">${table(cols)}</div>
-      <p class="small muted">${cols.some(c => c.meas) ? '' : 'Noch keine Kolonie gemessen. '}Gemessen vor Prospektion („Prosp.“) vor STPL = 100 %; Messweg beim Überfahren der Zahl.
+      <p class="small muted">Gemessen vor Prospektion („Prosp.“) vor STPL = 100 %; Messweg beim Überfahren der Zahl.
         Kosten: über 100 % heißt teurer als die Heimat; Baugeschwindigkeit, Bauplanet-Faktor und Erträge: über 100 % heißt besser.
-        ${n ? `Dazu ${n} Planet${n === 1 ? '' : 'en'} aus dem <a href="#/planeten/vergleich">Vergleich</a>.` : 'Weitere Planeten: in der Planeten-DB zum <a href="#/planeten/vergleich">Vergleich</a> wählen, sie erscheinen hier als Spalten.'}</p>
+        Weitere Planeten: in der Liste oben ☐ anhaken (Vergleich, bis 8), sie erscheinen hier als Spalten.</p>
       ${isOwner() ? `<form id="pwForm" class="row" style="margin-top:6px;flex-wrap:wrap;gap:6px">
         <select name="planet" aria-label="Planet">${opts}</select>
         <label class="small"><input type="checkbox" name="ungebaut"> ungebaute Stufen zählen</label>
@@ -115,7 +112,7 @@
           Auf der Heimat frischt die Messung den Bezug auf (Gegenprobe = 100 %). „Ungebaute Stufen“ erst nach der Live-Prüfung setzen; die Einstellung bleibt im Collector gespeichert.</p>` : ''}</div>`;
   }
 
-  // Prospektion der Spalten und die Planeten der Vergleichsauswahl nachladen, dann die Tabelle neu zeichnen
+  // Heimat, Messungen und Prospektion aller Spalten und die Planeten der Vergleichsauswahl nachladen, dann die Tabelle neu zeichnen
   async function fill(view) {
     const L = last, box = view.querySelector('#pwTable');
     if (!L || !box) return;
@@ -123,18 +120,22 @@
     const all = [...L.cols.map(c => c.coords), ...extra];
     const or = `(${all.map(k => { const [g, s, o] = k.split(':'); return `and(galaxy.eq.${g},system.eq.${s},orbit.eq.${o})`; }).join(',')})`;
     const a = `eq.${S.acc}`, key = r => `${r.galaxy}:${r.system}:${r.orbit}`;
-    const [pros, pls, vals] = await Promise.all([
+    const [pros, pls, vals, home] = await Promise.all([
       Cloud.q('planet_prospect', { account_id: a, or, reports: 'gt.0', select: 'galaxy,system,orbit,vals' }).catch(() => []),
       extra.length ? Cloud.q('planets', { account_id: a, or, select: 'galaxy,system,orbit,name,type' }).catch(() => []) : [],
-      extra.length ? Cloud.q('planet_values', { account_id: a, or }).catch(() => []) : [],
+      Cloud.q('planet_values', { account_id: a, or }).catch(() => []),
+      homeOf().catch(() => null),
     ]);
-    if (last !== L) return;   // inzwischen anderes System
+    if (last !== L) return;   // inzwischen neu gezeichnet
     const P = new Map(pros.map(r => [key(r), r.vals || null])), N = new Map(pls.map(r => [key(r), r])), V = {};
     for (const v of vals) (V[key(v)] ||= {})[v.key] = v;
-    const cols = [...L.cols.map(c => ({ ...c, pros: P.get(c.coords) || null })),
-      ...extra.map(k => ({ coords: k, name: N.get(k)?.name, type: N.get(k)?.type, cmp: true, meas: V[k] || null, pros: P.get(k) || null,
-        at: V[k] ? Object.values(V[k]).map(v => v.measured_at).sort().pop() : null }))];
+    const at = k => V[k] ? Object.values(V[k]).map(v => v.measured_at).sort().pop() : null;
+    const own = L.cols.map(c => ({ ...c, home: c.coords === home, meas: V[c.coords] || null, pros: P.get(c.coords) || null, at: at(c.coords) }))
+      .sort((x, y) => y.home - x.home);   // Heimat zuerst, sonst Koordinaten (ownCols)
+    const cols = [...own, ...extra.map(k => ({ coords: k, name: N.get(k)?.name, type: N.get(k)?.type, cmp: true, meas: V[k] || null, pros: P.get(k) || null, at: at(k) }))];
     box.innerHTML = table(cols);
+    const sel = view.querySelector('#pwForm select[name=planet]'), kol = own.find(c => !c.home);   // Messen: erste Kolonie vorwählen
+    if (sel && kol) sel.value = kol.coords;
   }
 
   // Heimat = erster Planet des Imperiums im Live-Stand (je Account gemerkt)
@@ -148,7 +149,7 @@
   }
 
   // Abschnitt im Planet-Detail der Planeten-DB (planeten.js pdDetail): Werte genau dieses Planeten; nur eigene Planeten
-  // und Planeten mit Werten, sonst ''. Messen bleibt die Karte im Reiter „Galaxie“.
+  // und Planeten mit Werten, sonst ''. Messen bleibt die Karte unter der Planetenliste.
   async function section(p) {
     const me = account()?.player || '';
     const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${p.galaxy}`, system: `eq.${p.system}`, orbit: `eq.${p.orbit}` };
@@ -158,7 +159,7 @@
     if (!rows.length && p.type === 'STPL') return `${head}<p class="small muted">Standardplanet${p.coords === home ? ' (Heimat)' : ''} – Bezug für alle Kolonien, Grundwerte ohne Messung 100 %.</p>
       <table class="wide small pw"><tr class="muted"><td>Wert</td><td class="num">Planet</td><td>Messung</td></tr>${Object.entries(MAIN).map(([k, n]) => row(k, n, STPL[k])).join('')}</table>`;
     if (!own && !rows.length) return '';
-    const link = `<a href="#/galaxie/${p.galaxy}/${p.system}">Karte „Planetenwerte“ in der Galaxie</a>`;
+    const link = 'Karte „Planetenwerte“ unter der Planetenliste';
     if (!rows.length) return p.coords === home
       ? `${head}<p class="small muted">Heimat – Bezug für alle Kolonien (100 %).</p>`
       : `${head}<p class="small muted">Noch nicht gemessen. Der Collector misst beim ersten Besuch des Autobuilders auf diesem Planeten, sofort per Knopf in der ${link}.</p>`;
@@ -193,5 +194,8 @@
     fill(view).catch(() => { });
   }
 
-  window.HzPlanetwerte = { card, bind, section };
+  // Vergleichsauswahl geändert: Tabelle neu laden (Spalten der eigenen Planeten bleiben)
+  const refresh = view => fill(view).catch(() => { });
+
+  window.HzPlanetwerte = { card, bind, refresh, section };
 })();

@@ -162,7 +162,8 @@ function pdBrowser(d, nav, sel) {
     <div class="row pdpre small"><span class="muted">Vorlage</span><select id="pdPreset"><option value="">–</option>${Object.keys(presets).sort().map(n => `<option>${esc(n)}</option>`).join('')}</select>
       <button id="pdPreSave" type="button">speichern …</button><button id="pdPreDel" type="button">löschen</button><button id="pdReset" type="button">Filter zurücksetzen</button>
       <span class="muted">Sortieren: Spaltenkopf antippen, mit Umschalt bis zu drei Stufen.</span></div></div>
-    <div class="pdgrid"><div class="card pdlist" id="pdList"></div><div class="pdside" id="pdDet"></div></div>`;
+    <div class="pdgrid"><div class="pdmain"><div class="card pdlist" id="pdList"></div>${window.HzPlanetwerte?.card(d.planets) || ''}</div><div class="pdside" id="pdDet"></div></div>`;   // Planetenwerte: details/planetwerte.js
+  window.HzPlanetwerte?.bind($('#view'));
   const form = $('#pdForm');
   const read = () => {
     const n = { ...pdF() };
@@ -238,7 +239,7 @@ function pdList(d) {
     if (e.target.closest('[data-cmp]')) {
       const c = pdCmpList().filter(x => x !== k);
       if (e.target.checked) c.push(k);
-      pdPut('hz.pldb.cmp', c.slice(-8)); return pdList(d);
+      pdPut('hz.pldb.cmp', c.slice(-8)); window.HzPlanetwerte?.refresh($('#view')); return pdList(d);
     }
     S.pdSel = S.pdSel === k ? null : k;
     history.replaceState(null, '', S.pdSel ? `#/planeten/p/${k}` : '#/planeten');
@@ -353,7 +354,7 @@ function pdBindDetail(d, p) {
   box.querySelector('[data-dcmp]')?.addEventListener('click', () => {
     const c = pdCmpList(), i = c.indexOf(p.coords);
     i >= 0 ? c.splice(i, 1) : c.push(p.coords);
-    pdPut('hz.pldb.cmp', c.slice(-8)); pdList(d); pdShowSide(d);
+    pdPut('hz.pldb.cmp', c.slice(-8)); window.HzPlanetwerte?.refresh($('#view')); pdList(d); pdShowSide(d);
   });
 }
 

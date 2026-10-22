@@ -1,6 +1,6 @@
 'use strict';
 /* Horizon Atlas – Reiter Galaxie (#/galaxie/G/S). Kopie aus cockpit/app.js (D1 der Cockpit-Aufteilung, 17.10.2026);
-   im Cockpit bleibt die Fassung bis C1. Planetenwerte aus ../planetwerte.js (Messknopf nur Owner, mit Rückfrage). */
+   im Cockpit bleibt die Fassung bis C1. Planetenwerte stehen seit 22.10.2026 in der Planeten-DB (planetwerte.js, planeten.js). */
 
 /* ---------- Galaxie (B9, 16.10.2026): Planeten eines Systems aus planets/planet_systems, Verlauf aus planet_changes ----------
    Nur lesend. Typen zeigt erst Sternwarte 2 (Faktor ≥ 10 %); bis dahin „Unbekannter Planet“ (type null).
@@ -28,15 +28,14 @@ async function loadSysData(sys) {
   S.sysCache ||= {};
   const hit = S.sysCache[`${sys.galaxy}:${sys.system}`];
   const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${sys.galaxy}`, system: `eq.${sys.system}` };
-  const values = Cloud.q('planet_values', { ...where, order: 'orbit,key' }).catch(() => []);   // Planetenwerte (Paket C): immer frisch
-  if (hit?.key === key) return { ...hit, values: await values };
+  if (hit?.key === key) return hit;
   const [planets, changes, prospect] = await Promise.all([
     Cloud.q('planets', { ...where, order: 'orbit' }),
     Cloud.q('planet_changes', { ...where, order: 't.desc,id.desc', limit: 60 }),
     Cloud.q('planet_prospect', { ...where, select: 'orbit,reports,probes,last_report', reports: 'gt.0' }).catch(() => []),
   ]);
   S.sysCache[`${sys.galaxy}:${sys.system}`] = { key, sys, planets, changes, prospect };
-  return { key, sys, planets, changes, prospect, values: await values };
+  return S.sysCache[`${sys.galaxy}:${sys.system}`];
 }
 
 // Heimat-Knopf: der in „Planeten“ (Lage) gewählte eigene Planet, sonst der Standardplanet (erster des Imperiums bzw. im Spiel gewählter)
@@ -119,9 +118,8 @@ async function viewGalaxy(rest = []) {
         name="s" type="number" min="1" max="9999" value="${s}" inputmode="numeric" aria-label="System" title="System"><button class="gbtn galok" title="System anzeigen">↵</button></form>
       ${navBtn(next, '▶', 'Nächstes System mit Planeten:')}
       <p class="small muted galsum">${withPl.length ? `Erfasst mit Planeten: ${withPl.length} System${withPl.length > 1 ? 'e' : ''}${inGal.length ? `, in Galaxie ${g}: ${inGal.map(x => `<a href="#/galaxie/${x.galaxy}/${x.system}"${x.system === s ? ' class="on"' : ''}>${x.system}</a>`).join(' · ')}` : ` (keins in Galaxie ${g})`}` : 'Noch kein System mit Planeten erfasst.'}</p></div>
-    ${systemCard(data, g, s, hm)}${galBelow(data, g, s, hm)}`;   // System/Bereich lesen: details/galaxielesen.js
+    ${systemCard(data, g, s, hm)}${typeof glsCard === 'function' ? glsCard(g, s) : ''}`;   // System/Bereich lesen: details/galaxielesen.js
   const v = $('#view');
-  window.HzPlanetwerte?.bind(v);   // Planetenwerte: details/planetwerte.js
   v.querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () => galGo(...b.dataset.go.split('/'))));
   $('#galHome').addEventListener('click', () => hm && galGo(hm[1], hm[2]));
   const f = $('#galForm');
@@ -176,11 +174,4 @@ function systemCard(S0, g, s, hm) {
     <div class="orbits">${rows}</div>
     <p class="small muted">Zuletzt erfasst ${esc(dt(sys.last_seen))} (${esc(sys.source)})${sys.discovered_by ? ` · entdeckt von ${esc(sys.discovered_by)}` : ''}. Grau = „Unbekannter Planet“ (Typ erst ab Sternwarte 2).</p>
     ${ch}${typeof pdActions === 'function' ? pdActions(null) : ''}</div>`;   // Aktionsbereich: details/planeten.js
-}
-
-// Unter dem System zwei Spalten (schmal untereinander): links Planetenwerte (details/planetwerte.js), rechts System/Bereich lesen
-function galBelow(S0, g, s, hm) {
-  const homeOrbit = S0 && hm && +hm[1] === g && +hm[2] === s ? +hm[3] : 0;
-  const pw = S0 ? window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || '' : '', gls = typeof glsCard === 'function' ? glsCard(g, s) : '';
-  return pw && gls ? `<div class="galbelow">${pw}${gls}</div>` : pw + gls;
 }
