@@ -68,3 +68,9 @@ body.atlas .badge { position: static; }
 .atlas .kampf .kpis { display: flex; gap: 24px; flex-wrap: wrap; margin: 4px 0 8px; }
 .atlas .kampf .kpis div { display: flex; flex-direction: column; }
 .atlas .kampf .kpis b { font-size: 1.6rem; }
+/* Planetenwerte unter dem System (galaxie.js galBelow, planetwerte.js): Karten in der Spalte ohne eigenen Abstand oben */
+.atlas .galbelow { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: var(--gap); align-items: start; margin-top: var(--gap); }
+@media (max-width: 1000px) { .atlas .galbelow { grid-template-columns: minmax(0, 1fr); } }
+.atlas .galbelow > .card { margin-top: 0; }
+.atlas .pwt th { vertical-align: bottom; font-weight: normal; }
+.atlas .pwt td:first-child { white-space: nowrap; }

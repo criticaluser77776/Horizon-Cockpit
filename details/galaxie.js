@@ -119,7 +119,7 @@ async function viewGalaxy(rest = []) {
         name="s" type="number" min="1" max="9999" value="${s}" inputmode="numeric" aria-label="System" title="System"><button class="gbtn galok" title="System anzeigen">↵</button></form>
       ${navBtn(next, '▶', 'Nächstes System mit Planeten:')}
       <p class="small muted galsum">${withPl.length ? `Erfasst mit Planeten: ${withPl.length} System${withPl.length > 1 ? 'e' : ''}${inGal.length ? `, in Galaxie ${g}: ${inGal.map(x => `<a href="#/galaxie/${x.galaxy}/${x.system}"${x.system === s ? ' class="on"' : ''}>${x.system}</a>`).join(' · ')}` : ` (keins in Galaxie ${g})`}` : 'Noch kein System mit Planeten erfasst.'}</p></div>
-    ${systemCard(data, g, s, hm)}${typeof glsCard === 'function' ? glsCard(g, s) : ''}`;   // System/Bereich lesen: details/galaxielesen.js
+    ${systemCard(data, g, s, hm)}${galBelow(data, g, s, hm)}`;   // System/Bereich lesen: details/galaxielesen.js
   const v = $('#view');
   window.HzPlanetwerte?.bind(v);   // Planetenwerte: details/planetwerte.js
   v.querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () => galGo(...b.dataset.go.split('/'))));
@@ -175,5 +175,12 @@ function systemCard(S0, g, s, hm) {
     ${hint?.html || ''}
     <div class="orbits">${rows}</div>
     <p class="small muted">Zuletzt erfasst ${esc(dt(sys.last_seen))} (${esc(sys.source)})${sys.discovered_by ? ` · entdeckt von ${esc(sys.discovered_by)}` : ''}. Grau = „Unbekannter Planet“ (Typ erst ab Sternwarte 2).</p>
-    ${ch}${typeof pdActions === 'function' ? pdActions(null) : ''}</div>${window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || ''}`;   // Aktionsbereich: details/planeten.js   // Planetenwerte: details/planetwerte.js
+    ${ch}${typeof pdActions === 'function' ? pdActions(null) : ''}</div>`;   // Aktionsbereich: details/planeten.js
+}
+
+// Unter dem System zwei Spalten (schmal untereinander): links Planetenwerte (details/planetwerte.js), rechts System/Bereich lesen
+function galBelow(S0, g, s, hm) {
+  const homeOrbit = S0 && hm && +hm[1] === g && +hm[2] === s ? +hm[3] : 0;
+  const pw = S0 ? window.HzPlanetwerte?.card(S0, g, s, homeOrbit) || '' : '', gls = typeof glsCard === 'function' ? glsCard(g, s) : '';
+  return pw && gls ? `<div class="galbelow">${pw}${gls}</div>` : pw + gls;
 }
