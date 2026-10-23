@@ -480,6 +480,9 @@ const SL_FIELDS = [
     ['gewicht', 'Gewicht Förderung E, M, T', 'txt', 'z. B. 1, 2, 4 (Händlerkurs) · leer = jede Einheit gleich · nur mit Maß Förderung'],
     ['kololive', 'Gelandete Kolonien aus dem Snapshot', 'sel', [['ja', 'übernehmen'], ['nein', 'nicht übernehmen']]],
     ['flugfaktor', 'Flugfaktor SCOL', 'num', 'z. B. 0,043 (geeicht, ≈ 14 min) · leer = Modellwert'],
+    ['takt', 'Transport: Flüge je Tag', 'num', 'z. B. 2 (wie Plan 21) · leer = kein Transport · wirkt nur mit getrennten Lagern und Flotte'],
+    ['taktlast', 'Transport: Ladung je Strecke', 'num', 'z. B. 47200 (2 PTRN) · leer = 24000'],
+    ['taktmod', 'Transport: Flottenmods', 'txt', 'z. B. tempo:-0.5 · laderaum:<s>, tempo:<s> mit −1…1'],
   ]],
 ];
 function slState() {
