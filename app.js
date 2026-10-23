@@ -801,15 +801,18 @@ async function draftGains(plans, active, drift) {
   const drafts = plans.filter(p => p.kind === 'build' && p.status === 'entwurf');
   if (!drafts.length) return {};
   const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
-    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed' });
+    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil' });
   const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
+  // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan
+  const teile = rows.filter(d => d.teil).map(d => d.id), teilOf = {};
+  if (teile.length) for (const t of await Cloud.q('plans', { id: `in.(${teile.join(',')})`, select: 'id,payload' })) teilOf[t.id] = planTeilDiff(t.payload, active);
   const out = {};
   for (const d of rows) {
     const p = drafts.find(x => x.id === d.id), end = planEnd(d);
     // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
     const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
-    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, agreed,
-      better: agreed || !active || gain == null || gain > PLAN_GAIN_MIN };
+    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, agreed, teil: teilOf[d.id] || null,
+      better: agreed || !!teilOf[d.id] || !active || gain == null || gain > PLAN_GAIN_MIN };
   }
   return out;
 }
@@ -834,12 +837,14 @@ function newPlanCard(o, own) {
   const why = [o.agreed ? 'mit Claude im Chat abgestimmt' : '', gainText(o)].filter(Boolean).join(' · ');
   return `<div class="card warn"><div class="row between"><h2>Neuer Plan verfügbar – starten?</h2><span class="muted small">${esc(when(o.draft.created_at))}</span></div>
     <p><b>${esc(planLabel(o.draft.id))}</b> · ${esc(tidy(o.draft.title || ''))}${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
-    ${planDetails(o.draft)}
+    ${planTeilHtml(o.teil)}${planDetails(o.draft)}
     ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npNo">Verwerfen</button></div>
       <p class="muted small">Gestartet wird danach wie gewohnt unter Autobuilder („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
 }
 async function takeNewPlan(o, sess) {
-  if (!confirm(`${planLabel(o.draft.id)} („${tidy(o.draft.title)}“) freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.`)) return;
+  const stale = o.teil?.stale ? `
+Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein anderer.` : '';
+  if (!confirm(`${planLabel(o.draft.id)} („${tidy(o.draft.title)}“) freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.${stale}`)) return;
   try {
     await Cloud.rpc('plan_status', { p_id: o.draft.id, p_status: 'freigegeben' });
     S.planCache = null;
@@ -951,6 +956,7 @@ async function viewPlans(rest = []) {
       <span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
       ${gains[p.id]?.gain != null ? `<div class="small ${gains[p.id].gain > PLAN_GAIN_MIN ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
+      ${planTeilHtml(gains[p.id]?.teil)}
       <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}</div>
       ${planDetails(p)}
       ${own && p.status === 'entwurf' ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
@@ -964,7 +970,7 @@ async function viewPlans(rest = []) {
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
   $('#view').querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act, p = plans.find(x => x.id === b.dataset.id);
-    if (act === 'freigegeben' && p?.kind === 'build') return takeNewPlan({ draft: p }, sess);   // F4: danach direkt übernehmen
+    if (act === 'freigegeben' && p?.kind === 'build') return takeNewPlan({ draft: p, teil: gains[p.id]?.teil }, sess);   // F4: danach direkt übernehmen
     const q = { freigegeben: 'Plan freigeben? Die Skripte dürfen ihn danach ausführen (Start nur per Kommando).',
       verworfen: 'Entwurf verwerfen?', abgebrochen: 'Plan abbrechen? Laufende Skripte halten an.' }[act];
     if (!confirm(q)) return;

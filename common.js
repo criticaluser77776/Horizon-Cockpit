@@ -344,6 +344,25 @@ function planStepKeys(plan) {
     return seen[k] > 1 ? `${k}~${seen[k]}` : k;
   });
 }
+// Teilentwurf (M9, push_plan.py --teil): payload.meta = {teil: <Koordinaten>, basis: <Plan-id des aktiven Plans bei Anlage>}.
+// Unterschiede nur für den Planeten teil (Kennungen M7): neu, entfallen; veraltet, wenn die Basis nicht mehr der aktive Plan ist.
+function planTeilDiff(draft, active) {
+  const t = draft?.meta?.teil;
+  if (!t) return null;
+  const pre = t + ':', ks = p => planStepKeys(p).filter(k => k.startsWith(pre)).map(k => k.slice(pre.length));
+  const a = active?.payload ? ks(active.payload) : [], d = ks(draft);
+  return { teil: t, basis: draft.meta.basis || '', stale: !!active && draft.meta.basis !== active.plan_hash,
+    add: d.filter(k => !a.includes(k)), del: a.filter(k => !d.includes(k)), n: d.length };
+}
+// Anzeige eines Teilentwurfs (Cockpit-Karten und Atlas-Liste); Kennung b:<Typ>:<Stufe> lesbar als „<Typ> <Stufe>“
+function planTeilHtml(x) {
+  if (!x) return '';
+  const nice = k => { const [, typ, lv] = k.replace(/~\d+$/, '').split(':'); return `${typ} ${lv}`; };
+  const list = (l, w) => l.length ? `<div class="small">${w}: ${esc(l.slice(0, 12).map(nice).join(', '))}${l.length > 12 ? ` … (+${l.length - 12})` : ''}</div>` : '';
+  return `<div class="small"><span class="tag">Teilplan ${esc(x.teil)}</span> nur dieser Planet neu gerechnet, ${x.n} Schritte dort; übrige Planeten und Forschung wie im aktiven Plan.</div>`
+    + list(x.add, 'neu') + list(x.del, 'entfällt') + (!x.add.length && !x.del.length ? '<div class="small muted">Gleiche Schritte, andere Reihenfolge/Zeiten.</div>' : '')
+    + (x.stale ? `<div class="small warn">Achtung: gerechnet auf Basis ${esc(x.basis)}, der aktive Plan ist inzwischen ein anderer – Freigabe ersetzt auch dessen Änderungen an anderen Planeten.</div>` : '');
+}
 // Ausführungen des Plans (executions mit plan_id) plus die aus anderen Plänen mit gleicher Kennung (data.key, Autobuilder ab
 // 0.5.47): so behält ein neuer Plan den Stand unveränderter Planeten. step = Nummer in diesem Plan.
 // Fremde Ausführungen nur mit den Kennungen dieses Plans, in Blöcken zu 60 (URL-Länge); vorher alle mit Kennung, begrenzt auf

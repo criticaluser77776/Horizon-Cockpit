@@ -74,15 +74,18 @@ async function draftGains(plans, active, drift) {
   const drafts = plans.filter(p => p.kind === 'build' && p.status === 'entwurf');
   if (!drafts.length) return {};
   const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
-    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed' });
+    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil' });
   const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
+  // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan (wie cockpit/app.js)
+  const teile = rows.filter(d => d.teil).map(d => d.id), teilOf = {};
+  if (teile.length) for (const t of await Cloud.q('plans', { id: `in.(${teile.join(',')})`, select: 'id,payload' })) teilOf[t.id] = planTeilDiff(t.payload, active);
   const out = {};
   for (const d of rows) {
     const p = drafts.find(x => x.id === d.id), end = planEnd(d);
     // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
     const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
-    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, agreed,
-      better: agreed || !active || gain == null || gain > PLAN_GAIN_MIN };
+    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, agreed, teil: teilOf[d.id] || null,
+      better: agreed || !!teilOf[d.id] || !active || gain == null || gain > PLAN_GAIN_MIN };
   }
   return out;
 }
@@ -592,6 +595,7 @@ async function viewPlans(rest = []) {
       <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span><span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
       ${gains[p.id]?.gain != null ? `<div class="small ${gains[p.id].gain > PLAN_GAIN_MIN ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
+      ${planTeilHtml(gains[p.id]?.teil)}
       <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${p.status !== 'entwurf' && p.status_at ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
       ${planDetails(p)}
       ${own ? `<div class="row between" style="margin-top:6px">${p.plan_hash ? `<a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a>` : '<span></span>'}
