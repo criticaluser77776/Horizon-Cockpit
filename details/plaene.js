@@ -474,6 +474,7 @@ const SL_FIELDS = [
     ['lager', 'Lager', 'sel', [['', 'Standard (getrennt)'], ['getrennt', 'getrennt'], ['kolopool', 'Kolonien gemeinsam'], ['pool', 'alles gemeinsam']]],
     ['kolominen', 'Minen je Kolonie höchstens', 'txt', 'z. B. 16 oder 16:1 (nur Kolonie 1)'],
     ['kolohilfe', 'Hilfsgebäude Kolonien', 'txt', 'leer = aus · ja = Bauhof bis 5 · constructionfacility:6, infrastructure:2'],
+    ['forschort', 'Forschungsort Typ:Faktor', 'txt', 'z. B. JUPL:0.69, heimat:1 (günstigster Planet; Heimat-Labor nur als Voraussetzung) · leer = Heimat'],
     ['versorgung', 'Versorgung', 'sel', [['', 'Standard (voll)'], ['voll', 'voll (100 %)'], ['aus', 'aus (nur Vergleich)']]],
     ['bis', 'Simulieren bis (Stunde oder ISO)', 'txt', 'leer = bis zum Ziel'],
     ['mass', 'Maß', 'sel', [['', 'Standard (Landung)'], ['landung', 'Landung'], ['foerderung', 'Förderung bei „bis“']]],

@@ -16,7 +16,7 @@
     bunker: 3, rabatt: 0.1, makroziele: 1, makro: 1,
     movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 2, patience: 20, kicks: 10 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
-    lager: 'getrennt', kolominen: '16', kolohilfe: true, versorgung: 'voll', bis: '2026-11-05T22:00:00Z', mass: 'foerderung',
+    lager: 'getrennt', kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '2026-11-05T22:00:00Z', mass: 'foerderung',
     gewicht: [1, 2, 4], kololive: true, flugfaktor: 0.043,
     takt: 2, taktlast: 47200, taktmod: ['tempo:-0.5'],   // Transport 2 Flüge/Tag wie Plan 21 (A2, 22.10.)
   };
@@ -31,6 +31,7 @@
     techcap: new RegExp(`^[br]:${ID}:\\d{1,2}$`),
     kolohilfe: new RegExp(`^${ID}:\\d{1,2}$`),
     seeds: /^[\w.-]{1,80}\.json$/,
+    forschort: /^([A-Z]{4}|heimat):\d(\.\d{1,3})?$/,
     taktmod: /^(laderaum|tempo):-?(0(\.\d{1,3})?|1(\.0{1,3})?)$/,
   };
   const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?(\.\d+)?(Z|[+-]\d\d:\d\d)?$/;
@@ -38,7 +39,7 @@
     versorgung: ['voll', 'aus'], mass: ['landung', 'foerderung'] };
   const INTS = { platzbahn: [1, 15], werft: [1, 10], bunker: [0, 10], makroziele: [0, 5], makro: [0, 300] };
   const AUF_MAX = { iter: 2000, rounds: 10, patience: 500, kicks: 500 };
-  const LISTS = ['kolo', 'kolopflicht', 'flotte', 'pflicht', 'verbot', 'aus', 'techcap', 'seeds'];
+  const LISTS = ['kolo', 'kolopflicht', 'flotte', 'pflicht', 'verbot', 'aus', 'techcap', 'seeds', 'forschort'];
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const splitList = s => String(s || '').split(/[,\s]+/).map(x => x.trim()).filter(Boolean);
@@ -112,6 +113,7 @@
       for (const x of p[k]) if (!PAT[k].test(x)) e.push(`${k}: „${x}“ hat nicht die erwartete Form`);
     }
     if (!p.seeds.length) e.push('Startplan: mindestens einer');
+    if (p.forschort.some(x => !(+x.split(':')[1] > 0))) e.push('Forschungsort: Faktoren > 0');
     for (const [k, hi] of Object.entries(AUF_MAX)) int(p.aufwand[k], [k === 'kicks' ? 0 : 1, hi], `Aufwand ${k}`);
     if (p.movi) {
       if (p.movi.zeit !== 'auto' && !(typeof p.movi.zeit === 'string' || (Number.isFinite(p.movi.zeit) && p.movi.zeit >= 0 && p.movi.zeit <= 2000))) e.push('Motivationsvideo: Planstunde oder ISO-Zeit');
@@ -131,8 +133,7 @@
     const kz = p.ziel !== 'scol';
     if (!kz) {
       if (p.kolopflicht.length) e.push('Kolonie-Pflichten nur mit Ziel Kolopunkt 3/4/5');
-      if (p.flotte.length) e.push('Flotte nur mit Ziel Kolopunkt 3/4/5');
-      if (p.kolohilfe != null) e.push('kolohilfe nur mit Ziel Kolopunkt 3/4/5');
+      if (p.flotte.length) e.push('Flotte nur mit Ziel Kolopunkt 3/4/5');      if (p.kolohilfe != null) e.push('kolohilfe nur mit Ziel Kolopunkt 3/4/5');
       if (p.kololive != null) e.push('Gelandete Kolonien nur mit Ziel Kolopunkt 3/4/5');
     } else if (p.kolo.length < +p.ziel.slice(4) - 1) e.push(`Kolonien: für ${p.ziel} mindestens ${+p.ziel.slice(4) - 1} Ziele`);
     if (p.gewicht != null && p.mass !== 'foerderung') e.push('Gewicht nur mit Maß Förderung');
