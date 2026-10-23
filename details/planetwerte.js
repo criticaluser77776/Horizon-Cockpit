@@ -24,14 +24,14 @@
     'hilfe-tonnage-infrastruktur': 'Hilfe: Tonnage Infrastruktur', 'hilfe-bauplatz-infrastruktur': 'Hilfe: Bauplatz Infrastruktur',
     'hilfe-arbeiter-wohnkomplex': 'Hilfe: Arbeiter Wohnkomplex', 'hilfe-solar-bahn': 'Hilfe: Solar ÷ Bahnfaktor',
     abgeleitet: 'Baugeschwindigkeit ÷ Gebäudekosten', bauleistung: 'Bauleistung (Statistik)', forschungskosten: 'Kosten der nächsten Forschung',
-    'bauplatz-gesamt': 'Bauplatz gesamt', 'typ-median': 'Median des Typs', prospektion: 'erst mit Prospektion', 'prospektion-wert': 'Prospektionsbericht', stpl: 'Standardplanet = Bezug' };
+    'bauplatz-gesamt': 'Bauplatz gesamt', prospektion: 'erst mit Prospektion', 'prospektion-wert': 'Prospektionsbericht', stpl: 'Standardplanet = Bezug' };
   // Grundwerte eines STPL ohne Messung: überall 100 % (nur MAIN, siehe Kopf)
   const STPL = Object.fromEntries(Object.keys(MAIN).map(k => [k, { pct: 100, status: 'stpl', method: 'stpl' }]));
 
   const coords = (g, s, b) => `${g}:${s}:${b}`;
   const val = v => !v ? '<span class="muted">–</span>'
     : v.status === 'offen' ? '<span class="tag">offen</span>'
-    : `<b>${esc(fmt(v.pct, 1))} %</b>${v.status === 'typ-median' ? ' <span class="tag">Median</span>' : v.status === 'stpl' ? ' <span class="tag">STPL</span>' : ''}`;
+    : `<b>${esc(fmt(v.pct, 1))} %</b>${v.status === 'stpl' ? ' <span class="tag">STPL</span>' : ''}`;
   // Spalte „Messung“: gemessen → Methode, Stufe, Notiz; offen → nur der Grund
   const info = v => !v ? '' : v.status === 'offen' ? v.note || METHOD[v.method] || ''
     : [METHOD[v.method] || v.method, v.level != null ? `Stufe ${v.level}` : '', v.note].filter(Boolean).join(' · ');
@@ -51,6 +51,8 @@
   const CMPKEY = 'hz.pldb.cmp';   // Vergleichsauswahl der Planeten-DB (planeten.js pdCmpList)
   const cmpList = () => { try { const x = JSON.parse(localStorage.getItem(CMPKEY)); return Array.isArray(x) ? x : []; } catch { return []; } };
   const num = x => x != null && x !== '' && isFinite(+x) ? +x : null;
+  // Typ-Mediane des Collectors (Status „typ-median“) zeigt der Atlas nicht (Nutzer 23.10.2026): nur gemessene Werte
+  const shown = v => v && v.status !== 'typ-median';
 
   // Wert eines Planeten (Spalte col): Messung vor Prospektion vor STPL = 100 %; sonst die offene Messung oder nichts
   function pick(col, k) {
@@ -65,7 +67,7 @@
     if (col.type === 'STPL' && STPL[k]) return STPL[k];
     return m || null;
   }
-  const TAGS = { 'typ-median': 'Median', prospektion: 'Prosp.' };   // STPL: nur im Spaltenkopf (Bezug), Messweg im Tooltip
+  const TAGS = { prospektion: 'Prosp.' };   // STPL: nur im Spaltenkopf (Bezug), Messweg im Tooltip
   const cell = (k, v) => {
     if (!v) return '<td class="num muted">–</td>';
     if (v.status === 'offen') return `<td class="num" title="${esc(info(v))}"><span class="tag">offen</span></td>`;
@@ -108,7 +110,7 @@
         <select name="planet" aria-label="Planet">${opts}</select>
         <label class="small"><input type="checkbox" name="ungebaut"> ungebaute Stufen zählen</label>
         <button class="primary">Planetenwerte messen</button></form>
-        <p class="small muted">Gemessen wird der im Spiel gewählte Planet – vorher im Spiel dorthin wechseln, der Autobuilder sollte dabei pausieren.
+        <p class="small muted">Der Autobuilder (ab 0.5.71) wechselt zum Messen selbst auf den Planeten und danach zurück; ohne ihn misst der Collector nur den im Spiel gewählten Planeten.
           Auf der Heimat frischt die Messung den Bezug auf (Gegenprobe = 100 %). „Ungebaute Stufen“ erst nach der Live-Prüfung setzen; die Einstellung bleibt im Collector gespeichert.</p>` : ''}</div>`;
   }
 
@@ -128,7 +130,7 @@
     ]);
     if (last !== L) return;   // inzwischen neu gezeichnet
     const P = new Map(pros.map(r => [key(r), r.vals || null])), N = new Map(pls.map(r => [key(r), r])), V = {};
-    for (const v of vals) (V[key(v)] ||= {})[v.key] = v;
+    for (const v of vals.filter(shown)) (V[key(v)] ||= {})[v.key] = v;
     const at = k => V[k] ? Object.values(V[k]).map(v => v.measured_at).sort().pop() : null;
     const own = L.cols.map(c => ({ ...c, home: c.coords === home, meas: V[c.coords] || null, pros: P.get(c.coords) || null, at: at(c.coords) }))
       .sort((x, y) => y.home - x.home);   // Heimat zuerst, sonst Koordinaten (ownCols)
@@ -153,7 +155,8 @@
   async function section(p) {
     const me = account()?.player || '';
     const where = { account_id: `eq.${S.acc}`, galaxy: `eq.${p.galaxy}`, system: `eq.${p.system}`, orbit: `eq.${p.orbit}` };
-    const [rows, home] = await Promise.all([Cloud.q('planet_values', { ...where, order: 'key' }).catch(() => []), homeOf()]);
+    const [all, home] = await Promise.all([Cloud.q('planet_values', { ...where, order: 'key' }).catch(() => []), homeOf()]);
+    const rows = all.filter(shown);
     const own = p.present && me && p.owner === me;
     const head = '<h3>Planetenwerte <span class="muted small">in % der Heimat (STPL = 100 %)</span></h3>';
     if (!rows.length && p.type === 'STPL') return `${head}<p class="small muted">Standardplanet${p.coords === home ? ' (Heimat)' : ''} – Bezug für alle Kolonien, Grundwerte ohne Messung 100 %.</p>
@@ -178,7 +181,7 @@
     const sess = await loadSessions().catch(() => null);
     const dev = sess && target(sess);
     if (!dev) return toast(`Kein Collector ab ${MIN_VER} im Spiel eingeloggt – erst im Spiel einloggen`);
-    if (!confirm(`Planetenwerte von ${planet} auf ${dev.name} messen?\n\nIm Spiel muss ${planet} gewählt sein, sonst bricht die Messung ab. `
+    if (!confirm(`Planetenwerte von ${planet} auf ${dev.name} messen?\n\nDer Autobuilder wechselt dafür auf ${planet} und danach zurück (ohne Autobuilder muss ${planet} im Spiel gewählt sein). `
       + `Der Collector liest nur (Gebäude, Forschung, Statistik, Hilfeseiten), gebaut wird nichts.${ungebaut ? '\n\nUngebaute Stufen zählen ab jetzt mit.' : ''}`)) return;
     try {
       await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
