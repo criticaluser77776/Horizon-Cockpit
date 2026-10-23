@@ -75,3 +75,6 @@ body.atlas .badge { position: static; }
 .atlas .pwt th { vertical-align: bottom; font-weight: normal; }
 .atlas .pwt th.num, .atlas .pwt td.num { padding-left: 14px; }
 .atlas .pwt td:first-child { white-space: nowrap; }
+
+/* Galaxy Mag (oeffentlich.js): Meldungen im angezeigten System hervorheben */
+.oehere td { font-weight: 600; }

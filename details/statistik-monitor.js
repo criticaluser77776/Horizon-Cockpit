@@ -7,7 +7,7 @@
 
 const SM_TABS = [['verlauf', 'Verlauf'], ['prod', 'Produktion & Co.'], ['check', 'Voraussetzungen'], ['wanted', 'Fahndungsliste'],
   ['overview', 'Übersicht'], ['aggregate', 'Aggregate'], ['status', 'Gebäudestatus'], ['emp_prod', 'Rohstoffübersicht'],
-  ['hitlist', 'Highscore!'], ['orden', 'Mein Imperium']];
+  ['hitlist', 'Highscore!'], ['orden', 'Mein Imperium'], ['stan', 'STAN']];   // STAN: öffentliche Rundenstatistik (oeffentlich.js)
 // Gebäude in der Reihenfolge des Spiels (Auswahl „Voraussetzungen“, Gebäudestatus)
 const SM_BUILD = ['metalmine', 'crystalmine', 'fuelrefinery', 'metalstorage', 'crystalstorage', 'fuelstorage', 'metalsafe', 'crystalsafe',
   'fuelsafe', 'solarcollector', 'fissionreactor', 'tidalpowerplant', 'habitation', 'robotfactory', 'biotechcenter', 'infrastructure',
@@ -61,7 +61,7 @@ let smCache = null;
 async function smLoad() {
   if (smCache && smCache.acc === S.acc && Date.now() - smCache.t < 60e3) return smCache;
   const [st, hl] = await Promise.all([
-    Cloud.q('state_latest', { select: 'collected_at,version,prod:data->prod,status:data->status,req:data->requirements,emp:data->empire,mon:data->monitor,bld:data->buildings->items',
+    Cloud.q('state_latest', { select: 'collected_at,version,prod:data->prod,status:data->status,req:data->requirements,emp:data->empire,mon:data->monitor,bld:data->buildings->items,res:data->research->items',
       account_id: `eq.${S.acc}`, kind: 'eq.live' }).catch(() => []),
     Cloud.q('hitlist', { select: 'collected_at,mode,side,cat,head,own,list', account_id: `eq.${S.acc}`, order: 'collected_at.desc', limit: 40 }).catch(() => []),
   ]);
@@ -73,11 +73,35 @@ async function viewStatMonitor(head) {
   const tab = smTab(), d = await smLoad(), s = d.s;
   const stand = s ? `<p class="small muted">Stand ${esc(dt(s.collected_at))} · Collector ${esc(s.version || '?')}${s.mon?.at ? ` · Monitor-Tabs ${esc(dt(s.mon.at))}` : ''}</p>` : '';
   let body;
-  if (!s) body = '<p class="small muted">Kein Live-Stand vorhanden.</p>';
+  if (tab === 'stan') body = await smStan(s);
+  else if (!s) body = '<p class="small muted">Kein Live-Stand vorhanden.</p>';
   else body = ({ prod: smProd, check: smCheck, wanted: smWanted, overview: smOverview, aggregate: smAggregate, status: smStatus,
     emp_prod: smEmp, hitlist: smHitlist, orden: smOrden }[tab] || (() => ''))(s, d);
   $('#view').innerHTML = head + `<div class="card">${stand}${body}</div>`;
   smBind();
+}
+// Unterreiter „STAN“ (23.10.2026): Spielerzahl je Stand, je Forschung Verteilung der Stufen, eigene Stufe und
+// Spieler-Rabatt der nächsten Stufe (Untergrenze, k wächst seit dem STAN-Tag)
+async function smStan(s) {
+  const oe = typeof oeLoad === 'function' ? await oeLoad() : null, stan = oe?.stan, st = stan?.staende?.[0];
+  if (!st) return '<p class="small muted">Noch keine STAN-Daten in Supabase (Tabelle „wissen“, Schlüssel „stan“; täglich per GitHub Action „Öffentliche Quellen“).</p>';
+  const prev = stan.staende[1], W = await loadWissen().catch(() => null);
+  const own = Object.fromEntries((Array.isArray(s?.res) ? s.res : []).map(x => [x.type, +x.level || 0]));
+  const rows = Object.entries(st.research).map(([id, lv]) => {
+    const l = (own[id] || 0) + 1, rb = oeRabatt(stan, id, l), k1 = oeK(st, id, 1);
+    const top = Math.max(0, ...Object.entries(lv).filter(([, c]) => c > 0).map(([n]) => +n));
+    const dk = prev ? rb.k - (oeK(prev, id, l) ?? 0) : null;
+    return { id, name: W?.R?.[id]?.n || id, l, rb, k1, top, dk, dist: Object.entries(lv).filter(([n, c]) => +n > 0 && c > 0).map(([n, c]) => `${n}:${c}`).join(' ') };
+  }).filter(x => x.k1 > 0 || own[x.id]).sort((a, b) => b.rb.r - a.rb.r || a.name.localeCompare(b.name));
+  const tr = x => `<tr><td>${esc(x.name)}</td><td class="num">${esc(own[x.id] != null ? fmt(own[x.id]) : '–')}</td><td class="num">${esc(fmt(x.rb.k))}</td>
+    <td class="num">${esc(oePct(x.rb.r))}</td>${prev ? `<td class="num muted">${x.dk ? esc((x.dk > 0 ? '+' : '') + fmt(x.dk)) : ''}</td>` : ''}<td class="num">${esc(fmt(x.k1))}</td>
+    <td class="num">${esc(fmt(x.top))}</td><td class="small muted">${esc(x.dist)}</td></tr>`;
+  const verlauf = (stan.verlauf || []).map(v => `${oeDate(v.date)}: ${fmt(v.players)}`).join(' · ');
+  return `<p class="small">STAN-Stand <b>${esc(oeDate(st.date))}</b>: <b>${esc(fmt(st.players))} Spieler</b>. Spieler je Stand: ${esc(verlauf)}.</p>
+    <p class="small muted">Spieler-Rabatt der nächsten eigenen Stufe = 1 − ${esc(fmt(stan.b || OE_B, 3))}<sup>k/N</sup> (k = Spieler mit dieser Stufe oder höher, N = alle Spieler), höchstens ≈ ${esc(oePct(oeMax(stan)))}.
+      Untergrenze: Seit dem STAN-Tag kommen Spieler dazu. Verteilung = Stufe:Spieler (nur Stufe ≥ 1). Eigene Stufe aus dem neuesten Live-Stand.
+      Quelle: stan.goetterheimat.de (öffentlich)${oe.at.stan ? `, geholt ${esc(dt(oe.at.stan))}` : ''}.</p>
+    ${smTable(['Forschung', 'Eigene Stufe', 'k nächste Stufe', 'Rabatt nächste ≥', ...(prev ? [`± k seit ${oeDate(prev.date)}`] : []), 'Spieler ≥ 1', 'Höchste Stufe', 'Verteilung'], rows.map(tr))}`;
 }
 const smNoMon = '<p class="small muted">Noch keine Werte: Diesen Tab liest der Collector ab Version 0.4.26 (alle 6 h).</p>';
 

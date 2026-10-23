@@ -343,14 +343,20 @@
         <div class="card"><h3>Schaltet frei</h3>${unlocks('b:' + cur)}</div>`;
     } else {
       const tiers = new Set(o.q.map(x => x[0])), pr = power('r'); let cum = 0;
-      const rows = Array.from({ length: o.f || 0 }, (_, i) => { const l = i + 1, c = rCost(cur, l); cum += c[0] + c[1] + c[2];
-        return `<tr${tiers.has(l) && l > 1 ? ' class="ktier"' : ''}><td class="num">${l}</td>${res3(c)}<td class="num">${hDur((c[0] + c[1] + c[2]) / pr)}${rmob(c)}</td><td class="num rc">${fmt(cum)}</td></tr>`; }).join('');
+      // Spieler-Rabatt je Stufe aus dem neuesten STAN-Stand (oeffentlich.js); Untergrenze, weil k im Lauf der Runde wächst
+      const stan = typeof oeRabatt === 'function' ? S.oe?.stan : null, rb1 = stan && oeRabatt(stan, cur, 1);
+      const rows = Array.from({ length: o.f || 0 }, (_, i) => { const l = i + 1, c = rCost(cur, l), sum = c[0] + c[1] + c[2]; cum += sum;
+        const rb = rb1 ? oeRabatt(stan, cur, l) : null;
+        const rbc = rb1 ? `<td class="num" title="${rb ? `${rb.k} von ${rb.N} Spielern haben Stufe ${l} oder höher` : ''}">${rb ? oePct(rb.r) : '–'}</td><td class="num rc">${rb ? fmt(Math.round(sum * (1 - rb.r))) : '–'}</td>` : '';
+        return `<tr${tiers.has(l) && l > 1 ? ' class="ktier"' : ''}><td class="num">${l}</td>${res3(c)}<td class="num">${hDur(sum / pr)}${rmob(c)}</td>${rbc}<td class="num rc">${fmt(cum)}</td></tr>`; }).join('');
+      const rbHint = rb1 ? ` Rabatt ≥ = Spieler-Rabatt 1 − ${fmt(stan.b || OE_B, 3)}<sup>k/N</sup> (k von N Spielern mit dieser Stufe oder höher laut STAN ${esc(oeDate(rb1.date))}, ${rb1.N} Spieler; höchstens ≈ ${oePct(oeMax(stan))}). Untergrenze: Seit dem STAN-Stand haben meist mehr Spieler die Stufe. „mit Rabatt“ = alle drei Rohstoffe nach Abzug.`
+        : stan ? ' Spieler-Rabatt: Diese Forschung steht nicht in STAN.' : ' Spieler-Rabatt (höchstens ≈ 21 %): STAN-Daten noch nicht geladen.';
       $('#kd').innerHTML = `<div class="card"><h2>${esc(o.n)} <span class="small muted">${esc(o.c)} · Endstufe ${esc(o.f)}</span></h2>${planBtn('r:' + cur, o.f)}</div>
         <div class="card"><h3>Wirkung</h3><p>${o.w ? esc(o.w) : 'Im Wiki ist keine Wirkung beschrieben.'}</p>${o.c === 'Allianzforschung' ? '' : '<p class="small muted">Stufe 1 hat noch keine Wirkung, die Boni zählen ab Stufe 2.</p>'}</div>
         <div class="card"><h3>Voraussetzungen</h3>${reqBlocks(o)}</div>
         <div class="card"><h3>Schaltet frei</h3>${unlocks('r:' + cur)}</div>
-        <div class="card"><h3>Kosten je Stufe</h3><p class="small muted">Ohne Spieler-Rabatt. Dauer bei ${fmt(pr)} Forschungsleistung/h (im Planer einstellbar). Summe = alle drei Rohstoffe von Stufe 1 bis hier.</p>
-          <div class="scroll"><table class="ktbl"><thead><tr><th class="num">Stufe</th><th class="num e rc">Erz</th><th class="num m rc">Mineral</th><th class="num t rc">Treibst.</th><th class="num">Dauer</th><th class="num rc">Summe</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        <div class="card"><h3>Kosten je Stufe</h3><p class="small muted">Erz/Mineral/Treibstoff ohne Spieler-Rabatt. Dauer bei ${fmt(pr)} Forschungsleistung/h (im Planer einstellbar). Summe = alle drei Rohstoffe von Stufe 1 bis hier.${rbHint}</p>
+          <div class="scroll"><table class="ktbl"><thead><tr><th class="num">Stufe</th><th class="num e rc">Erz</th><th class="num m rc">Mineral</th><th class="num t rc">Treibst.</th><th class="num">Dauer</th>${rb1 ? '<th class="num">Rabatt ≥</th><th class="num rc">mit Rabatt</th>' : ''}<th class="num rc">Summe</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
     }
   }
 
@@ -397,6 +403,7 @@
 
   window.viewKompendium = async function (rest = []) {
     W = await loadWissen();
+    if (typeof oeLoad === 'function') S.oe = await oeLoad();   // STAN für den Spieler-Rabatt je Stufe
     if (!REV) { REV = {}; for (const [k, set] of [['b', W.B], ['r', W.R]]) for (const [id, o] of Object.entries(set)) for (const [a, b, rs] of o.q) for (const [rk, rid, rl] of rs) (REV[rk + ':' + rid] ??= []).push({ k, id, a, b, l: rl }); }
     let [sub = '', arg = ''] = rest;
     if (sub.includes(':')) { const [k, id] = sub.split(':'); sub = k === 'b' ? 'gebaeude' : 'forschung'; arg = id; }   // alte Links #/wissen/b:typ

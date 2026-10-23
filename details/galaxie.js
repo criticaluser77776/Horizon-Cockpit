@@ -1,6 +1,7 @@
 'use strict';
 /* Horizon Atlas – Reiter Galaxie (#/galaxie/G/S). Kopie aus cockpit/app.js (D1 der Cockpit-Aufteilung, 17.10.2026);
-   im Cockpit bleibt die Fassung bis C1. Planetenwerte stehen seit 22.10.2026 in der Planeten-DB (planetwerte.js, planeten.js). */
+   im Cockpit bleibt die Fassung bis C1. Planetenwerte stehen seit 22.10.2026 in der Planeten-DB (planetwerte.js, planeten.js).
+   Galaxy Mag (23.10.2026, oeffentlich.js): Karte „Galaxy Mag in der Nähe“ und 📰-Marke an Bahnen mit Meldung. */
 
 /* ---------- Galaxie (B9, 16.10.2026): Planeten eines Systems aus planets/planet_systems, Verlauf aus planet_changes ----------
    Nur lesend. Typen zeigt erst Sternwarte 2 (Faktor ≥ 10 %); bis dahin „Unbekannter Planet“ (type null).
@@ -87,10 +88,12 @@ const hasPlanets = s => s.explored && s.orbits > 0;
 const galGo = (g, s) => { location.hash = `#/galaxie/${g}${s ? `/${s}` : ''}`; };
 
 async function viewGalaxy(rest = []) {
-  const [systems, home] = await Promise.all([
+  const [systems, home, oe] = await Promise.all([
     Cloud.q('planet_systems', { account_id: `eq.${S.acc}`, select: 'galaxy,system,name,discovered_by,explored,orbits,last_seen,source', order: 'galaxy,system' }),
     homeCoords(),
+    typeof oeLoad === 'function' ? oeLoad() : null,   // Galaxy Mag: details/oeffentlich.js
   ]);
+  S.oeKoord = oe?.zeitung ? oeByKoord(oe.zeitung) : null;
   const hm = /^(\d+):(\d+):(\d+)$/.exec(home || '');
   const withPl = systems.filter(hasPlanets);
   let g = +rest[0], s = +rest[1];
@@ -118,7 +121,7 @@ async function viewGalaxy(rest = []) {
         name="s" type="number" min="1" max="9999" value="${s}" inputmode="numeric" aria-label="System" title="System"><button class="gbtn galok" title="System anzeigen">↵</button></form>
       ${navBtn(next, '▶', 'Nächstes System mit Planeten:')}
       <p class="small muted galsum">${withPl.length ? `Erfasst mit Planeten: ${withPl.length} System${withPl.length > 1 ? 'e' : ''}${inGal.length ? `, in Galaxie ${g}: ${inGal.map(x => `<a href="#/galaxie/${x.galaxy}/${x.system}"${x.system === s ? ' class="on"' : ''}>${x.system}</a>`).join(' · ')}` : ` (keins in Galaxie ${g})`}` : 'Noch kein System mit Planeten erfasst.'}</p></div>
-    ${systemCard(data, g, s, hm)}${typeof glsCard === 'function' ? glsCard(g, s) : ''}`;   // System/Bereich lesen: details/galaxielesen.js
+    ${systemCard(data, g, s, hm)}${oe ? oeNearCard(oe, g, s, hm) : ''}${typeof glsCard === 'function' ? glsCard(g, s) : ''}`;   // System/Bereich lesen: details/galaxielesen.js
   const v = $('#view');
   v.querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () => galGo(...b.dataset.go.split('/'))));
   $('#galHome').addEventListener('click', () => hm && galGo(hm[1], hm[2]));
@@ -156,8 +159,9 @@ function systemCard(S0, g, s, hm) {
       : p.type === 'CLPL' && !probed.has(b) ? ' <span class="tag">erst prospektieren</span>' : ` <span class="tag ok">Rang ${SCOL_RANK[p.type]}</span>`;
     const who = p.owner ? `${esc(p.owner)}${p.alliance ? ` [${esc(p.alliance)}]` : ''}${p.status ? ` · ${esc(PL_STATUS[p.status] || p.status)}` : ''}` : 'frei';
     const mine = me && p.owner === me;
+    const mag = (S.oeKoord?.get(`${g}:${s}:${b}`) || []).map(a => ` <span class="tag" title="${esc(a.kopf || '')}">📰 ${esc(OE_TYP[a.typ] || a.typ)} ${esc(dt(a.zeit))}</span>`).join('');
     return `<div class="orb${p.present ? '' : ' gone'}${p.type ? '' : ' unknown'}${mine ? ' own' : ''}${b === homeOrbit ? ' home' : ''}"><span class="ob">${b === homeOrbit ? '⌂' : b}</span>${typ}
-      <span class="oi"><a href="#/planeten/p/${g}:${s}:${b}" title="In der Planeten-DB öffnen"><b>${esc(p.name || '–')}</b></a> <span class="small${p.type ? '' : ' muted'}">${esc(typeLabel(p))}</span>${rank}
+      <span class="oi"><a href="#/planeten/p/${g}:${s}:${b}" title="In der Planeten-DB öffnen"><b>${esc(p.name || '–')}</b></a> <span class="small${p.type ? '' : ' muted'}">${esc(typeLabel(p))}</span>${rank}${mag}
         <span class="small muted od">${b === homeOrbit ? `Bahn ${b} · ` : ''}${who}${p.present ? '' : ` · <b>Bahn leer seit ${esc(dt(p.changed_at))}</b>`}<span class="osm"> · ${esc(ago(p.last_seen))}</span></span></span>
       <span class="small muted os" title="zuletzt gesehen ${esc(dt(p.last_seen))}">${esc(ago(p.last_seen))}</span>${typeof prbButton === 'function' ? prbButton({ ...p, coords: `${g}:${s}:${b}` }, true) : ''}</div>`;   // Sonden: details/sonden.js
   }).join('');
