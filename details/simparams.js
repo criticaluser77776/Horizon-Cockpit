@@ -12,7 +12,7 @@
   const DEFAULTS = {
     v: 1, ziel: 'kolo4', kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
     kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:2'], flottebis: 'nach', werft: 1,
-    pflicht: ['b:spaceobservatory:2'], verbot: [], aus: ['b:fissionreactor'], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
+    pflicht: ['b:spaceobservatory:2'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
     bunker: 3, rabatt: 0.1, makroziele: 1, makro: 1,
     movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 2, patience: 20, kicks: 10 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
