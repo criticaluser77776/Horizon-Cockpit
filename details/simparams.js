@@ -4,17 +4,17 @@
    (= DEFAULT_ARGS in tools/sim_actions.py), Formularfelder ↔ Einstellungen, Prüfung mit denselben Mustern wie Work.
    Gesendet werden feste JSON-Felder über public.plan_rechnen(p_params); Work prüft sie noch einmal (Positivliste). */
 (function (root) {
-  const AUFWAND = {
-    schnell: { iter: 60, rounds: 1, patience: 20, kicks: 20 },
-    normal: { iter: 150, rounds: 3, patience: 40, kicks: 60 },
-    gruendlich: { iter: 300, rounds: 4, patience: 60, kicks: 100 },
+  const AUFWAND = {   // L3 (24.10.2026): auf kolo4 angepasst, gleich tools/sim_params.py
+    schnell: { iter: 40, rounds: 1, patience: 20, kicks: 2 },
+    normal: { iter: 60, rounds: 1, patience: 20, kicks: 4 },
+    gruendlich: { iter: 100, rounds: 2, patience: 30, kicks: 10 },
   };
   const DEFAULTS = {
     v: 1, ziel: 'kolo4', kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
     kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:2'], flottebis: 'nach', werft: 1,
     pflicht: ['b:spaceobservatory:2'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
     bunker: 3, rabatt: 0.1, makroziele: 1, makro: 1,
-    movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 2, patience: 20, kicks: 10 },
+    movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 1, patience: 20, kicks: 2 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
     lager: 'getrennt', kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '2026-11-05T22:00:00Z', mass: 'foerderung',
     gewicht: [1, 2, 4], kololive: true, flugfaktor: 0.043,

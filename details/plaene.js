@@ -469,7 +469,7 @@ const SL_FIELDS = [
     ['movi_neustart', 'Im Video nachlegen (Autobuilder ab 0.5.53)', 'sel', [['ja', 'ja'], ['nein', 'nein (Video ohne Live-Lauf)']]],
   ]],
   ['Aufwand', [
-    ['aufwand_stufe', 'Rechenaufwand', 'sel', [['schnell', 'schnell (≈ ¼ h)'], ['normal', 'normal (≈ 1 h)'], ['gruendlich', 'gründlich (≈ 2–3 h)'], ['eigen', 'eigene Werte (Standard 40/2/20/10)']]],
+    ['aufwand_stufe', 'Rechenaufwand', 'sel', [['schnell', 'schnell (≈ 1 h)'], ['normal', 'normal (≤ 1½ h, Zeitlimit)'], ['gruendlich', 'gründlich (≤ 3 h, Zeitlimit)'], ['eigen', 'eigene Werte (Standard 40/1/20/2)']]],
     ['aufwand_iter', 'iter', 'num', 'nur bei „eigene Werte“'], ['aufwand_rounds', 'rounds', 'num', ''],
     ['aufwand_patience', 'patience', 'num', ''], ['aufwand_kicks', 'kicks', 'num', ''],
   ]],
