@@ -3,9 +3,10 @@
    gemessen vom Collector (ab 0.4.12) gleich nach der Kolonisierung – immer Stufe n gegen Stufe n, sonst „offen“.
    Ab Collector 0.4.14 nach der Bedeutung der Prospektionswerte (doku/wissen/statistik-monitor.md): T-Stoff ohne Bahn,
    Wohnraumkosten = Infrastruktur, Bodenfläche = Bauplatz der Infrastruktur, Besiedelbarkeit und Atmosphäre (Solar)
-   gemessen, Bauplanet-Faktor neu (Migration 20261018090001).
+   gemessen, Bauplanet-Faktor neu (Migration 20261018090001). Ab Collector 0.4.34 gegen feste STPL-Grundwerte ohne Forschung
+   (Bodenfläche = Grundbauplatz Koloniezentrum, Wohnraumkosten = Tonnage Wohnbezirke; doku/stand/planetwerte-basis.md).
    Daten: Tabelle planet_values (eine Zeile je Planet und Wert, Migration 20261017110001). Knopf „Planetenwerte messen“
-   (nur Owner): Kommando planetwerte {planet, ungebaut?} an den Collector mit frischem Lebenszeichen im Spiel; er misst den im
+   (nur Owner): Kommando planetwerte {planet} an den Collector mit frischem Lebenszeichen im Spiel; er misst den im
    Spiel gewählten Planeten und wechselt ihn nie selbst. Ablauf am Tag der Landung: doku/stand/planeten-erfassung.md.
    STPL (22.10.2026, Nutzer): Ein Standardplanet ist der Bezug, seine Grundwerte stehen ohne Messung überall auf 100 %
    (Karte und Planet-Detail, auch fremde STPL); Umlaufbahn, Mond und Artefakte bleiben planetenabhängig und damit offen.
@@ -16,15 +17,18 @@
 (function () {
   const MIN_VER = '0.4.12';
   const MAIN = { metal: 'Erz', mineral: 'Mineral', fuel: 'T-Stoff (ohne Bahn)', buildCost: 'Gebäudekosten', buildSpeed: 'Baugeschwindigkeit',
-    buildPlanet: 'Bauplanet-Faktor', researchCost: 'Forschungskosten', ground: 'Bodenfläche (Bauplatz Infrastruktur)',
-    housingCost: 'Wohnraumkosten (Infrastruktur)', colonizable: 'Besiedelbarkeit (Arbeiter)', atmosphere: 'Atmosphäre: Wirkung auf Solar' };
+    buildPlanet: 'Bauplanet-Faktor', researchCost: 'Forschungskosten', ground: 'Bodenfläche (Grundbauplatz)',
+    housingCost: 'Wohnraumkosten (Wohnbezirke)', colonizable: 'Besiedelbarkeit (Arbeiter)', atmosphere: 'Atmosphäre: Wirkung auf Solar' };
   const REST = { orbMetal: 'Erz Umlaufbahn', orbMineral: 'Mineral Umlaufbahn', orbFuel: 'T-Stoff Umlaufbahn', moon: 'Mond', artefacts: 'Artefakte' };
   const METHOD = { 'hilfe-produktion': 'Hilfe: Produktion gleicher Stufe', 'hilfe-produktion-bahn': 'Hilfe: Raffinerie ÷ Bahnfaktor',
     kosten: 'Kosten der nächsten Stufen', 'kosten-wohnkomplex': 'Kosten Wohnkomplex', 'kosten-infrastruktur': 'Kosten Infrastruktur',
     'hilfe-tonnage-infrastruktur': 'Hilfe: Tonnage Infrastruktur', 'hilfe-bauplatz-infrastruktur': 'Hilfe: Bauplatz Infrastruktur',
     'hilfe-arbeiter-wohnkomplex': 'Hilfe: Arbeiter Wohnkomplex', 'hilfe-solar-bahn': 'Hilfe: Solar ÷ Bahnfaktor',
     abgeleitet: 'Baugeschwindigkeit ÷ Gebäudekosten', bauleistung: 'Bauleistung (Statistik)', forschungskosten: 'Kosten der nächsten Forschung',
-    'bauplatz-gesamt': 'Bauplatz gesamt', prospektion: 'erst mit Prospektion', 'prospektion-wert': 'Prospektionsbericht', stpl: 'Standardplanet = Bezug' };
+    'bauplatz-gesamt': 'Bauplatz gesamt', 'hilfe-basis': 'Hilfe ÷ Forschung gegen STPL-Grundwert',
+    'hilfe-basis-bahn': 'Hilfe ÷ Forschung gegen STPL-Grundwert, ÷ Bahnfaktor', 'hilfe-basis-solar': 'Hilfe Solar ÷ Forschung gegen STPL, ÷ Bahnfaktor',
+    'hilfe-tonnage': 'Hilfe: Tonnage gegen STPL', 'hilfe-tonnage-wohnbezirke': 'Hilfe: Tonnage Wohnbezirke gegen STPL',
+    'hilfe-bauplatz-kz': 'Hilfe: Grundbauplatz Koloniezentrum', 'hilfe-arbeiter-wohnbezirke': 'Hilfe: Arbeiter Wohnbezirke ÷ Biotech', prospektion: 'erst mit Prospektion', 'prospektion-wert': 'Prospektionsbericht', stpl: 'Standardplanet = Bezug' };
   // Grundwerte eines STPL ohne Messung: überall 100 % (nur MAIN, siehe Kopf)
   const STPL = Object.fromEntries(Object.keys(MAIN).map(k => [k, { pct: 100, status: 'stpl', method: 'stpl' }]));
 
@@ -108,10 +112,9 @@
         Weitere Planeten: in der Liste oben ☐ anhaken (Vergleich, bis 8), sie erscheinen hier als Spalten.</p>
       ${isOwner() ? `<form id="pwForm" class="row" style="margin-top:6px;flex-wrap:wrap;gap:6px">
         <select name="planet" aria-label="Planet">${opts}</select>
-        <label class="small"><input type="checkbox" name="ungebaut"> ungebaute Stufen zählen</label>
         <button class="primary">Planetenwerte messen</button></form>
         <p class="small muted">Der Autobuilder (ab 0.5.71) wechselt zum Messen selbst auf den Planeten und danach zurück; ohne ihn misst der Collector nur den im Spiel gewählten Planeten.
-          Auf der Heimat frischt die Messung den Bezug auf (Gegenprobe = 100 %). „Ungebaute Stufen“ erst nach der Live-Prüfung setzen; die Einstellung bleibt im Collector gespeichert.</p>` : ''}</div>`;
+          Gerechnet wird gegen feste STPL-Grundwerte ohne Forschung (ab Collector 0.4.34); je Kolonie wird die erste passende Stufe einmal abgelesen, auch ungebaut.</p>` : ''}</div>`;
   }
 
   // Heimat, Messungen und Prospektion aller Spalten und die Planeten der Vergleichsauswahl nachladen, dann die Tabelle neu zeichnen
@@ -177,15 +180,15 @@
   }
 
   async function measure(form) {
-    const planet = form.planet.value, ungebaut = form.ungebaut.checked;
+    const planet = form.planet.value;
     const sess = await loadSessions().catch(() => null);
     const dev = sess && target(sess);
     if (!dev) return toast(`Kein Collector ab ${MIN_VER} im Spiel eingeloggt – erst im Spiel einloggen`);
     if (!confirm(`Planetenwerte von ${planet} auf ${dev.name} messen?\n\nDer Autobuilder wechselt dafür auf ${planet} und danach zurück (ohne Autobuilder muss ${planet} im Spiel gewählt sein). `
-      + `Der Collector liest nur (Gebäude, Forschung, Statistik, Hilfeseiten), gebaut wird nichts.${ungebaut ? '\n\nUngebaute Stufen zählen ab jetzt mit.' : ''}`)) return;
+      + `Der Collector liest nur (Gebäude, Forschung, Statistik, Hilfeseiten), gebaut wird nichts.`)) return;
     try {
       await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
-        body: { account_id: S.acc, script: 'autobuilder', cmd: 'planetwerte', args: { planet, ...(ungebaut ? { ungebaut: true } : {}) }, target_device: dev.device } });
+        body: { account_id: S.acc, script: 'autobuilder', cmd: 'planetwerte', args: { planet }, target_device: dev.device } });
       toast(`Kommando an ${dev.name} gesendet – Ergebnis unter Ereignisse, Werte hier nach dem Neuladen`);
       setTimeout(() => route(true), 1500);
     } catch (e) { toast(e.message); }
