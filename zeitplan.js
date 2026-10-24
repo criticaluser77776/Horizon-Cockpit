@@ -1,7 +1,7 @@
 // Live-Zeitplan (Nutzer 24.10.2026): erwartete Start- und Endzeiten der Planschritte nach dem letzten Messstand, gemeinsam für
 // Autobuilder (analyse/build_userscripts.js setzt die Datei an der Zeile „// __ZEITPLAN__“ ein), Cockpit und Atlas.
 // Je Warteschlange (Heimat-Bau, Forschung, Werft, Bau/Werft je Kolonie) ein eigener Versatz gegen die Planzeit:
-//   - laufender Schritt: sein echtes Ende (Restzeit); die Folgeschritte behalten ihren Planabstand dazu
+//   - laufender Schritt: sein echtes Ende (Restzeit); die Folgeschritte behalten ihren Planabstand dazu und starten nie davor
 //   - Startschätzung (Rohstoffe, Schlange; anchors) für einen offenen Schritt: ab dort
 //   - sonst die Abweichung dieser Schlange (lags, h; positiv = Verzug), sonst lag für alle
 // Ein offener Schritt liegt nie in der Vergangenheit: Er rückt auf „jetzt“ (due = ursprünglich erwarteter Start), die
@@ -37,7 +37,7 @@ const Zeitplan = (() => {
             if (c === '1') {
                 let e = isFinite(ends[i]) ? ends[i] : ps + x.sh + dur;
                 if (slide && e < now) e = now;
-                x.sh = e - ps - dur;
+                x.sh = e - ps - dur; x.last = Math.max(x.last, e);   // die Schlange ist bis zum Ende belegt, auch gegen eine frühere Startschätzung
                 t[i] = { q, a: null, e, due: null, run: true };
                 return;
             }
