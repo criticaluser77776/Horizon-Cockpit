@@ -27,10 +27,12 @@ const planStepDone = (plan, st, execs) => {
   const done = new Set(execs.filter(e => e.step).map(e => e.step));
   return n => done.has(n) || (first != null && n < first && !planAway(plan, n));
 };
-// Zeiten der Planschritte enthalten immer die Abweichung (Nutzer 16.10.): Planstart + τ + shift (h, wie activeEnd)
-function stepsTable(plan, st, execs, all, W, tab, shift = 0) {
-  const t0 = Date.parse(plan.startTime) + shift * 3600e3, tp = tau => esc(dt(t0 + tau * 3600e3));
-  const tip = tau => shift ? ` title="Plan: ${esc(dt(t0 - shift * 3600e3 + tau * 3600e3))}"` : '';
+// Zeiten der Planschritte: Live-Zeitplan (LT = planLive, Nutzer 24.10.2026, wie Cockpit und Autobuilder), reine Planzeit als Tooltip;
+// erledigte Schritte mit ihrem Start
+function stepsTable(plan, st, execs, all, W, tab, LT) {
+  const t0 = Date.parse(plan.startTime);
+  const tip = tau => ` title="Plan: ${esc(dt(t0 + tau * 3600e3))}"`;
+  const fcAt = tau => esc(dt(Zeitplan.atTau(plan, LT, tau, 'b', LT.lagB)));
   const open = (st.open || []).filter(Number.isInteger);
   const first = open.length ? Math.min(...open) : null;
   const until = st.until || plan.steps.length;
@@ -50,11 +52,11 @@ function stepsTable(plan, st, execs, all, W, tab, shift = 0) {
   const list = all ? vis : vis.filter(r => !r.fc || (r.tau >= lo && r.tau <= hi));
   if (!steps.length && !all) return `<p class="muted small">Kein offener Schritt bis #${esc(until)}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
   return `<table class="small">${list.map(r => {
-    if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
-    const e = done.get(r.n), mark = isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
+    if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(r.tau)}>${fcAt(r.tau)}</td></tr>`;
+    const e = done.get(r.n), run = LT.t[r.n - 1]?.run, mark = run ? '⏵' : isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : '';
     const kol = planAway(plan, r.n);
-    return `<tr class="step${isDone(r.n) ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st?.colony ? ' <span class="muted">· von Hand</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${e.carried ? " · aus Vorplan (gleiche Kennung)" : ""}</div>` : ''}</td>
-      <td class="num"${tip(r.tau)}>${tp(r.tau)}</td></tr>`;
+    return `<tr class="step${isDone(r.n) && !run ? ' muted' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st?.colony ? ' <span class="muted">· von Hand</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${e.carried ? " · aus Vorplan (gleiche Kennung)" : ""}</div>` : ''}</td>
+      <td class="num"${tip(r.tau)}>${planLiveCell(LT.t[r.n - 1], e)}</td></tr>`;
   }).join('')}</table>`;
 }
 
@@ -577,18 +579,17 @@ async function viewPlans(rest = []) {
   if (plan?.steps) {
     const holder = sess.devs.find(x => x.holds);
     const hst = holder?.ab?.state?.plan === plan.id ? holder.ab.state : {};
-    const sh = planShift(drift);
     // Mehrere Planeten (M5): Kopfzeile Imperium und Reiter Alle / Heimat / je Kolonie / Forschung (global), Nummern global
     const multi = planMulti(plan), tabs = multi ? planTabs(plan, S.home) : null, tab = multi ? planTabCur(tabs) : null;
-    const t0 = Date.parse(plan.startTime) + sh * 3600e3;
     const ex = testPlan ? [] : execs;
+    const LT = planLive(plan, planStepDone(plan, hst, ex), ex, hst);
     html += `<div class="cols2"><div class="card"><div class="row between"><h2>${testPlan ? `Testplan ${esc(tpn)} <span class="tag">lokal</span>` : `${esc(planLabel(active.id))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span>`}</h2>
       <span class="small">${COCKPIT_LINK('#/plaene', '„bis #“, Start/Stopp im Cockpit')}</span></div>
       <p class="small">${esc(tidy(testPlan ? `${plan.created || ''} · id ${plan.id}` : active.title || ''))}</p>${runBody(sess)}
-      ${multi ? `<h3>Imperium</h3>${planEmpire(plan, tabs, planStepDone(plan, hst, ex), tau => t0 + tau * 3600e3, Date.now(), !!hst?.colony)}${planTabsHtml(tabs, tab)}`
+      ${multi ? `<h3>Imperium</h3>${planEmpire(plan, tabs, planStepDone(plan, hst, ex), LT, Date.now(), !!hst?.colony)}${planTabsHtml(tabs, tab)}`
         : `<div class="small muted" style="margin:4px 0">Planet ${esc((plan.planet || S.home)?.name || 'Heimat')} ${esc((plan.planet || S.home)?.coords || '')} · Forschung gilt für alle Planeten („global“)</div>`}
-      ${Math.abs(sh) >= 0.05 ? `<div class="small muted" style="margin:4px 0">Zeiten inkl. Abweichung: ${sh > 0 ? 'Verzug' : 'Vorlauf'} ${esc(hrs(sh))} (reine Planzeit als Tooltip)</div>` : ''}
-      <h3>${multi && tab !== 'alle' ? `${esc(tabs.find(t => t.k === tab).t)}: ${plan.steps.filter((s, i) => s[0] !== 's' && planInTab(plan, tab, s, i + 1)).length} von` : 'Alle'} ${plan.steps.length} Planschritte mit Ausführungen</h3>${stepsTable(plan, hst, ex, true, W, tab, sh)}</div>
+      <div class="small muted" style="margin:4px 0">${PLAN_LIVE_NOTE}</div>
+      <h3>${multi && tab !== 'alle' ? `${esc(tabs.find(t => t.k === tab).t)}: ${plan.steps.filter((s, i) => s[0] !== 's' && planInTab(plan, tab, s, i + 1)).length} von` : 'Alle'} ${plan.steps.length} Planschritte mit Ausführungen</h3>${stepsTable(plan, hst, ex, true, W, tab, LT)}</div>
       <div class="stack">${driftCard(drift, false)}</div></div>`;
   } else html += `<div class="card"><h2>Bauplan</h2><p class="muted">Kein freigegebener Bauplan. Freigeben im Cockpit: ${COCKPIT_LINK('#/plaene', 'Pläne')}</p></div>`;
   const item = p => `<div class="list-item"><div class="row between">

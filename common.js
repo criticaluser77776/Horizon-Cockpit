@@ -371,7 +371,7 @@ async function loadPlanExecs(accId, planId, plan) {
   const keys = [...new Set(planStepKeys(plan))], blocks = [];
   for (let i = 0; i < keys.length; i += 60) blocks.push(keys.slice(i, i + 60));
   const [own, ...keyedBlocks] = await Promise.all([
-    Cloud.q('executions', { account_id: accId, plan_id: `eq.${planId}`, select: 't,step,action,src_name', order: 't.asc', limit: 1000 }),
+    Cloud.q('executions', { account_id: accId, plan_id: `eq.${planId}`, select: 't,step,action,src_name,end:data->>end', order: 't.asc', limit: 1000 }),
     ...blocks.map(b => Cloud.q('executions', { account_id: accId, or: `(plan_id.is.null,plan_id.neq.${planId})`, ok: 'is.true',
       'data->>key': `in.(${b.map(k => `"${k}"`).join(',')})`, select: 't,action,src_name,key:data->>key', order: 't.desc', limit: 1000 }).catch(() => [])),
   ]);
@@ -410,13 +410,36 @@ const planTabCur = tabs => tabs.some(t => t.k === S.planTab) ? S.planTab : 'alle
 function planTabsWire(root) {
   root?.querySelectorAll('[data-pltab]').forEach(b => b.addEventListener('click', () => { S.planTab = b.dataset.pltab; route(true); }));
 }
-// Kopfzeile Imperium: je Reiter der nächste offene Schritt (Zeit tm(tau) inkl. Abweichung), fällige Kolonie-Schritte markiert
-function planEmpire(plan, tabs, isDone, tm, now = Date.now(), col = false) {
+// Live-Zeitplan (zeitplan.js, Nutzer 24.10.2026): erwartete Zeiten je Schritt wie im Autobuilder. Fertig laut isDone(n); läuft:
+// Ausführung mit Ende in der Zukunft (executions.data.end); Startpunkte je Schlange aus dem Lebenszeichen des Autobuilders mit
+// diesem Plan (hb.fc, ab 0.5.75), sonst Abweichung je Schlange aus den Starts, sonst sein Vorlauf. Überfälliges rückt auf jetzt.
+function planLive(plan, isDone, execs, hb, now = Date.now()) {
+  const ends = {}, starts = [];
+  for (const e of execs || []) {
+    if (!e.step || !plan.steps[e.step - 1]) continue;
+    if (!e.carried) starts.push({ i: e.step - 1, t: Date.parse(e.t) });
+    if (+e.end > now) ends[e.step - 1] = +e.end;
+  }
+  const mine = hb && hb.plan === plan.id ? hb : null;
+  const lag = mine?.ahead != null ? -mine.ahead : 0;
+  const F = Zeitplan.forecast(plan, { now, state: i => i in ends ? '1' : isDone(i + 1) ? '2' : '0', ends,
+    anchors: mine?.fc || {}, lags: Zeitplan.lagsFrom(plan, starts), lag });
+  F.lagB = Zeitplan.lagsFrom(plan, starts).b ?? lag;
+  return F;
+}
+const PLAN_LIVE_NOTE = 'Zeiten live je Schlange (Heimat, Forschung, je Kolonie): laufende Aufträge bis zu ihrem Ende, sonst Startschätzung des Autobuilders bzw. Abweichung der Schlange; Überfälliges ab jetzt (reine Planzeit als Tooltip)';
+// Zeitzelle eines Schritts (Tabellen und Kopfzeile): läuft bis …, fällig seit … oder erwarteter Start; done = Ausführung
+function planLiveCell(x, e) {
+  if (!x) return e ? esc(dt(e.t)) : '';
+  if (x.run) return `läuft bis ${esc(dt(x.e))}`;
+  return x.due != null ? `<span class="warn">fällig seit ${esc(dt(x.due))}</span>` : esc(dt(x.a));
+}
+// Kopfzeile Imperium: je Reiter der nächste offene Schritt mit Live-Zeit (LT = planLive), Überfälliges markiert
+function planEmpire(plan, tabs, isDone, LT, now = Date.now(), col = false) {
   const rows = tabs.filter(t => t.k !== 'alle').map(t => {
-    const i = plan.steps.findIndex((s, j) => s[0] !== 's' && planInTab(plan, t.k, s, j + 1) && !isDone(j + 1));
-    const s = plan.steps[i], at = s ? tm(s[3]) : null;
-    const nx = !s ? '<span class="muted">alle Schritte erledigt</span>'
-      : `nächster #${i + 1} ${esc(s[5])} · ${esc(dt(at))}${t.kol && at < now ? ' <span class="tag mittel">fällig</span>' : ''}`;
+    const i = plan.steps.findIndex((s, j) => s[0] !== 's' && planInTab(plan, t.k, s, j + 1) && LT.t[j] && !LT.t[j].run);
+    const s = plan.steps[i];
+    const nx = !s ? '<span class="muted">keine offenen Schritte</span>' : `nächster #${i + 1} ${esc(s[5])} · ${planLiveCell(LT.t[i])}`;
     return `<div><b>${esc(t.t)}</b>${t.kol && !col ? ' <span class="muted">(von Hand)</span>' : ''}: ${nx}</div>`;
   });
   return `<div class="small" style="margin:4px 0">${rows.join('')}<div class="muted">${col ? 'Der Autobuilder baut auf Heimat und Kolonien (Option „Kolonie-Schritte ausführen“), Forschung global.' : 'Der Autobuilder baut auf der Heimat; Kolonie-Schritte von Hand (Option „Kolonie-Schritte ausführen“ aus), Forschung global.'}</div></div>`;
