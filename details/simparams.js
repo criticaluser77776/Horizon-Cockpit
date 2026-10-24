@@ -10,13 +10,13 @@
     gruendlich: { iter: 100, rounds: 2, patience: 30, kicks: 10 },
   };
   const DEFAULTS = {
-    v: 1, ziel: 'kolo4', kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
-    kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:2'], flottebis: 'nach', werft: 1,
-    pflicht: [], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
-    rabatt: 0.1, makroziele: 1, makro: 1,
+    v: 1, kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
+    kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:2'], werft: 1,
+    pflicht: ['kolo:4'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
+    rabatt: 0.1,
     movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 1, patience: 20, kicks: 2 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
-    kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '2026-11-05T22:00:00Z', mass: 'foerderung',
+    kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '+14d',
     gewicht: [1, 2, 4], kololive: true, flugfaktor: 0.043,
     takt: 2, taktlast: 47200, taktmod: ['tempo:-0.5'],   // Transport 2 Flüge/Tag wie Plan 21 (A2, 22.10.)
   };
@@ -25,7 +25,7 @@
     kolo: /^(\d{1,2}|K|N\d{0,2}):([A-Z]{4}|\?):(rohstoff|kolozentrum|auto)$/,
     kolopflicht: new RegExp(`^(\\*|[1-4]):b:${ID}:(\\d{1,2}|heimat)$`),
     flotte: /^[A-Z]{4}:\d{1,2}$/,
-    pflicht: new RegExp(`^[br]:${ID}:\\d{1,2}$`),
+    pflicht: new RegExp(`^(kolo:[345]|[br]:${ID}:\\d{1,2})$`),
     verbot: new RegExp(`^[br]:${ID}$`),
     aus: new RegExp(`^b:${ID}$`),
     techcap: new RegExp(`^[br]:${ID}:\\d{1,2}$`),
@@ -34,10 +34,9 @@
     forschort: /^([A-Z]{4}|heimat):\d(\.\d{1,3})?$/,
     taktmod: /^(laderaum|tempo):-?(0(\.\d{1,3})?|1(\.0{1,3})?)$/,
   };
-  const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?(\.\d+)?(Z|[+-]\d\d:\d\d)?$/;
-  const CHOICE = { ziel: ['scol', 'kolo3', 'kolo4', 'kolo5'], flottebis: ['nach', 'kolo3'],
-    versorgung: ['voll', 'aus'], mass: ['landung', 'foerderung'] };
-  const INTS = { platzbahn: [1, 15], werft: [1, 10], makroziele: [0, 5], makro: [0, 300] };
+  const ISO = /^(\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?(\.\d+)?(Z|[+-]\d\d:\d\d)?|\+\d{1,3}[dh])$/;   // oder +14d / +36h ab Snapshot
+  const CHOICE = { versorgung: ['voll', 'aus'] };
+  const INTS = { platzbahn: [1, 15], werft: [1, 10] };
   const AUF_MAX = { iter: 2000, rounds: 10, patience: 500, kicks: 500 };
   const LISTS = ['kolo', 'kolopflicht', 'flotte', 'pflicht', 'verbot', 'aus', 'techcap', 'seeds', 'forschort'];
 
@@ -49,8 +48,7 @@
   // Formularwerte (Texte aus den Feldern, Name = Einstellung; Aufwand aufwand_stufe/_iter…; MoVi movi_modus/_zeit/…) → Einstellungen
   function fromForm(f) {
     const p = { v: 1 };
-    for (const k of ['ziel', 'flottebis']) p[k] = f[k];
-    for (const k of ['versorgung', 'mass']) p[k] = f[k] ? f[k] : null;
+    p.versorgung = f.versorgung ? f.versorgung : null;
     for (const k of LISTS) p[k] = splitList(f[k]);
     for (const k of Object.keys(INTS)) p[k] = numOrNull(f[k]);
     p.rabatt = numOrNull(f.rabatt);
@@ -78,8 +76,7 @@
   // Einstellungen → Formularwerte (Texte)
   function toForm(p) {
     const f = {};
-    for (const k of ['ziel', 'flottebis']) f[k] = p[k];
-    for (const k of ['versorgung', 'mass']) f[k] = p[k] || '';
+    f.versorgung = p.versorgung || '';
     for (const k of LISTS) f[k] = (p[k] || []).join(', ');
     for (const k of [...Object.keys(INTS), 'rabatt']) f[k] = p[k] == null ? '' : String(p[k]);
     f.kolominen = p.kolominen || '';
@@ -121,7 +118,7 @@
     }
     if (p.kolominen != null && !/^\d{1,2}$/.test(p.kolominen)) e.push('kolominen: Zahl 1–99');
     if (Array.isArray(p.kolohilfe)) for (const x of p.kolohilfe) if (!PAT.kolohilfe.test(x)) e.push(`kolohilfe: „${x}“ (Form gebäude:stufe oder „ja“)`);
-    if (p.bis != null && !(typeof p.bis === 'string' || (Number.isFinite(p.bis) && p.bis >= 0 && p.bis <= 2000))) e.push('bis: Planstunde oder ISO-Zeit');
+    if (p.bis != null && !((typeof p.bis === 'string' && ISO.test(p.bis)) || (Number.isFinite(p.bis) && p.bis >= 0 && p.bis <= 2000))) e.push('bis: +14d, Planstunde oder ISO-Zeit');
     if (p.gewicht != null && !(p.gewicht.length === 3 && p.gewicht.every(x => Number.isFinite(x) && x >= 0 && x <= 100))) e.push('Gewicht: drei Zahlen E, M, T (0…100)');
     if (p.kololive != null && p.kololive !== true) e.push('Gelandete Kolonien: ja oder leer');
     if (p.flugfaktor != null && !(Number.isFinite(p.flugfaktor) && p.flugfaktor >= 0.001 && p.flugfaktor <= 5)) e.push('Flugfaktor: Zahl 0,001…5');
@@ -130,14 +127,12 @@
     if (p.taktmod.length > 2) e.push('Flottenmods: höchstens zwei');
     for (const x of p.taktmod) if (!PAT.taktmod.test(x)) e.push(`Flottenmods: „${x}“ (Form laderaum:0.5 oder tempo:-0.5)`);
     if (p.takt == null && (p.taktlast != null || p.taktmod.length)) e.push('Transport-Ladung/Flottenmods nur mit Transport');
-    const kz = p.ziel !== 'scol';
-    if (!kz) {
-      if (p.kolopflicht.length) e.push('Kolonie-Pflichten nur mit Ziel Kolopunkt 3/4/5');
-      if (p.flotte.length) e.push('Flotte nur mit Ziel Kolopunkt 3/4/5');      if (p.kolohilfe != null) e.push('kolohilfe nur mit Ziel Kolopunkt 3/4/5');
-      if (p.kololive != null) e.push('Gelandete Kolonien nur mit Ziel Kolopunkt 3/4/5');
-    } else if (p.kolo.length < +p.ziel.slice(4) - 1) e.push(`Kolonien: für ${p.ziel} mindestens ${+p.ziel.slice(4) - 1} Ziele`);
-    if (p.gewicht != null && p.mass !== 'foerderung') e.push('Gewicht nur mit Maß Förderung');
-    if (p.mass === 'foerderung' && p.bis == null) e.push('Maß Förderung braucht „bis“');
+    const kn = p.pflicht.filter(x => x.startsWith('kolo:')).map(x => +x.slice(5));
+    if (kn.length > 1) e.push('Pflicht: höchstens ein kolo:N');
+    // Ziel ist immer ein Kolopunkt (Schritt 2, 24.10.2026: kein SCOL-Ziel mehr)
+    if (!kn.length) e.push('Pflicht: kolo:N fehlt (Ziel Kolopunkt, z. B. kolo:4)');
+    else if (p.kolo.length < kn[0] - 1) e.push(`Kolonien: für kolo:${kn[0]} mindestens ${kn[0] - 1} Ziele`);
+    if (p.bis == null) e.push('Stichtag „bis“ fehlt (z. B. +14d)');
     if (p.versorgung != null && !p.kolopflicht.length) e.push('Versorgung nur mit Kolonie-Pflichten');
     return e;
   }

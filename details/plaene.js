@@ -61,7 +61,8 @@ function stepsTable(plan, st, execs, all, W, tab, LT) {
   }).join('')}</table>`;
 }
 
-const PLAN_GAIN_MIN = 0.5;   // h, wie SCHWELLE in tools/push_plan.py
+const PLAN_GAIN_MIN = 0.5;   // h, Rückfall ohne Förderung-Maß, wie SCHWELLE in tools/push_plan.py
+const PLAN_GAIN_MIN_PCT = 1;   // % gewichtete Förderung bei T (Schritt 2, Nutzer 24.10.2026), wie SCHWELLE_PCT in tools/push_plan.py
 const planEnd = p => {
   const h = +p?.hours || +(String(p?.created || '').match(/([\d.]+) h$/) || [])[1];
   return p?.startTime && h ? Date.parse(p.startTime) + h * 3600e3 : null;
@@ -72,12 +73,23 @@ const activeEnd = (active, drift) => {
   const end = planEnd(active?.payload);
   return end ? end + planShift(drift) * 3600e3 : null;
 };
-// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), agreed, better }
+// Förderung bei T (Schritt 2, B8): { pctF, massNeu, massAkt } oder null. Aktiver Wert: vergleich des Entwurfs (Optimierer --gegen), wenn
+// vergleich.planId = Plan-id des aktiven Plans und zulässig; sonst bis.mass des aktiven Plans bei gleichem bis.t; sonst kein Vergleich (Stunden-Rückfall)
+function foerderVergleich(d, active) {
+  const neu = d.bisMass != null && d.bisMass !== '' ? +d.bisMass : NaN;
+  if (!(neu >= 0)) return null;
+  let akt = NaN;
+  if (d.vPlan && active?.plan_hash && d.vPlan === active.plan_hash && d.vOk === 'true' && d.vMass != null) akt = +d.vMass;
+  else if (active?.payload?.bis?.mass != null && active.payload.bis.t && active.payload.bis.t === d.bisT) akt = +active.payload.bis.mass;
+  return akt > 0 ? { pctF: (neu - akt) / akt * 100, massNeu: neu, massAkt: akt } : null;
+}
+// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), pctF/massNeu/massAkt (Förderung bei T), agreed, better }
 async function draftGains(plans, active, drift) {
   const drafts = plans.filter(p => p.kind === 'build' && p.status === 'entwurf');
   if (!drafts.length) return {};
   const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
-    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil' });
+    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil,'
+      + 'bisT:payload->bis->>t,bisMass:payload->bis->>mass,vPlan:payload->vergleich->>planId,vMass:payload->vergleich->>mass,vOk:payload->vergleich->>ok' });
   const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
   // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan (wie cockpit/app.js)
   const teile = rows.filter(d => d.teil).map(d => d.id), teilOf = {};
@@ -87,12 +99,15 @@ async function draftGains(plans, active, drift) {
     const p = drafts.find(x => x.id === d.id), end = planEnd(d);
     // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
     const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
-    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, agreed, teil: teilOf[d.id] || null,
-      better: agreed || !!teilOf[d.id] || !active || gain == null || gain > PLAN_GAIN_MIN };
+    const f = p.source !== 'user' ? foerderVergleich(d, active) : null;
+    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, ...(f || {}), agreed, teil: teilOf[d.id] || null,
+      better: agreed || !!teilOf[d.id] || !active || (f ? f.pctF >= PLAN_GAIN_MIN_PCT : gain == null || gain > PLAN_GAIN_MIN) };
   }
   return out;
 }
-const gainText = g => g?.gain == null ? '' : `SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`;
+const gainText = g => g?.pctF != null ? `Förderung bei T: ${g.pctF >= 0 ? '+' : '−'}${fmt(Math.abs(g.pctF), 1)} % (aktiv ${fmt(g.massAkt, 0)} → neu ${fmt(g.massNeu, 0)} /h gewichtet)`
+  : g?.gain == null ? '' : `SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`;
+const gainOk = g => g?.pctF != null ? g.pctF >= PLAN_GAIN_MIN_PCT : g?.gain > PLAN_GAIN_MIN;
 
 // Herkunft und Klapper „Details“ eines Plans (B16): Notiz in Anzeigeform, darunter die technischen Kennungen
 const SRC = { optimizer: 'Optimierer', user: 'eigener Entwurf', claude: 'Claude' };
@@ -441,24 +456,20 @@ async function createEdited(E, P, errs) {
    Autobuilder bleiben. Der Formularzustand liegt in S.simlauf, damit das stille Neuladen (60 s) nichts verwirft. */
 const SL_FIELDS = [
   ['Ziel', [
-    ['ziel', 'Ziel', 'sel', [['scol', 'SCOL (1. Kolonieschiff)'], ['kolo3', 'Kolopunkt 3'], ['kolo4', 'Kolopunkt 4'], ['kolo5', 'Kolopunkt 5']]],
+    ['pflicht', 'Pflicht (Ziel Kolopunkt, Mindeststufen)', 'txt', 'kolo:3 / kolo:4 / kolo:5 = Ziel Kolopunkt (Pflicht) · weitere art:id:stufe, z. B. b:spaceobservatory:2 (b Gebäude, r Forschung)'],
     ['kolo', 'Kolonien Bahn:Typ:Rolle', 'txt', 'z. B. 5:JUPL:rohstoff, 6:RKPL:rohstoff · Platzhalter K:STPL:auto · Rolle rohstoff/kolozentrum/auto'],
     ['platzbahn', 'Platzbahn (Flugzeit der Platzhalter)', 'num', 'leer = 6'],
     ['kolopflicht', 'Mindeststufen je Kolonie', 'txt', 'z. B. *:b:metalmine:10, 1:b:researchcenter:heimat'],
   ]],
   ['Flotte', [
     ['flotte', 'Flotte Typ:Anzahl', 'txt', 'z. B. PFLS:1, PTRN:2 · leer = keine'],
-    ['flottebis', 'Flotte wann', 'sel', [['nach', 'nach dem Ziel'], ['kolo3', 'bis Kolopunkt 3']]],
     ['werft', 'Werft-Stufe höchstens', 'num', ''],
   ]],
   ['Bauregeln', [
-    ['pflicht', 'Pflicht art:id:stufe', 'txt', 'z. B. b:spaceobservatory:2 (b Gebäude, r Forschung)'],
     ['verbot', 'Verbot art:id', 'txt', 'kommt in keinem Plan vor'],
     ['aus', 'Aus (bauen, aber 0 %)', 'txt', 'z. B. b:fissionreactor'],
     ['techcap', 'Obergrenze heben art:id:stufe', 'txt', 'z. B. r:refinerytech:11 (samt Voraussetzungen) · leer = Standard-Obergrenzen'],
     ['rabatt', 'Rabatt (0…0,5)', 'num', ''],
-    ['makroziele', 'Makro-Ziele', 'num', ''],
-    ['makro', 'Makro-Iterationen', 'num', ''],
   ]],
   ['Motivationsvideo', [
     ['movi_modus', 'Video', 'sel', [['aus', 'ohne'], ['auto', 'bester Zeitpunkt (auto)'], ['zeit', 'fester Zeitpunkt']]],
@@ -480,9 +491,8 @@ const SL_FIELDS = [
     ['kolohilfe', 'Hilfsgebäude Kolonien', 'txt', 'leer = aus · ja = Bauhof bis 5 · constructionfacility:6, infrastructure:2'],
     ['forschort', 'Forschungsort Typ:Faktor', 'txt', 'z. B. JUPL:0.69, heimat:1 (günstigster Planet; Heimat-Labor nur als Voraussetzung) · leer = Heimat'],
     ['versorgung', 'Versorgung', 'sel', [['', 'Standard (voll)'], ['voll', 'voll (100 %)'], ['aus', 'aus (nur Vergleich)']]],
-    ['bis', 'Simulieren bis (Stunde oder ISO)', 'txt', 'leer = bis zum Ziel'],
-    ['mass', 'Maß', 'sel', [['', 'Standard (Landung)'], ['landung', 'Landung'], ['foerderung', 'Förderung bei „bis“']]],
-    ['gewicht', 'Gewicht Förderung E, M, T', 'txt', 'z. B. 1, 2, 4 (Händlerkurs) · leer = jede Einheit gleich · nur mit Maß Förderung'],
+    ['bis', 'Stichtag T der Förderung', 'txt', '+14d = 14 Tage ab Snapshot (rollend) · +36h · Planstunde · ISO-Zeit'],
+    ['gewicht', 'Gewicht Förderung E, M, T', 'txt', 'z. B. 1, 2, 4 (Händlerkurs) · leer = jede Einheit gleich'],
     ['kololive', 'Gelandete Kolonien aus dem Snapshot', 'sel', [['ja', 'übernehmen'], ['nein', 'nicht übernehmen']]],
     ['flugfaktor', 'Flugfaktor SCOL', 'num', 'z. B. 0,043 (geeicht, ≈ 14 min) · leer = Modellwert'],
     ['takt', 'Transport: Flüge je Tag', 'num', 'z. B. 2 (wie Plan 21) · leer = kein Transport · wirkt nur mit getrennten Lagern und Flotte'],
@@ -594,7 +604,7 @@ async function viewPlans(rest = []) {
   const item = p => `<div class="list-item"><div class="row between">
       <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span><span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
-      ${gains[p.id]?.gain != null ? `<div class="small ${gains[p.id].gain > PLAN_GAIN_MIN ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
+      ${gainText(gains[p.id]) ? `<div class="small ${gainOk(gains[p.id]) ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
       ${planTeilHtml(gains[p.id]?.teil)}
       <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${p.status !== 'entwurf' && p.status_at ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
       ${planDetails(p)}

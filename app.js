@@ -785,10 +785,12 @@ ${tgt.ab?.state?.hand || ''}`
 
 // „Neuer Plan verfügbar – starten?“ (B14, 15.10.): Im Cockpit erscheinen nur bessere Pläne. Ein Optimierer-Entwurf zählt,
 // wenn er mit Claude im Chat abgestimmt ist (payload.agreed, push_plan.py --abgestimmt), kein Plan aktiv ist oder er das SCOL
-// mehr als PLAN_GAIN_MIN h früher erreicht als der aktive Plan – verglichen mit dessen erwartetem Ende laut Live-Stand
+// mehr als PLAN_GAIN_MIN_PCT % gewichtete Förderung bei T mehr fördert als der aktive Plan (Schritt 2; Rückfall ohne Förderung-Maß:
+// SCOL mehr als PLAN_GAIN_MIN h früher) – verglichen mit dessen erwartetem Ende laut Live-Stand
 // (Planstart + hours + Startverzug + Rückstand bzw. − Vorlauf aus plan_abweichung, B4). Schlechtere Entwürfe sind ausgeblendet
 // (push_plan.py legt solche seit B14 gar nicht mehr an); eigene Entwürfe (source user, „Planschritte ändern“) bleiben sichtbar.
-const PLAN_GAIN_MIN = 0.5;   // h, wie SCHWELLE in tools/push_plan.py
+const PLAN_GAIN_MIN = 0.5;   // h, Rückfall ohne Förderung-Maß, wie SCHWELLE in tools/push_plan.py
+const PLAN_GAIN_MIN_PCT = 1;   // % gewichtete Förderung bei T (Schritt 2, Nutzer 24.10.2026), wie SCHWELLE_PCT in tools/push_plan.py
 const planEnd = p => {
   const h = +p?.hours || +(String(p?.created || '').match(/([\d.]+) h$/) || [])[1];
   return p?.startTime && h ? Date.parse(p.startTime) + h * 3600e3 : null;
@@ -799,12 +801,23 @@ const activeEnd = (active, drift) => {
   const end = planEnd(active?.payload);
   return end ? end + planShift(drift) * 3600e3 : null;
 };
-// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), agreed, better }
+// Förderung bei T (Schritt 2, B8): { pctF, massNeu, massAkt } oder null. Aktiver Wert: vergleich des Entwurfs (Optimierer --gegen), wenn
+// vergleich.planId = Plan-id des aktiven Plans und zulässig; sonst bis.mass des aktiven Plans bei gleichem bis.t; sonst kein Vergleich (Stunden-Rückfall)
+function foerderVergleich(d, active) {
+  const neu = d.bisMass != null && d.bisMass !== '' ? +d.bisMass : NaN;
+  if (!(neu >= 0)) return null;
+  let akt = NaN;
+  if (d.vPlan && active?.plan_hash && d.vPlan === active.plan_hash && d.vOk === 'true' && d.vMass != null) akt = +d.vMass;
+  else if (active?.payload?.bis?.mass != null && active.payload.bis.t && active.payload.bis.t === d.bisT) akt = +active.payload.bis.mass;
+  return akt > 0 ? { pctF: (neu - akt) / akt * 100, massNeu: neu, massAkt: akt } : null;
+}
+// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), pctF/massNeu/massAkt (Förderung bei T), agreed, better }
 async function draftGains(plans, active, drift) {
   const drafts = plans.filter(p => p.kind === 'build' && p.status === 'entwurf');
   if (!drafts.length) return {};
   const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
-    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil' });
+    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil,'
+      + 'bisT:payload->bis->>t,bisMass:payload->bis->>mass,vPlan:payload->vergleich->>planId,vMass:payload->vergleich->>mass,vOk:payload->vergleich->>ok' });
   const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
   // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan
   const teile = rows.filter(d => d.teil).map(d => d.id), teilOf = {};
@@ -814,17 +827,20 @@ async function draftGains(plans, active, drift) {
     const p = drafts.find(x => x.id === d.id), end = planEnd(d);
     // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
     const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
-    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, agreed, teil: teilOf[d.id] || null,
-      better: agreed || !!teilOf[d.id] || !active || gain == null || gain > PLAN_GAIN_MIN };
+    const f = p.source !== 'user' ? foerderVergleich(d, active) : null;
+    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, ...(f || {}), agreed, teil: teilOf[d.id] || null,
+      better: agreed || !!teilOf[d.id] || !active || (f ? f.pctF >= PLAN_GAIN_MIN_PCT : gain == null || gain > PLAN_GAIN_MIN) };
   }
   return out;
 }
-const gainText = g => g?.gain == null ? '' : `SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`;
+const gainText = g => g?.pctF != null ? `Förderung bei T: ${g.pctF >= 0 ? '+' : '−'}${fmt(Math.abs(g.pctF), 1)} % (aktiv ${fmt(g.massAkt, 0)} → neu ${fmt(g.massNeu, 0)} /h gewichtet)`
+  : g?.gain == null ? '' : `SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`;
+const gainOk = g => g?.pctF != null ? g.pctF >= PLAN_GAIN_MIN_PCT : g?.gain > PLAN_GAIN_MIN;
 function newPlanOffer(plans, active, gains) {
   const draft = plans.find(p => p.kind === 'build' && p.status === 'entwurf' && p.source !== 'user' && gains[p.id]?.better);
   if (!draft) return null;
   const g = gains[draft.id];
-  if (!g.agreed && !(g.gain > PLAN_GAIN_MIN) && active) return null;
+  if (!g.agreed && !gainOk(g) && active) return null;
   return { draft, ...g };
 }
 // Herkunft und Klapper „Details“ eines Plans (B16): Notiz in Anzeigeform, darunter die technischen Kennungen
@@ -958,7 +974,7 @@ async function viewPlans(rest = []) {
       <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span>
       <span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
-      ${gains[p.id]?.gain != null ? `<div class="small ${gains[p.id].gain > PLAN_GAIN_MIN ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
+      ${gainText(gains[p.id]) ? `<div class="small ${gainOk(gains[p.id]) ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
       ${planTeilHtml(gains[p.id]?.teil)}
       <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}</div>
       ${planDetails(p)}
