@@ -114,6 +114,17 @@
     }
     return { at: snap.collectedAt, offset: late != null ? late : open != null ? snapH - open : 0, done, running };
   }
+  // Live-Zeitplan für „Aktuell“ (planLive aus common.js, Nutzer 24.10.2026): dieselben Zeiten wie unter Pläne und im Autobuilder.
+  // Erledigt: Ausführung, Stand des Autobuilders mit diesem Plan oder Stufe im Live-Stand (Heimat; gilt auch für den Entwurf);
+  // laufend laut Live-Stand zählt wie eine Ausführung mit Ende (carried: kein Start für die Abweichung der Schlange)
+  async function liveTimes(p, LV) {
+    const plan = S.kPlans[p.id];
+    const [execs, sess] = await Promise.all([loadPlanExecs(`eq.${S.acc}`, p.id, plan).catch(() => []), loadSessions().catch(() => ({ devs: [] }))]);
+    const hst = sess.devs.map(d => d.ab?.state).find(s => s?.plan === plan.id) || {};
+    const done = planStepDone(plan, hst, execs), LD = LV?.done || new Set();
+    const run = Object.entries(LV?.running || {}).map(([i, rem]) => ({ t: LV.at, step: +i + 1, end: Date.parse(LV.at) + rem * 1000, carried: true }));
+    return planLive(plan, n => done(n) || LD.has(n - 1), [...execs, ...run], hst);
+  }
   const atPlan = (M, h) => new Date(Date.parse(M.startTime) + h * 3.6e6);
   const fmtT = d => dt(d);   // einheitliches Zeitformat aus app.js (B16)
   const stepName = (st) => st.k === 's' ? 'Kolonieschiff (SCOL)' : st.k === 'r' ? `${W.R[st.id]?.n || st.id} ${st.l}` : `${st.name.replace(/\s+\d+$/, '') || W.B[st.id]?.n || st.id} ${st.l}`;
@@ -135,14 +146,16 @@
       return bindBauplan();
     }
     const M = cur?.M, LV = M ? liveOf(M, await loadSnap()) : null, OFF = LV ? LV.offset : 0;
+    const LT = M && K.psub === 'aktuell' ? await liveTimes(cur, LV) : null;
     let body = '';
-    if (K.psub === 'aktuell') body = aktuell(M, LV, OFF);
+    if (K.psub === 'aktuell') body = aktuell(M, S.kPlans[cur.id], LT);
     else if (K.psub === 'scol') body = scol(M, OFF, cur);
     else if (K.psub === 'lang') body = T ? `<div class="card"><h2>${rich(T.lang.h)}</h2><p class="small muted">${rich(T.lang.note)}</p>
       <ul class="kul">${T.lang.items.map(x => `<li>${rich(x)}</li>`).join('')}</ul></div>` : noTexts();
     else body = modell(M, OFF, T);
     $('#kbody').innerHTML = head + body;
-    if (M) $('#kLive').innerHTML = LV ? `Zeiten nach dem Live-Stand vom <b>${esc(fmtT(new Date(LV.at)))}</b>: ${LV.offset >= 0 ? 'Verzug' : 'Vorsprung'} <b>${hrs(Math.abs(LV.offset))}</b> gegenüber dem Optimierer-Lauf vom ${esc(fmtT(atPlan(M, 0)))}; alle folgenden Zeiten sind verschoben.${K.which === 'entwurf' ? ' Der Entwurf läuft noch nicht – Stufen, die live schon erreicht sind, zählen trotzdem als erledigt.' : ''}`
+    if (LT) $('#kLive').innerHTML = `${esc(PLAN_LIVE_NOTE)}.${LV ? ` Live-Stand vom <b>${esc(fmtT(new Date(LV.at)))}</b>.` : ''}${K.which === 'entwurf' ? ' Der Entwurf läuft noch nicht – Stufen, die live schon erreicht sind, zählen trotzdem als erledigt.' : ''}`;
+    else if (M) $('#kLive').innerHTML = LV ? `Zeiten nach dem Live-Stand vom <b>${esc(fmtT(new Date(LV.at)))}</b>: ${LV.offset >= 0 ? 'Verzug' : 'Vorsprung'} <b>${hrs(Math.abs(LV.offset))}</b> gegenüber dem Optimierer-Lauf vom ${esc(fmtT(atPlan(M, 0)))}; alle folgenden Zeiten sind verschoben.${K.which === 'entwurf' ? ' Der Entwurf läuft noch nicht – Stufen, die live schon erreicht sind, zählen trotzdem als erledigt.' : ''}`
       : `Zeiten laut Optimierer-Lauf vom ${esc(fmtT(atPlan(M, 0)))}; noch kein neuerer Live-Stand.`;
     bindBauplan(M, LV, OFF);
   }
@@ -153,38 +166,38 @@
     $('#kDone')?.addEventListener('click', () => { K.done = !K.done; renderSub(); });
     $('#kAll')?.addEventListener('click', () => { K.all = !K.all; renderSub(); });
   }
-  // Ebene 1: Aufträge und Faktorwechsel nach Zeit, Linie „Jetzt“, erledigte ausgeblendet, nur die nächsten 24 h
-  function aktuell(M, LV, OFF) {
-    const at = h => atPlan(M, h + OFF);
-    const nowH = (Date.now() - Date.parse(M.startTime)) / 3.6e6 - OFF;
-    const LD = LV?.done || new Set(), LR = LV?.running || {};
-    const rows = M.s.map(s => ({ t: s.i in LR ? Math.min(s.t0, nowH - 1e-6) : s.t0, o: 1, s }));
+  // Ebene 1: Aufträge und Faktorwechsel nach Live-Zeit (LT = planLive), Linie „Jetzt“, erledigte ausgeblendet, nur die nächsten 24 h;
+  // Laufendes steht vor „Jetzt“, Überfälliges („fällig seit“) auf jetzt, erledigte Schritte mit ihrer Planzeit
+  function aktuell(M, plan, LT) {
+    const now = Date.now(), H = 3.6e6;
+    const rows = M.s.map(s => { const x = LT.t[s.i];
+      return { t: !x ? Math.min(atPlan(M, s.t0).getTime(), now - 2) : x.run ? now - 1 : x.a, o: 1, s, x }; });
     let prev = {};
-    M.f.forEach(x => { const ch = Object.entries(x[2]).filter(([id, v]) => Math.round((prev[id] ?? 1) * 100) !== Math.round(v * 100)).map(([id, v]) => [id, prev[id] ?? 1, v]); prev = x[2]; if (ch.length) rows.push({ t: x[0], o: 0, ch }); });
+    M.f.forEach(x => { const ch = Object.entries(x[2]).filter(([id, v]) => Math.round((prev[id] ?? 1) * 100) !== Math.round(v * 100)).map(([id, v]) => [id, prev[id] ?? 1, v]); prev = x[2]; if (ch.length) rows.push({ t: Zeitplan.atTau(plan, LT, x[0], 'b', LT.lagB), o: 0, ch }); });
     rows.sort((a, b) => a.t - b.t || a.o - b.o || (a.s?.i ?? 0) - (b.s?.i ?? 0));
-    const lastFac = rows.filter(r => r.ch && r.t <= nowH).pop();
-    const past = r => r.s ? LD.has(r.s.i) || (!(r.s.i in LR) && r.s.t1 > 0 && r.s.t1 <= nowH) : r.t <= nowH && r !== lastFac;
+    const lastFac = rows.filter(r => r.ch && r.t <= now).pop();
+    const past = r => r.s ? !r.x : r.t <= now && r !== lastFac;
     const pct = v => Math.round(v * 100) + ' %';
-    const hm = d => d.toLocaleTimeString('de-DE', { ...TZ, hour: '2-digit', minute: '2-digit' });
+    const hm = d => new Date(d).toLocaleTimeString('de-DE', { ...TZ, hour: '2-digit', minute: '2-digit' });
     const f = K.filter;
-    let curDay = null, hidden = 0, later = 0, nowDone = !(nowH >= 0 && nowH <= M.hours), html = '';
+    let curDay = null, hidden = 0, later = 0, nowDone = false, html = '';
     for (const r of rows) {
       if (r.s && f !== 'all' && (f === 'b' ? r.s.k === 'r' || r.s.pl : f === 'r' ? r.s.k !== 'r' : r.s.pl !== f)) continue;
       if (r.ch && f === 'r') continue;
       if (!K.done && past(r)) { if (r.s) hidden++; continue; }
-      if (!K.all && r.t > nowH + 24) { if (r.s) later++; continue; }
-      if (!nowDone && r.t > nowH) { nowDone = true; html += `<tr class="know"><td colspan="7">Jetzt · ${esc(hm(new Date()))}</td></tr>`; }
-      const d = at(r.t).toLocaleDateString('de-DE', { ...TZ, weekday: 'long', day: '2-digit', month: 'long' });
+      if (!K.all && r.t > now + 24 * H) { if (r.s) later++; continue; }
+      if (!nowDone && r.t >= now) { nowDone = true; html += `<tr class="know"><td colspan="7">Jetzt · ${esc(hm(now))}</td></tr>`; }
+      const d = new Date(r.t).toLocaleDateString('de-DE', { ...TZ, weekday: 'long', day: '2-digit', month: 'long' });
       if (d !== curDay) { curDay = d; html += `<tr class="kday"><td colspan="7">${esc(d)}</td></tr>`; }
-      const tm = r.s && r.s.i in LR ? 'läuft bis ' + esc(hm(new Date(Date.parse(LV.at) + LR[r.s.i] * 1000))) : esc(hm(at(r.t)));
+      const x = r.x, tm = !x ? esc(hm(r.t)) : x.run ? 'läuft bis ' + esc(hm(x.e)) : x.due != null ? `<span class="warn">fällig seit ${esc(fmtT(new Date(x.due)))}</span>` : esc(hm(x.a));
       if (r.ch) { html += `<tr class="kfac"><td></td><td class="num">${tm}</td><td colspan="5">⚙ ${r.ch.map(([id, o, v]) => `${esc(bName(id))} ${pct(o)} → <b>${pct(v)}</b>`).join(', ')}</td></tr>`; continue; }
       const s = r.s;
-      html += `<tr${LD.has(s.i) ? ' class="kdone"' : ''}><td class="num">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}${s.pl ? ` <span class="tag aktiv">${esc(M.plName(s.pl))}</span>` : ''}${s.rp ? ` <span class="tag aktiv" title="Forschung startet auf ${esc(s.rp)}">startet auf ${esc(M.plName(s.rp))}</span>` : ''}
+      html += `<tr${!x ? ' class="kdone"' : ''}><td class="num" title="Planzeit ${esc(fmtT(atPlan(M, s.t0)))}">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}${s.pl ? ` <span class="tag aktiv">${esc(M.plName(s.pl))}</span>` : ''}${s.rp ? ` <span class="tag aktiv" title="Forschung startet auf ${esc(s.rp)}">startet auf ${esc(M.plName(s.rp))}</span>` : ''}
         <div class="small muted">Dauer ${hrs(s.t1 - s.t0)}${s.req == null ? '' : s.req ? ' · <span class="pill req">Pflicht</span>' : ' · <span class="pill opt">Investition</span>'}</div>${rmob(s.c)}</td>${res3(s.c)}</tr>`;
     }
     const fb = (v, l) => `<button type="button" data-f="${v}" aria-pressed="${f === v}">${l}</button>`;
     return `<div class="card"><h2>Die nächsten 24 Stunden</h2>
-      <p class="small muted">Erledigte Aufträge sind ausgeblendet, „Jetzt“ zeigt die Uhrzeit im Plan. ⚙ = Änderung der Betriebsfaktoren (der Autobuilder stellt sie vor dem nächsten Auftrag ein, live nach der Faktor-Regel).</p>
+      <p class="small muted">Erledigte Aufträge sind ausgeblendet, „Jetzt“ zeigt die aktuelle Uhrzeit; Zeiten live je Schlange wie unter Pläne (Planzeit als Tooltip auf der Nummer). ⚙ = Änderung der Betriebsfaktoren (der Autobuilder stellt sie vor dem nächsten Auftrag ein, live nach der Faktor-Regel).</p>
       <div class="row"><div class="kseg" id="kFilter">${fb('all', 'Alle')}${fb('b', M.kol.length ? 'Gebäude Heimat' : 'Gebäude')}${M.kol.map(t => fb(t.k, esc(t.t))).join('')}${fb('r', M.kol.length ? 'Forschung (global)' : 'Forschung')}</div>
       <button type="button" id="kDone" aria-pressed="${K.done}">${K.done ? 'Erledigte ausblenden' : `Erledigte zeigen (${hidden})`}</button>
       <button type="button" id="kAll" aria-pressed="${K.all}">${K.all ? 'nur 24 h' : `ganzer Plan (+${later})`}</button></div>
