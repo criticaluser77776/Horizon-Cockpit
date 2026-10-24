@@ -22,7 +22,7 @@ const Zeitplan = (() => {
      * o.anchors {Schlange: {i, at}} erwarteter Start eines offenen Schritts (Startschätzung des Autobuilders)
      * o.lags   {Schlange: h} Abweichung je Schlange; o.lag Rückfall für alle (h)
      * o.slide  false: nicht auf „jetzt“ rücken (Startpunkte fürs Lebenszeichen, ändern sich nicht mit der Uhr)
-     * Ergebnis {t: [{q, a, e, due, run} | null (fertig)], first: {Schlange: {i, at}} erster offener Schritt je Schlange}
+     * Ergebnis {t: [{q, a, s (nur laufend: Start = Ende − Dauer, höchstens jetzt), e, due, run} | null (fertig)], first: {Schlange: {i, at}} erster offener Schritt je Schlange}
      */
     function forecast(plan, o = {}) {
         const t0 = Date.parse(plan.startTime), now = o.now ?? Date.now(), slide = o.slide !== false;
@@ -38,7 +38,7 @@ const Zeitplan = (() => {
                 let e = isFinite(ends[i]) ? ends[i] : ps + x.sh + dur;
                 if (slide && e < now) e = now;
                 x.sh = e - ps - dur; x.last = Math.max(x.last, e);   // die Schlange ist bis zum Ende belegt, auch gegen eine frühere Startschätzung
-                t[i] = { q, a: null, e, due: null, run: true };
+                t[i] = { q, a: null, s: Math.min(e - dur, now - 1), e, due: null, run: true };   // s: Start, hat schon begonnen (vor Überfälligem)
                 return;
             }
             const A = anc[q];
@@ -70,6 +70,12 @@ const Zeitplan = (() => {
         plan.steps.forEach((s, i) => { const x = F.t[i]; if (x && !x.run && x.q === q && s[3] >= tau && (best == null || s[3] < plan.steps[best][3])) best = i; });
         return best != null ? F.t[best].a - (plan.steps[best][3] - tau) * H : Date.parse(plan.startTime) + (tau + lagH) * H;
     }
-    return { queueOf, forecast, lagsFrom, atTau };
+    // Sortierschlüssel (Nutzer 24.10.: Listen nach Zeit, bei Gleichstand nach #Nr): offen = erwarteter Start, laufend = Start
+    // (Ende − Dauer), fertig = fb (z. B. Startzeit der Ausführung, sonst Planzeit). F = Ergebnis von forecast.
+    function sortKey(plan, F, i, fb) {
+        const x = F.t[i];
+        return !x ? (isFinite(fb) ? fb : Date.parse(plan.startTime) + plan.steps[i][3] * H) : x.run ? x.s : x.a;
+    }
+    return { queueOf, forecast, lagsFrom, atTau, sortKey };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Zeitplan;

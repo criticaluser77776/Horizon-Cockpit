@@ -627,7 +627,7 @@ function stepsTable(plan, st, execs, W, tab, LT) {
   const near = n => tab && tab !== 'alle' ? own.indexOf(n) >= 0 && own.indexOf(n) < STEP_NEAR : n >= from && n < from + STEP_NEAR;
   const show = n => near(n) || (until && Math.abs(n - until) <= 3);
   const steps = [];
-  plan.steps.forEach((s, i) => { if (s[0] !== 's' && show(i + 1) && planInTab(plan, tab, s, i + 1)) steps.push({ tau: s[3], n: i + 1, s }); });
+  plan.steps.forEach((s, i) => { if (s[0] !== 's' && show(i + 1) && planInTab(plan, tab, s, i + 1)) steps.push({ tau: s[3], n: i + 1, s, k: Zeitplan.sortKey(plan, LT, i, Date.parse(done.get(i + 1)?.t)) }); });
   if (!steps.length) return `<p class="muted small">Kein offener Schritt${until ? ` bis #${esc(until)}` : ''}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
   // zusammenhängende Gruppen (Lücke = „…“); Faktorwechsel nur innerhalb einer Gruppe
   const groups = [];
@@ -640,9 +640,11 @@ function stepsTable(plan, st, execs, W, tab, LT) {
       <td class="num"${tip(r.tau)}>${planLiveCell(LT.t[r.n - 1], e)}</td></tr>`;
   };
   const fcRow = fc => `<tr class="muted"><td></td><td>⚙ Faktor ${fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(fc.tau)}>${fcAt(fc.tau)}</td></tr>`;
+  // je Abschnitt nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026); Faktorwechsel mit ihrer Live-Zeit dazwischen
   return `<table class="small">${groups.map(g => {
-    const lo = g[0].tau, hi = g[g.length - 1].tau;
-    const list = [...g, ...fcs.filter(fc => fc.tau >= lo && fc.tau <= hi).map(fc => ({ tau: fc.tau, fc }))].sort((a, b) => a.tau - b.tau || (a.fc ? -1 : 1));
+    const ks = g.map(r => r.k), lo = Math.min(...ks), hi = Math.max(...ks);
+    const list = [...g, ...fcs.map(fc => ({ tau: fc.tau, fc, k: Zeitplan.atTau(plan, LT, fc.tau, 'b', LT.lagB) })).filter(r => r.k >= lo && r.k <= hi)]
+      .sort((a, b) => a.k - b.k || (a.fc ? -1 : b.fc ? 1 : a.n - b.n));
     return list.map(r => r.fc ? fcRow(r.fc) : row(r)).join('');
   }).join('<tr class="muted"><td></td><td>…</td><td></td></tr>')}</table>`;
 }

@@ -39,17 +39,18 @@ function stepsTable(plan, st, execs, all, W, tab, LT) {
   const done = new Map(execs.filter(e => e.step).map(e => [e.step, e]));
   const isDone = planStepDone(plan, st, execs);
   const nameOf = k => W?.B?.[k]?.n || k;
+  // Reihenfolge nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026); erledigte nach ihrem Start; tau bleibt Planzeit (Tooltip)
   const rows = [];
-  plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) rows.push({ tau: s[3], n: i + 1, s }); });
+  plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) rows.push({ tau: s[3], n: i + 1, s, k: Zeitplan.sortKey(plan, LT, i, Date.parse(done.get(i + 1)?.t)) }); });
   // Faktorwechsel betreffen die Heimat: nur in den Reitern Alle und Heimat
-  if (!tab || tab === 'alle' || tab === 'heim') for (const fc of factorChanges(plan)) rows.push({ tau: fc.tau, fc });
-  rows.sort((a, b) => a.tau - b.tau || (a.fc ? -1 : 1));
+  if (!tab || tab === 'alle' || tab === 'heim') for (const fc of factorChanges(plan)) rows.push({ tau: fc.tau, fc, k: Zeitplan.atTau(plan, LT, fc.tau, 'b', LT.lagB) });
+  rows.sort((a, b) => a.k - b.k || (a.fc ? -1 : b.fc ? 1 : a.n - b.n));
   const from = first ?? 1;
   const vis = all ? rows : rows.filter(r => r.fc ? true : r.n >= from && r.n <= until);
   // Faktorwechsel im Ausschnitt nur zwischen dem ersten und letzten gezeigten Schritt
   const steps = vis.filter(r => !r.fc);
-  const lo = steps.length ? steps[0].tau : Infinity, hi = steps.length ? steps[steps.length - 1].tau : -Infinity;
-  const list = all ? vis : vis.filter(r => !r.fc || (r.tau >= lo && r.tau <= hi));
+  const lo = steps.length ? steps[0].k : Infinity, hi = steps.length ? steps[steps.length - 1].k : -Infinity;
+  const list = all ? vis : vis.filter(r => !r.fc || (r.k >= lo && r.k <= hi));
   if (!steps.length && !all) return `<p class="muted small">Kein offener Schritt bis #${esc(until)}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
   return `<table class="small">${list.map(r => {
     if (r.fc) return `<tr class="muted"><td></td><td>⚙ Faktor ${r.fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(r.tau)}>${fcAt(r.tau)}</td></tr>`;
