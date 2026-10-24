@@ -12,11 +12,11 @@
   const DEFAULTS = {
     v: 1, ziel: 'kolo4', kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
     kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:2'], flottebis: 'nach', werft: 1,
-    pflicht: ['b:spaceobservatory:2'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
-    bunker: 3, rabatt: 0.1, makroziele: 1, makro: 1,
+    pflicht: [], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
+    rabatt: 0.1, makroziele: 1, makro: 1,
     movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 1, patience: 20, kicks: 2 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
-    lager: 'getrennt', kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '2026-11-05T22:00:00Z', mass: 'foerderung',
+    kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '2026-11-05T22:00:00Z', mass: 'foerderung',
     gewicht: [1, 2, 4], kololive: true, flugfaktor: 0.043,
     takt: 2, taktlast: 47200, taktmod: ['tempo:-0.5'],   // Transport 2 Flüge/Tag wie Plan 21 (A2, 22.10.)
   };
@@ -35,9 +35,9 @@
     taktmod: /^(laderaum|tempo):-?(0(\.\d{1,3})?|1(\.0{1,3})?)$/,
   };
   const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?(\.\d+)?(Z|[+-]\d\d:\d\d)?$/;
-  const CHOICE = { ziel: ['scol', 'kolo3', 'kolo4', 'kolo5'], flottebis: ['nach', 'kolo3'], lager: ['getrennt', 'kolopool', 'pool'],
+  const CHOICE = { ziel: ['scol', 'kolo3', 'kolo4', 'kolo5'], flottebis: ['nach', 'kolo3'],
     versorgung: ['voll', 'aus'], mass: ['landung', 'foerderung'] };
-  const INTS = { platzbahn: [1, 15], werft: [1, 10], bunker: [0, 10], makroziele: [0, 5], makro: [0, 300] };
+  const INTS = { platzbahn: [1, 15], werft: [1, 10], makroziele: [0, 5], makro: [0, 300] };
   const AUF_MAX = { iter: 2000, rounds: 10, patience: 500, kicks: 500 };
   const LISTS = ['kolo', 'kolopflicht', 'flotte', 'pflicht', 'verbot', 'aus', 'techcap', 'seeds', 'forschort'];
 
@@ -50,7 +50,7 @@
   function fromForm(f) {
     const p = { v: 1 };
     for (const k of ['ziel', 'flottebis']) p[k] = f[k];
-    for (const k of ['lager', 'versorgung', 'mass']) p[k] = f[k] ? f[k] : null;
+    for (const k of ['versorgung', 'mass']) p[k] = f[k] ? f[k] : null;
     for (const k of LISTS) p[k] = splitList(f[k]);
     for (const k of Object.keys(INTS)) p[k] = numOrNull(f[k]);
     p.rabatt = numOrNull(f.rabatt);
@@ -79,7 +79,7 @@
   function toForm(p) {
     const f = {};
     for (const k of ['ziel', 'flottebis']) f[k] = p[k];
-    for (const k of ['lager', 'versorgung', 'mass']) f[k] = p[k] || '';
+    for (const k of ['versorgung', 'mass']) f[k] = p[k] || '';
     for (const k of LISTS) f[k] = (p[k] || []).join(', ');
     for (const k of [...Object.keys(INTS), 'rabatt']) f[k] = p[k] == null ? '' : String(p[k]);
     f.kolominen = p.kolominen || '';
@@ -119,7 +119,7 @@
       if (p.movi.zeit !== 'auto' && !(typeof p.movi.zeit === 'string' || (Number.isFinite(p.movi.zeit) && p.movi.zeit >= 0 && p.movi.zeit <= 2000))) e.push('Motivationsvideo: Planstunde oder ISO-Zeit');
       if (!(p.movi.faktor >= 1 && p.movi.faktor <= 100)) e.push('Motivationsvideo Faktor: 1…100');
     }
-    if (p.kolominen != null && !/^\d{1,2}(:[1-4])?$/.test(p.kolominen)) e.push('kolominen: Form 16 oder 16:1');
+    if (p.kolominen != null && !/^\d{1,2}$/.test(p.kolominen)) e.push('kolominen: Zahl 1–99');
     if (Array.isArray(p.kolohilfe)) for (const x of p.kolohilfe) if (!PAT.kolohilfe.test(x)) e.push(`kolohilfe: „${x}“ (Form gebäude:stufe oder „ja“)`);
     if (p.bis != null && !(typeof p.bis === 'string' || (Number.isFinite(p.bis) && p.bis >= 0 && p.bis <= 2000))) e.push('bis: Planstunde oder ISO-Zeit');
     if (p.gewicht != null && !(p.gewicht.length === 3 && p.gewicht.every(x => Number.isFinite(x) && x >= 0 && x <= 100))) e.push('Gewicht: drei Zahlen E, M, T (0…100)');

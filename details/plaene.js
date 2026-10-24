@@ -456,7 +456,6 @@ const SL_FIELDS = [
     ['verbot', 'Verbot art:id', 'txt', 'kommt in keinem Plan vor'],
     ['aus', 'Aus (bauen, aber 0 %)', 'txt', 'z. B. b:fissionreactor'],
     ['techcap', 'Obergrenze heben art:id:stufe', 'txt', 'z. B. r:refinerytech:11 (samt Voraussetzungen) · leer = Standard-Obergrenzen'],
-    ['bunker', 'Bunker-Stufe', 'num', ''],
     ['rabatt', 'Rabatt (0…0,5)', 'num', ''],
     ['makroziele', 'Makro-Ziele', 'num', ''],
     ['makro', 'Makro-Iterationen', 'num', ''],
@@ -477,8 +476,7 @@ const SL_FIELDS = [
     ['seeds', 'Startpläne (Dateien in analyse/sim/)', 'txt', 'z. B. result.json, kolo3-stpl-live1821.json'],
   ]],
   ['Erweitert', [
-    ['lager', 'Lager', 'sel', [['', 'Standard (getrennt)'], ['getrennt', 'getrennt'], ['kolopool', 'Kolonien gemeinsam'], ['pool', 'alles gemeinsam']]],
-    ['kolominen', 'Minen je Kolonie höchstens', 'txt', 'z. B. 16 oder 16:1 (nur Kolonie 1)'],
+    ['kolominen', 'Minen je Kolonie höchstens', 'txt', 'z. B. 16'],
     ['kolohilfe', 'Hilfsgebäude Kolonien', 'txt', 'leer = aus · ja = Bauhof bis 5 · constructionfacility:6, infrastructure:2'],
     ['forschort', 'Forschungsort Typ:Faktor', 'txt', 'z. B. JUPL:0.69, heimat:1 (günstigster Planet; Heimat-Labor nur als Voraussetzung) · leer = Heimat'],
     ['versorgung', 'Versorgung', 'sel', [['', 'Standard (voll)'], ['voll', 'voll (100 %)'], ['aus', 'aus (nur Vergleich)']]],
