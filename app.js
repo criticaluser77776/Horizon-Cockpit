@@ -1053,8 +1053,8 @@ async function fillPushCard() {
 }
 
 /* ---------- Claude-Kanal (B6, 14.10.) ----------
-   Aufträge (requests) an Claude: Owner stellt sie hier (Ziel immer „any“), die Claude-Wache auf Work (tools/claude_wache.py,
-   seit 22.10.) oder eine Claude-Sitzung mit Wächter (tools/watch.py) übernimmt (request_claim) und antwortet (request_answer,
+   Aufträge (requests) an Claude: Owner stellt sie hier (Ziel immer „any“), eine Claude-Sitzung mit Wächter (tools/watch.py; Claude-Wache
+   auf Work am 24.10. abgeschaltet) übernimmt (request_claim) und antwortet (request_answer,
    ggf. mit Planentwurf). Antworten kommen auch als Push. */
 const RQ_ST = { neu: 'neu', in_arbeit: 'in Arbeit', beantwortet: 'beantwortet', abgelehnt: 'abgelehnt', zurueckgezogen: 'zurückgezogen' };
 const RQ_KIND = { optimierer: 'Neuer Plan', plan_rechnen: 'Plan-Lauf Work' };
@@ -1066,7 +1066,7 @@ async function viewClaude() {
   $('#view').innerHTML = `${own ? `<div class="card"><h2>Auftrag an Claude</h2>
       <form id="rqForm"><textarea name="text" rows="4" maxlength="8000" placeholder="Frage oder Auftrag, z. B. „Rechne den Plan neu ab dem neuesten Snapshot“" style="width:100%"></textarea>
       <div class="row" style="margin-top:6px"><button class="primary">Senden</button></div></form>
-      <p class="muted small">Die Claude-Wache auf Work holt den Auftrag innerhalb etwa einer Minute ab (höchstens 5 am Tag) und antwortet hier (mit Push). Pläne gibt Claude nie frei und schickt keine Kommandos an Skripte – das bleibt bei dir.</p></div>` : ''}
+      <p class="muted small">Eine offene Claude-Sitzung mit Wächter holt den Auftrag ab und antwortet hier (mit Push). Läuft gerade keine, bleibt er „neu“, bis eine startet. Pläne gibt Claude nie frei und schickt keine Kommandos an Skripte – das bleibt bei dir.</p></div>` : ''}
     <div class="card"><h2>Aufträge</h2>${rq.length ? rq.map(r => `<div class="list-item"><div class="row between">
       <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(RQ_KIND[r.kind] || r.kind)}</span> ` : ''}${r.target !== 'any' ? `<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span>` : ''}</span>
       <span class="muted small nowrap">${esc(when(r.created_at))}</span></div>
