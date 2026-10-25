@@ -194,12 +194,14 @@ async function ensureSnap(head) {
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, ap, effs, gds, movis] = await Promise.all([   // 7. Element loadDrift füllt S.drift (für overviewCard), kein Name nötig
+  const [heads, sess, ap, effs, effEnds, gds, movis] = await Promise.all([   // letztes Element loadDrift füllt S.drift (für overviewCard), kein Name nötig
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     loadActivePlan(),   // aktiver Bauplan für die Steuerung („bis #“, Start)
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
+    Cloud.q('events', { account_id: acc, kind: 'eq.bericht', t: `gt.${new Date(Date.now() - 15 * 86400e3).toISOString()}`, or: EFF_END_OR,
+      select: 'id,t,text', order: 't.desc', limit: 30 }).catch(() => []),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,queues,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
     loadDecisions('id,t,text,data:data->decision,answer:data->answer').then(l => l.filter(e => /Motivationsvideo/i.test(e.text || ''))
       .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision)).catch(() => []),
@@ -218,7 +220,7 @@ async function viewLage() {
   const active = ap ? { ...ap.row, payload: ap.payload } : null, nf = { active: ap?.row || null, known: {} };
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
   const karten = await planetenKarten(d, ap, gds[0], sess, W).catch(() => '');   // Fehler hier dürfen die Lage nie blockieren
-  $('#view').innerHTML = bannerCard(sess) + overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + karten + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
+  $('#view').innerHTML = bannerCard(sess) + overviewCard(sess, d, live, abLive, nm, W, effectsLine(effs, effEnds), gds[0]) + karten + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
     + '<p class="small muted pad">Planeten, Gebäude, Forschung: <a href="details/#/imperium" target="_blank" rel="noopener">Imperium im Atlas →</a></p>';
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
   bindAsk($('#view'), c => S.askLage?.[c]);
@@ -226,20 +228,9 @@ async function viewLage() {
 }
 
 /* ---------- Planetenkarten der Lage (PR 5, 25.10.2026) ----------
-   Je eigenem Planeten eine Karte (planetKarte in common.js): Bau, Forschung (auf dem Forschungsplaneten), Werft, auffällige
-   Planetenwerte. Quelle: Zeitfeed über planFeed (aktiver Plan + Ausführungen + getData + Lebenszeichen); ohne Plan nur die
-   laufenden Aufträge aus getData (gd.jobs). Planetenwerte (planet_values) 60 s über S.pwLage gemerkt. */
-async function loadLageWerte(pl) {
-  const c = pl.map(p => p.coords).filter(k => /^\d+:\d+:\d+$/.test(k || ''));
-  if (!c.length) return {};
-  if (S.pwLage?.acc === S.acc && S.pwLage.key === c.join() && Date.now() - S.pwLage.at < 60e3) return S.pwLage.map;
-  const or = `(${c.map(k => { const [g, s, o] = k.split(':'); return `and(galaxy.eq.${g},system.eq.${s},orbit.eq.${o})`; }).join(',')})`;
-  const rows = await Cloud.q('planet_values', { account_id: `eq.${S.acc}`, or, select: 'galaxy,system,orbit,key,pct,status' }).catch(() => []);
-  const map = {};
-  for (const r of rows) ((map[`${r.galaxy}:${r.system}:${r.orbit}`] ||= {})[r.key] = { pct: r.pct, status: r.status });
-  S.pwLage = { acc: S.acc, key: c.join(), at: Date.now(), map };
-  return map;
-}
+   Je eigenem Planeten eine Karte (planetKarte in common.js): Bau, Forschung (auf dem Forschungsplaneten), Werft.
+   Quelle: Zeitfeed über planFeed (aktiver Plan + Ausführungen + getData + Lebenszeichen); ohne Plan nur die
+   laufenden Aufträge aus getData (gd.jobs). Planetenwerte nur im Atlas (Nutzer 25.10.2026). */
 // Ohne Plan: laufende Aufträge aus getData als Feed-Zeilen (nur run, Name aus den Spieldaten)
 function liveJobRows(gd, home, W, now = Date.now()) {
   const jobs = (Array.isArray(gd?.jobs) ? gd.jobs : []).filter(j => j && ['b', 'r', 's'].includes(j.k) && Date.parse(j.end) > now);
@@ -253,10 +244,7 @@ async function planetenKarten(d, ap, gd, sess, W) {
   const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
   if (!pl.length) return '';
   const plan = ap?.payload && Array.isArray(ap.payload.steps) ? ap.payload : null;
-  const [execs, werte] = await Promise.all([
-    plan ? loadPlanExecs(`eq.${S.acc}`, ap.row.id, plan).catch(() => []) : [],
-    loadLageWerte(pl),
-  ]);
+  const execs = plan ? await loadPlanExecs(`eq.${S.acc}`, ap.row.id, plan).catch(() => []) : [];
   const home = planHomeCoords(plan, gd, pl[0].coords);
   let feed = plan ? planFeed(plan, execs, sess, gd) : [];
   if (!feed.length) feed = liveJobRows(gd, home, W);
@@ -264,33 +252,59 @@ async function planetenKarten(d, ap, gd, sess, W) {
   S.askLage = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], ap?.row?.id || null, plan?.steps)]));   // für „Claude fragen“ (bindAsk)
   return pl.map(p => {
     const rows = by[p.coords];
-    return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), werte: werte[p.coords] || null, steps: plan?.steps, current: p.coords === cur, plan: null });
+    return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), steps: plan?.steps, current: p.coords === cur, plan: null });
   }).join('');
 }
 
-/* ---------- getData-Wächter (B18, 16.10.2026; Migrationen 20261016000001/2) ----------
-   Supabase fragt alle 10 min die offizielle getData-Schnittstelle ab (stco ALL + strs), auch ohne eingeloggten PC.
-   Im Cockpit seit C1 (17.10.2026) nur eine Zeile im Überblick: Stand, Weckzeit, Fehler, Gastzugang knapp; die volle Karte
-   (Weckzeit je Schlange, Rohstoffe, Aufträge, Forschungsstufen) steht im Horizon Atlas unter Imperium. */
-function gdLine(g) {
-  if (!g) return isOwner() ? '<p class="small muted">getData: nicht eingerichtet – Mehr → getData-Zugang.</p>' : '';
-  const bad = g.error && (!g.ok_at || new Date(g.error_at) > new Date(g.ok_at));
-  const left = g.expires_at ? (new Date(g.expires_at) - Date.now()) / 86400e3 : null;
-  const w = g.wake, s0 = w?.steps?.find(s => s.at && Date.parse(s.at) === Date.parse(w.at)) || null;
-  const wake = !w?.steps?.length ? 'kein offener Planschritt' : w.at ? (new Date(w.at) <= Date.now() ? '<b>jetzt startbar</b>' : `Weckzeit <b>${esc(when(w.at))}</b>`) : 'Weckzeit –';
-  return `<p class="small" title="${esc(`aus getData ${dt(g.at)}`)}">getData ${g.at ? esc(ago(g.at)) : '–'} · ${wake}${s0 ? ` <span class="muted">#${esc(s0.n)} ${esc(s0.text)}</span>` : ''}
-    ${bad ? `<br><span class="err">${esc(tidy(g.error))} (${esc(ago(g.error_at))})</span>` : ''}${left != null && left < 3 ? `<br><span class="err">Gastzugang bis ${esc(dt(g.expires_at))} – im Spiel verlängern, dann Mehr → getData-Zugang</span>` : ''}</p>`;
-}
-// Aktive Effekte aus Berichten in einer Zeile (volle Liste im Atlas)
-function effectsLine(effs) {
-  const seen = new Set(), list = (effs || []).filter(r => r.eff?.until && !seen.has(r.eff.name) && seen.add(r.eff.name))
+// getData-Zeile im Überblick entfällt seit den Nacharbeiten (25.10.2026, Nutzer); Stand, Weckzeit und Gastzugang im Atlas unter Imperium,
+// der Zugang unter Mehr → getData-Zugang.
+
+/* Aktive Effekte aus Berichten in einer Zeile (volle Liste im Atlas). Das Ende kommt oft als eigener Bericht („Motivationsvideo
+   verliert Wirkung“, „Pilze verlieren Wirkung“, „Reiche Metallvorkommen erschöpft“), während der Autobuilder (13-nachrichten.js) für
+   manche Effekte nur eine typische Dauer kennt (Motivationsvideo 336 h = Verfügbarkeit, nicht Wirkung). Deshalb: Ein Effekt gilt als
+   beendet, sobald nach ihm ein End-Bericht mit demselben ersten Wort kommt; End-Berichte selbst sind nie ein Effekt. */
+const EFF_END_RE = /Wirkung|erschöpft|abgelaufen/i;
+const EFF_END_OR = '(text.ilike.*Wirkung*,text.ilike.*erschöpft*,text.ilike.*abgelaufen*)';
+const effKey = s => String(s || '').replace(/^Bericht:\s*/i, '').trim().split(/\s+/)[0].toLowerCase();
+function effectsLine(effs, ends = []) {
+  const endAt = {};
+  for (const e of ends || []) if (EFF_END_RE.test(e.text || '')) { const k = effKey(e.text), t = Date.parse(e.t); if (!(endAt[k] >= t)) endAt[k] = t; }
+  const live = r => !EFF_END_RE.test(r.eff.name || '') && !(endAt[effKey(r.eff.name)] > Date.parse(r.t));
+  const seen = new Set(), list = (effs || []).filter(r => r.eff?.until && live(r) && !seen.has(r.eff.name) && seen.add(r.eff.name))
     .sort((a, b) => Date.parse(a.eff.until) - Date.parse(b.eff.until));
   return list.length ? `<p class="small">Effekte: ${list.map(r => `${esc(String(r.eff.name || '').split(/\s*·\s*/)[0])} <span class="muted">bis ${esc(clockT(r.eff.until))}${r.eff.src === 'typisch' ? ' (geschätzt)' : ''}</span>`).join(' · ')}</p>` : '';
 }
 /* ---------- Überblick (B10): Lauf, Rohstoffe, laufende Aufträge in wenigen Zeilen ----------
    Ab 16.10. (Nutzer) Gesamtwerte des Imperiums: Rohstoffe aller Planeten (emp_prod: Lager + Netto-Förderung, auf jetzt
    hochgerechnet), Koloniepunkte benutzt/gesamt (cmd=orden, Collector ab 0.4.7). „Ausbau x / y“ steht nur noch im Atlas (Imperium). */
-function overviewCard(sess, d, live, abLive, nm, W, extra = '') {
+/* Belegung je Planet (Nutzer 25.10.2026): Bau und Forschung = laufende Aufträge, Werft = belegte Plätze der Warteschlange inkl. des
+   laufenden Auftrags, Def = dasselbe für Verteidigung. Quelle: Bau/Forschung aus getData (gd.jobs, alle 10 min), wenn jünger als der
+   Live-Stand, sonst „Ausbau Bau / Forschung / Werft“ der Startseite (empire.planets[].Ausbau). Werft der Heimat aus snapshot.shipyard
+   (Collector ab 0.4.33: laufend + wartende Aufträge, nach Ablauf von total leer), sonst aus Ausbau. Eine Verteidigungs-Schlange
+   liest noch keine Quelle (Paket F) → „–“. */
+function ausbauTable(d, gd, liveAt, now = Date.now()) {
+  const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
+  if (!pl.length) return '';
+  const snapAt = Date.parse(liveAt), gdAt = gd?.at ? Date.parse(gd.at) : NaN, home = d?.start?.coords;
+  const useGd = isFinite(gdAt) && (!isFinite(snapAt) || gdAt > snapAt) && Array.isArray(gd.jobs);
+  const gdHome = typeof gd?.colony?.coords === 'string' ? gd.colony.coords : home;
+  const jobs = useGd ? gd.jobs.filter(j => j && Date.parse(j.end) > now) : [];
+  const cnt = (k, c) => jobs.filter(j => j.k === k && (j.coords || gdHome) === c).length;
+  const sy = d?.shipyard && !d.shipyard.error ? d.shipyard : null;
+  const werft = p => {
+    if (sy && p.coords === home) return isFinite(snapAt) && sy.total != null && snapAt + sy.total * 1000 <= now ? 0 : (sy.remaining > 0 ? 1 : 0) + (sy.queue || []).length;
+    return Array.isArray(p.Ausbau) ? p.Ausbau[2] ?? null : null;
+  };
+  const cell = v => v == null ? '<td class="num muted">–</td>' : `<td class="num${v ? '' : ' muted'}">${v ? `<b>${esc(v)}</b>` : '0'}</td>`;
+  const src = useGd ? `Bau/Forschung aus getData ${ago(gdAt)}` : `Bau/Forschung aus Live-Stand ${ago(snapAt)}`;
+  return `<table class="small ausbau" title="${esc(`${src}; Werft aus Live-Stand; Def noch ohne Quelle`)}"><tr class="muted"><td>Planet</td><td class="num">Bau</td><td class="num">Forschung</td><td class="num">Werft</td><td class="num">Def</td></tr>
+    ${pl.map(p => {
+      const a = Array.isArray(p.Ausbau) ? p.Ausbau : [];
+      const b = useGd ? cnt('b', p.coords) : a[0] ?? null, r = useGd ? cnt('r', p.coords) : a[1] ?? null;
+      return `<tr><td>${esc(p.name || p.coords)}</td>${cell(b)}${cell(r)}${cell(werft(p))}${cell(null)}</tr>`;
+    }).join('')}</table>`;
+}
+function overviewCard(sess, d, live, abLive, nm, W, extra = '', gd = null) {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   const runTxt = !r ? 'kein Lauf'
     : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis ${esc(untilTxt(r.until, r.until_by))} · ${esc(r.name || '?')}`
@@ -314,6 +328,7 @@ function overviewCard(sess, d, live, abLive, nm, W, extra = '') {
     html += `<div class="row small" style="margin:4px 0">${col?.max != null
       ? `<span class="${col.free < 0 ? 'err' : ''}" title="frei ${esc(fmt(col.free, 3))}">Kolopunkte <b>${fmt(col.used, 2)}</b> / ${fmt(col.max, 2)}${col.free < 0 ? ' überzogen' : ''}</span>`
       : '<span class="muted">Kolopunkte: ab Collector 0.4.7</span>'}</div>`;
+    html += ausbauTable(d, gd, live.collected_at);
     const fromAb = abLive && abLive.liveAt > at.getTime();
     const jobs = fromAb
       ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', name: nm({ type: j.t }, j.k === 'b' ? 'B' : 'R'), level: j.l, end: new Date(j.end) }))
@@ -756,10 +771,9 @@ async function viewPlans(rest = []) {
   const plan = active?.payload && Array.isArray(active.payload.steps) ? active.payload : null;
   const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
   // Abweichung: ein Ladeweg (loadDrift → S.drift); gilt nur, wenn der Server denselben Plan meint wie die Ansicht
-  const [execs, drift0, werte] = await Promise.all([
+  const [execs, drift0] = await Promise.all([
     plan ? loadPlanExecs(acc, active.id, plan) : [],
     loadDrift(true),
-    plan && pl.length ? loadLageWerte(pl) : {},
   ]);
   const drift = drift0?.plan === active?.id ? drift0 : null;
   // B14: nur bessere Entwürfe zeigen (Karte und Liste); Gewinn gegen das erwartete Ende des aktiven Plans
@@ -779,7 +793,7 @@ async function viewPlans(rest = []) {
     const gd = gds[0] || null, home = planHomeCoords(plan, gd, pl[0]?.coords), cur = d?.start?.coords;
     const by = feedByPlanet(plan, planFeed(plan, execs, sess, gd), home, pl);
     askCtx = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], active.id, plan.steps)]));
-    planCards = pl.map(p => planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'), werte: werte[p.coords] || null,
+    planCards = pl.map(p => planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'),
       steps: plan.steps, current: p.coords === cur, plan: { plan, st: hst, execs, W, LT, home } })).join('');
   }
   // B15: je Art nur der neueste Entwurf (der angebotene steht schon oben im Angebot); ältere Pläne und Löschen im Atlas
@@ -878,14 +892,14 @@ const RQ_ST = { neu: 'neu', in_arbeit: 'in Arbeit', beantwortet: 'beantwortet', 
 const RQ_KIND = { optimierer: 'Neuer Plan', plan_rechnen: 'Plan-Lauf Work', ereignis: 'Ereignis', schritt: 'Planschritt' };
 const RQ_TGT = { sim: 'Simulations-PC', remote: 'Remote-PC' };  // nur noch für alte Aufträge; neue gehen an „any“
 async function viewClaude() {
-  const rq = await Cloud.q('requests', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 40,
+  const rq = await Cloud.q('requests', { account_id: `eq.${S.acc}`, hidden_at: 'is.null', order: 'created_at.desc', limit: 40,
     select: 'id,kind,target,text,context,status,answer,plan_ids,created_at,answered_at' });
   const own = isOwner();
   $('#view').innerHTML = `${own ? `<div class="card"><h2>Auftrag an Claude</h2>
       <form id="rqForm"><textarea name="text" rows="4" maxlength="8000" placeholder="Frage oder Auftrag, z. B. „Rechne den Plan neu ab dem neuesten Snapshot“" style="width:100%"></textarea>
       <div class="row" style="margin-top:6px"><button class="primary">Senden</button></div></form>
       <p class="muted small">Eine offene Claude-Sitzung mit Wächter holt den Auftrag ab und antwortet hier (mit Push). Läuft gerade keine, bleibt er „neu“, bis eine startet. Pläne gibt Claude nie frei und schickt keine Kommandos an Skripte – das bleibt bei dir.</p></div>` : ''}
-    <div class="card"><h2>Aufträge</h2>${rq.length ? rq.map(r => `<div class="list-item"><div class="row between">
+    <div class="card"><h2>Aufträge</h2>${own && rq.length ? '<p class="muted small">Zum Entfernen nach rechts wischen.</p>' : ''}${rq.length ? rq.map(r => `<div class="list-item${own ? ' swipe' : ''}" data-rq="${esc(r.id)}" data-open="${['neu', 'in_arbeit'].includes(r.status) ? 1 : ''}"><div class="row between">
       <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(RQ_KIND[r.kind] || r.kind)}</span> ` : ''}${r.target !== 'any' ? `<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span>` : ''}</span>
       <span class="muted small nowrap">${esc(when(r.created_at))}</span></div>
       <div class="wrapall" style="white-space:pre-wrap">${esc(tidy(r.text))}</div>
@@ -907,6 +921,39 @@ async function viewClaude() {
     if (!confirm('Auftrag zurückziehen?')) return;
     try { await Cloud.rpc('request_withdraw', { p_id: b.dataset.wd }); toast('Zurückgezogen'); route(true); } catch (e) { toast(e.message); }
   }));
+  if (own) $('#view').querySelectorAll('.list-item.swipe').forEach(el => bindSwipeRight(el, async () => {
+    if (el.dataset.open && !confirm('Auftrag ist noch offen. Zurückziehen und entfernen?')) return false;
+    try { await Cloud.rpc('request_hide', { p_id: el.dataset.rq }); el.remove(); toast('Entfernt'); return true; }
+    catch (e) { toast(e.message); return false; }
+  }));
+}
+/* Wischen nach rechts (Nutzer 25.10.2026, Reiter Claude): Zeile folgt dem Finger bzw. der Maus; ab 35 % der Breite löst onDone aus
+   (liefert true = entfernt, sonst springt die Zeile zurück). Senkrechtes Scrollen bleibt frei (touch-action: pan-y in style.css). */
+function bindSwipeRight(el, onDone) {
+  let x0 = null, y0 = 0, dx = 0, lock = null;
+  const reset = () => { el.style.transition = 'transform .2s, opacity .2s'; el.style.transform = ''; el.style.opacity = ''; x0 = null; lock = null; };
+  el.addEventListener('pointerdown', e => {
+    if (e.target.closest('button, a, summary, textarea, input')) return;
+    x0 = e.clientX; y0 = e.clientY; dx = 0; lock = null; el.style.transition = 'none';
+  });
+  el.addEventListener('pointermove', e => {
+    if (x0 == null) return;
+    const mx = e.clientX - x0, my = e.clientY - y0;
+    if (!lock && Math.abs(mx) + Math.abs(my) > 8) { lock = Math.abs(mx) > Math.abs(my) && mx > 0 ? 'x' : 'y'; if (lock === 'x') el.setPointerCapture?.(e.pointerId); }
+    if (lock !== 'x') return;
+    dx = Math.max(0, mx);
+    el.style.transform = `translateX(${dx}px)`; el.style.opacity = String(Math.max(0.3, 1 - dx / el.offsetWidth));
+  });
+  const end = async () => {
+    if (x0 == null) return;
+    const hit = lock === 'x' && dx > el.offsetWidth * 0.35;
+    x0 = null;
+    if (!hit) return reset();
+    el.style.transition = 'transform .2s, opacity .2s'; el.style.transform = 'translateX(100%)'; el.style.opacity = '0';
+    if (!(await onDone())) reset();
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', reset);
 }
 
 /* getData-Zugang (B18): Gäste-Passwort und Ablauf aus dem Spiel (Einstellungen → Account, „Gastzugang verfällt“).

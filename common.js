@@ -506,18 +506,11 @@ function planFeed(plan, execs, sess, gd, now = Date.now()) {
 /* Planetenkarte der Lage (Cockpit-Umbau PR 5, 25.10.2026): ein Planet kompakt, nur Realzeit (Zeitfeed), nie rohe Planzeiten.
    Reine String-Funktion (kein DOM). p = Planet aus empirePlanets ({name, coords}); rows = Feed-Zeilen dieses Planeten
    (Zeitfeed.feed: q 'b'/'b:<coords>' Bau, 's'/'s:<coords>' Werft, 'r' Forschung; ohne Plan Zeilen nur mit run {end, name}).
-   opts: { research: Forschungsschlange gehört zu diesem Planeten, werte: { key: {pct, status} } | null, steps: plan.steps (für die
-   Schrittnamen), current: im Spiel gewählt (◉), now,
-   plan: null (Lage) | { plan, st, execs, W, LT, home } (Pläne, PR 6): zusätzlich Verteidigung (Platzhalter), nächste Planschritte (stepsTable,
-   Reiter heim bzw. Koordinaten; bei opts.research auch die Forschung global) und aufklappbar die letzten Schritte. st = Autobuilder-Stand
-   mit until/untilBy/halts/open (je Reiter wird until aus untilBy gewählt), LT = planLive, home = Heimat-Koordinaten. */
-const PLK_WERTE = { metal: 'Erz', mineral: 'Mineral', fuel: 'T-Stoff', buildCost: 'Baukosten', buildSpeed: 'Baugeschw.', researchCost: 'Forschungskosten',
-  ground: 'Bodenfläche', housingCost: 'Wohnraumkosten', colonizable: 'Besiedelbarkeit', atmosphere: 'Atmosphäre' };
-// auffällige Planetenwerte (≠ 100 % der Heimat), die stärksten Abweichungen zuerst, höchstens n
-function planetWerteAbw(werte, n = 3) {
-  return Object.entries(werte || {}).filter(([k, v]) => PLK_WERTE[k] && v && v.pct != null && isFinite(v.pct) && !['offen', 'typ-median'].includes(v.status) && Math.abs(v.pct - 100) >= 0.5)
-    .sort((a, b) => Math.abs(b[1].pct - 100) - Math.abs(a[1].pct - 100)).slice(0, n).map(([k, v]) => `${PLK_WERTE[k]} ${fmt(v.pct, 1)} %`);
-}
+   opts: { research: Forschungsschlange gehört zu diesem Planeten, steps: plan.steps (für die Schrittnamen), current: im Spiel gewählt (◉), now,
+   plan: null (Lage) | { plan, st, execs, W, LT, home } (Pläne, PR 6): zusätzlich Verteidigung (Platzhalter) und die Planschritte der
+   nächsten 24 h (stepsTable opt.horizonH, Reiter heim bzw. Koordinaten; bei opts.research auch die Forschung global). st = Autobuilder-Stand
+   mit until/untilBy/halts/open (je Reiter wird until aus untilBy gewählt), LT = planLive, home = Heimat-Koordinaten.
+   Planetenwerte stehen seit den Nacharbeiten (25.10.2026, Nutzer) nur noch im Atlas (Planeten-DB). */
 // Feed-Zeilen (Zeitfeed.feed bzw. liveJobRows) je Planet verteilt (Lage und Pläne teilen diese Zuordnung): Bau/Werft über die Koordinaten der
 // Schlange ('heim' oder leer = Heimat), Forschung über den Startplaneten des nächsten/laufenden Schritts (plan.researchPlanet), sonst Heimat.
 // plan darf null sein (Feed nur aus getData). planets = Koordinaten (oder Planeten mit coords); Ergebnis { <coords>: [Zeile] }, Zeilen
@@ -535,26 +528,18 @@ function feedByPlanet(plan, feed, home, planets) {
 // Heimat-Koordinaten eines Plans: getData (gd.colony), sonst Plan (plan.planet als Text oder Objekt), sonst Rückfall fb
 const planHomeCoords = (plan, gd, fb) => (typeof gd?.colony?.coords === 'string' && gd.colony.coords)
   || (typeof plan?.planet === 'string' && plan.planet) || (typeof plan?.planet?.coords === 'string' && plan.planet.coords) || fb || null;
-// Planet, auf dem Schritt n (ab 1) startet: Forschung auf dem Forschungsplaneten (sonst Heimat), alles andere auf der Kolonie des Schritts (sonst Heimat)
-const planStepOwner = (plan, n, home) => plan.steps[n - 1]?.[0] === 'r' ? planResPlanet(plan, n) || home : planAway(plan, n) || home;
-// Die n jüngsten Ausführungen eines Planeten: [{ n: Schrittnummer, name, t }], neueste zuerst
-function planExecsOf(plan, execs, coords, home, n = 3) {
-  return (execs || []).filter(e => e && e.step && plan.steps[e.step - 1] && planStepOwner(plan, e.step, home) === coords)
-    .sort((a, b) => Date.parse(b.t) - Date.parse(a.t)).slice(0, n).map(e => ({ n: e.step, name: plan.steps[e.step - 1][5] || '', t: e.t }));
-}
-// Pläne-Teil der Planetenkarte (PR 6): Verteidigung (folgt), nächste Planschritte, letzte Schritte dieses Planeten
+// Pläne-Teil der Planetenkarte (PR 6, Nacharbeiten 25.10.2026): Verteidigung (folgt), Planschritte der nächsten 24 h dieses Planeten,
+// darüber der zuletzt abgeschlossene Schritt und aufklappbar die 10 davor
 function planKarteSchritte(p, pp, research) {
   const { plan, st, execs, W, LT, home } = pp;
   const table = (k, label) => {
     if (!plan.steps.some((s, i) => planInTab(plan, k, s, i + 1))) return '';
     const g = tabGrp(k), hs = { ...st, until: (g && st?.untilBy?.[g]) || st?.until };
-    return (label ? `<div class="small muted">${label}</div>` : '') + stepsTable(plan, hs, execs, W, k, LT, { all: false, fcRows: false, nearLimit: 5 });
+    return (label ? `<div class="small muted">${label}</div>` : '') + stepsTable(plan, hs, execs, W, k, LT, { fcRows: false, horizonH: 24 });
   };
-  const last = planExecsOf(plan, execs, p.coords, home);
   return '<div class="small muted">Verteidigung: folgt</div>'
-    + table(p.coords === home ? 'heim' : p.coords, 'Nächste Planschritte')
-    + (research ? table('r', 'Forschung (global)') : '')
-    + (last.length ? `<details class="sub"><summary class="small muted">Letzte Schritte</summary>${last.map(x => `<div class="small muted">#${x.n} ${esc(x.name)} · ${esc(dt(x.t))}</div>`).join('')}</details>` : '');
+    + table(p.coords === home ? 'heim' : p.coords, 'Planschritte (nächste 24 h)')
+    + (research ? table('r', 'Forschung (global, nächste 24 h)') : '');
 }
 function planetKarte(p, rows, opts = {}) {
   const now = opts.now ?? Date.now(), steps = Array.isArray(opts.steps) ? opts.steps : null;
@@ -580,8 +565,6 @@ function planetKarte(p, rows, opts = {}) {
   };
   let body = line('Bau', find('b')) + (opts.research ? line('Forschung', find('r')) : '') + line('Werft', find('s'));
   if (!body) body = '<div class="small muted">Nichts in der Schlange.</div>';
-  const abw = planetWerteAbw(opts.werte);
-  if (abw.length) body += `<div class="small muted plwerte">${abw.map(esc).join(' · ')}</div>`;
   if (opts.plan?.plan) body += planKarteSchritte(p, opts.plan, !!opts.research);
   const ask = typeof window !== 'undefined' && window.HZ_ASK && (typeof isOwner !== 'function' || isOwner()) ?`<div class="plfoot"><button class="small askgo" data-ask="${esc(p.coords)}">Claude fragen</button></div>` : '';
   return `<div class="card plcard"><h2>${esc(p.name || p.coords)} <span class="muted small">${esc(p.coords)}</span>${opts.current ? ' <span title="im Spiel gewählt">◉</span>' : ''}</h2>${body}${ask}</div>`;
@@ -676,9 +659,11 @@ const planStepDone = (plan, st, execs) => {
    die nächsten opt.nearLimit Schritte ab dem ersten offenen (im Reiter eines Planeten: die nächsten offenen dieses Reiters)
    und ±3 um „bis #“, Lücken als „…“, mit ⏸ (Halt) und Marke „bis #“.
    opt.fcRows = false lässt die Faktorwechsel-Zeilen weg. opt.marks = 'farben' (Atlas, Gesamtplan): je Schlange eine Farbe (qc0…qc5 in
-   details.css), laufender Schritt ▶ und erster offener ⏵ in Schlangenfarbe, darüber eine Legende (Namen wie die Reiter, opt.home = Heimatplanet). */
+   details.css), laufender Schritt ▶ und erster offener ⏵ in Schlangenfarbe, darüber eine Legende (Namen wie die Reiter, opt.home = Heimatplanet).
+   opt.horizonH = h (Cockpit, Planeten-Karten unter Pläne, Nutzer 25.10.2026): alle laufenden und offenen Schritte des Reiters mit Live-Start
+   bis jetzt + h (mindestens der nächste), oben der zuletzt abgeschlossene, darüber aufklappbar die 10 davor; kein Fenster um „bis #“. */
 function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
-  const { all = false, fcRows = true, nearLimit = 12, marks = null, home = null } = opt;
+  const { all = false, fcRows = true, nearLimit = 12, marks = null, home = null, horizonH = null, now = Date.now() } = opt;
   const t0 = Date.parse(plan.startTime);
   const tip = tau => ` title="Plan: ${esc(dt(t0 + tau * 3600e3))}"`;
   const fcAt = tau => esc(dt(Zeitplan.atTau(plan, LT, tau, 'b', LT.lagB)));
@@ -723,6 +708,20 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     for (const fc of fcs) rows.push({ tau: fc.tau, fc, k: fcKey(fc) });
     rows.sort(cmp);
     return `${qLegend(rows.filter(r => !r.fc).map(r => r.n - 1))}<table class="small">${rows.map(r => r.fc ? fcRow(r.fc) : row(r)).join('')}</table>`;
+  }
+  if (horizonH != null) {
+    const mine = [];
+    plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) mine.push(i + 1); });
+    const isRun = n => !!LT.t[n - 1]?.run;
+    const startOf = n => { const x = LT.t[n - 1]; return !x ? Infinity : x.run ? -Infinity : x.due != null ? now : x.a ?? Infinity; };
+    const open = mine.filter(n => isRun(n) || !isDone(n)).map(n => stepRow(plan.steps[n - 1], n - 1)).sort(cmp);
+    let next = open.filter(r => startOf(r.n) <= now + horizonH * 3600e3);
+    if (!next.length && open.length) next = [open[0]];
+    const past = mine.filter(n => isDone(n) && !isRun(n)).map(n => stepRow(plan.steps[n - 1], n - 1)).sort(cmp).slice(-11);
+    const lastOne = past.pop();
+    if (!next.length && !lastOne) return '<p class="muted small">Keine Planschritte.</p>';
+    const older = past.length ? `<details class="sub"><summary class="small muted">Letzte ${past.length} einblenden</summary><table class="small">${past.map(row).join('')}</table></details>` : '';
+    return `${older}<table class="small">${lastOne ? row(lastOne) : ''}${next.map(row).join('')}</table>${!next.length ? '<p class="muted small">Kein offener Schritt.</p>' : ''}`;
   }
   // Ausschnitt (Cockpit): im Reiter eines Planeten/der Forschung die nächsten nearLimit offenen Schritte dieses Reiters statt des Nummernfensters
   const own = plan.steps.map((s, i) => i + 1).filter(n => tab && tab !== 'alle' && planInTab(plan, tab, plan.steps[n - 1], n) && !isDone(n));

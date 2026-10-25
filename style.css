@@ -219,8 +219,11 @@ details.sub summary { cursor: pointer; padding: 4px 0; }
 .plrow:first-of-type { border-top: 0; }
 .pll { overflow-wrap: anywhere; min-width: 0; }
 .plt { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
-.plwerte { margin-top: 3px; overflow-wrap: anywhere; }
 .plfoot { margin-top: 4px; text-align: right; }
+/* Belegung je Planet unter den Kolopunkten (Lage) */
+table.ausbau { margin: 2px 0 6px; }
+/* Reiter Claude: Aufträge nach rechts wegwischen */
+.list-item.swipe { touch-action: pan-y; will-change: transform; }
 
 /* Handy (B16, 15.10.2026: Galaxy S20 = 360 × 800 CSS-px): kein seitliches Scrollen, fingergroße Knöpfe, lange Texte umbrechen */
 .nowrap { white-space: nowrap; }
