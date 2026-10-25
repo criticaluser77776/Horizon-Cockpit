@@ -445,6 +445,47 @@ function planFeed(plan, execs, sess, gd, now = Date.now()) {
   const hb = dev?.ab ? { ...st, at: dev.ab.at } : null;
   return Zeitfeed.feed(plan, F, { gd: gd || null, hb, execs: ex }, now);
 }
+/* Planetenkarte der Lage (Cockpit-Umbau PR 5, 25.10.2026): ein Planet kompakt, nur Realzeit (Zeitfeed), nie rohe Planzeiten.
+   Reine String-Funktion (kein DOM). p = Planet aus empirePlanets ({name, coords}); rows = Feed-Zeilen dieses Planeten
+   (Zeitfeed.feed: q 'b'/'b:<coords>' Bau, 's'/'s:<coords>' Werft, 'r' Forschung; ohne Plan Zeilen nur mit run {end, name}).
+   opts: { research: Forschungsschlange gehört zu diesem Planeten, werte: { key: {pct, status} } | null, steps: plan.steps (für die
+   Schrittnamen), current: im Spiel gewählt (◉), plan: null (PR 6), now }. */
+const PLK_WERTE = { metal: 'Erz', mineral: 'Mineral', fuel: 'T-Stoff', buildCost: 'Baukosten', buildSpeed: 'Baugeschw.', researchCost: 'Forschungskosten',
+  ground: 'Bodenfläche', housingCost: 'Wohnraumkosten', colonizable: 'Besiedelbarkeit', atmosphere: 'Atmosphäre' };
+// auffällige Planetenwerte (≠ 100 % der Heimat), die stärksten Abweichungen zuerst, höchstens n
+function planetWerteAbw(werte, n = 3) {
+  return Object.entries(werte || {}).filter(([k, v]) => PLK_WERTE[k] && v && v.pct != null && isFinite(v.pct) && !['offen', 'typ-median'].includes(v.status) && Math.abs(v.pct - 100) >= 0.5)
+    .sort((a, b) => Math.abs(b[1].pct - 100) - Math.abs(a[1].pct - 100)).slice(0, n).map(([k, v]) => `${PLK_WERTE[k]} ${fmt(v.pct, 1)} %`);
+}
+function planetKarte(p, rows, opts = {}) {
+  const now = opts.now ?? Date.now(), steps = Array.isArray(opts.steps) ? opts.steps : null;
+  const find = c => (rows || []).find(r => r && typeof r.q === 'string' && r.q[0] === c);
+  const line = (label, r) => {
+    if (!r) return '';
+    const nm = i => (Number.isInteger(i) && steps?.[i]?.[5]) || '';
+    let name, time, title = '', sub = [];
+    if (r.run && r.run.end > now) {
+      name = r.run.name || nm(r.run.i) || 'läuft';
+      time = `noch ${esc(durDHM((r.run.end - now) / 1000))}`; title = `fertig ${dt(r.run.end)}`;
+    } else if (r.next) {
+      const x = r.next;
+      name = nm(x.i) || `Schritt ${Number.isInteger(x.i) ? x.i + 1 : '?'}`;
+      time = x.at != null ? `ab ${esc(clockT(x.at))}` : '–';
+      const why = typeof Zeitfeed !== 'undefined' ? Zeitfeed.whyText(x.why) : '';
+      if (why) sub.push(esc(why));
+      if (x.due != null) sub.push(`fällig seit ${esc(dt(x.due))}`);
+      title = [x.src && `Quelle ${x.src}`, x.srcAt != null && `Stand ${ago(x.srcAt)}`].filter(Boolean).join(', ');
+    } else return '';
+    return `<div class="plrow"><div class="pll"><b>${label}</b> ${esc(name)}${sub.length ? `<div class="small muted">${sub.join(' · ')}</div>` : ''}</div>`
+      + `<div class="plt"${title ? ` title="${esc(title)}"` : ''}>${time}</div></div>`;
+  };
+  let body = line('Bau', find('b')) + (opts.research ? line('Forschung', find('r')) : '') + line('Werft', find('s'));
+  if (!body) body = '<div class="small muted">Nichts in der Schlange.</div>';
+  const abw = planetWerteAbw(opts.werte);
+  if (abw.length) body += `<div class="small muted plwerte">${abw.map(esc).join(' · ')}</div>`;
+  const ask = typeof window !== 'undefined' && window.HZ_ASK ? `<div class="plfoot"><button class="small askgo" data-ask="${esc(p.coords)}">Claude fragen</button></div>` : '';
+  return `<div class="card plcard"><h2>${esc(p.name || p.coords)} <span class="muted small">${esc(p.coords)}</span>${opts.current ? ' <span title="im Spiel gewählt">◉</span>' : ''}</h2>${body}${ask}</div>`;
+}
 const PLAN_LIVE_NOTE ='Zeiten live je Schlange (Heimat, Forschung, je Kolonie): laufende Aufträge bis zu ihrem Ende, sonst Startschätzung des Autobuilders bzw. Abweichung der Schlange; Überfälliges ab jetzt (reine Planzeit als Tooltip)';
 // Zeitzelle eines Schritts (Tabellen und Kopfzeile): läuft bis …, fällig seit … oder erwarteter Start; done = Ausführung
 function planLiveCell(x, e) {

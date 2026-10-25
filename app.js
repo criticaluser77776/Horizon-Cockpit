@@ -213,10 +213,58 @@ async function viewLage() {
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const active = ap ? { ...ap.row, payload: ap.payload } : null, nf = { active: ap?.row || null, known: {} };
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  $('#view').innerHTML = bannerCard(sess) + overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
+  const karten = await planetenKarten(d, ap, gds[0], sess, W).catch(() => '');   // Fehler hier dürfen die Lage nie blockieren
+  $('#view').innerHTML = bannerCard(sess) + overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + karten + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
     + '<p class="small muted pad">Planeten, Gebäude, Forschung: <a href="details/#/imperium" target="_blank" rel="noopener">Imperium im Atlas →</a></p>';
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
   bindSteuerung(sess, nf, active);
+}
+
+/* ---------- Planetenkarten der Lage (PR 5, 25.10.2026) ----------
+   Je eigenem Planeten eine Karte (planetKarte in common.js): Bau, Forschung (auf dem Forschungsplaneten), Werft, auffällige
+   Planetenwerte. Quelle: Zeitfeed über planFeed (aktiver Plan + Ausführungen + getData + Lebenszeichen); ohne Plan nur die
+   laufenden Aufträge aus getData (gd.jobs). Planetenwerte (planet_values) 60 s über S.pwLage gemerkt. */
+async function loadLageWerte(pl) {
+  const c = pl.map(p => p.coords).filter(k => /^\d+:\d+:\d+$/.test(k || ''));
+  if (!c.length) return {};
+  if (S.pwLage?.acc === S.acc && S.pwLage.key === c.join() && Date.now() - S.pwLage.at < 60e3) return S.pwLage.map;
+  const or = `(${c.map(k => { const [g, s, o] = k.split(':'); return `and(galaxy.eq.${g},system.eq.${s},orbit.eq.${o})`; }).join(',')})`;
+  const rows = await Cloud.q('planet_values', { account_id: `eq.${S.acc}`, or, select: 'galaxy,system,orbit,key,pct,status' }).catch(() => []);
+  const map = {};
+  for (const r of rows) ((map[`${r.galaxy}:${r.system}:${r.orbit}`] ||= {})[r.key] = { pct: r.pct, status: r.status });
+  S.pwLage = { acc: S.acc, key: c.join(), at: Date.now(), map };
+  return map;
+}
+// Ohne Plan: laufende Aufträge aus getData als Feed-Zeilen (nur run, Name aus den Spieldaten)
+function liveJobRows(gd, home, W, now = Date.now()) {
+  const jobs = (Array.isArray(gd?.jobs) ? gd.jobs : []).filter(j => j && ['b', 'r', 's'].includes(j.k) && Date.parse(j.end) > now);
+  return jobs.map(j => {
+    const cls = String(j.cls || ''), c = j.coords || home, nm = W?.[j.k === 'r' ? 'R' : 'B']?.[cls]?.n || cls;
+    return { q: j.k === 'r' ? 'r' : c === home ? j.k : `${j.k}:${c}`, planet: j.k === 'r' ? null : c, name: j.k === 's' ? nm : `${nm}${j.level != null ? ` ${j.level}` : ''}`,
+      run: { i: null, end: Date.parse(j.end), name: j.k === 's' ? nm : `${nm}${j.level != null ? ` ${j.level}` : ''}` }, next: null };
+  });
+}
+async function planetenKarten(d, ap, gd, sess, W) {
+  const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
+  if (!pl.length) return '';
+  const plan = ap?.payload && Array.isArray(ap.payload.steps) ? ap.payload : null;
+  const [execs, werte] = await Promise.all([
+    plan ? loadPlanExecs(`eq.${S.acc}`, ap.row.id, plan).catch(() => []) : [],
+    loadLageWerte(pl),
+  ]);
+  const home = (typeof gd?.colony?.coords === 'string' && gd.colony.coords) || (typeof plan?.planet === 'string' && plan.planet) || pl[0].coords;
+  let feed = plan ? planFeed(plan, execs, sess, gd) : [];
+  if (!feed.length) feed = liveJobRows(gd, home, W);
+  // Zuordnung: Bau/Werft über die Koordinaten der Schlange ('heim' = Heimat), Forschung über den Startplaneten des nächsten/laufenden Schritts
+  const owner = r => {
+    if (r.q === 'r') { const i = (r.next || r.run)?.i; return (plan && Number.isInteger(i) && planResPlanet(plan, i + 1)) || (r.planet !== null && r.planet !== undefined && r.planet !== 'heim' ? r.planet : home); }
+    return r.planet === 'heim' || !r.planet ? home : r.planet;
+  };
+  const cur = d?.start?.coords;
+  return pl.map(p => {
+    const rows = feed.filter(r => owner(r) === p.coords);
+    return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), werte: werte[p.coords] || null, steps: plan?.steps, current: p.coords === cur, plan: null });
+  }).join('');
 }
 
 /* ---------- getData-Wächter (B18, 16.10.2026; Migrationen 20261016000001/2) ----------
