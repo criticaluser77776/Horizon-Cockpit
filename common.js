@@ -675,9 +675,10 @@ const planStepDone = (plan, st, execs) => {
    opt.all = true: alle Schritte nach Live-Zeit mit Historie (Atlas, Pläne); false: Ausschnitt wie im Cockpit (C1, 17.10.2026) –
    die nächsten opt.nearLimit Schritte ab dem ersten offenen (im Reiter eines Planeten: die nächsten offenen dieses Reiters)
    und ±3 um „bis #“, Lücken als „…“, mit ⏸ (Halt) und Marke „bis #“.
-   opt.fcRows = false lässt die Faktorwechsel-Zeilen weg. opt.marks: Platzhalter für farbige Markierungen, noch ohne Wirkung. */
+   opt.fcRows = false lässt die Faktorwechsel-Zeilen weg. opt.marks = 'farben' (Atlas, Gesamtplan): je Schlange eine Farbe (qc0…qc5 in
+   details.css), laufender Schritt ▶ und erster offener ⏵ in Schlangenfarbe, darüber eine Legende (Namen wie die Reiter, opt.home = Heimatplanet). */
 function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
-  const { all = false, fcRows = true, nearLimit = 12 /*, marks = null */ } = opt;
+  const { all = false, fcRows = true, nearLimit = 12, marks = null, home = null } = opt;
   const t0 = Date.parse(plan.startTime);
   const tip = tau => ` title="Plan: ${esc(dt(t0 + tau * 3600e3))}"`;
   const fcAt = tau => esc(dt(Zeitplan.atTau(plan, LT, tau, 'b', LT.lagB)));
@@ -691,10 +692,28 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
   const fcKey = fc => Zeitplan.atTau(plan, LT, fc.tau, 'b', LT.lagB);
   const stepRow = (s, i) => ({ tau: s[3], n: i + 1, s, k: Zeitplan.sortKey(plan, LT, i, Date.parse(done.get(i + 1)?.t)) });
   const cmp = (a, b) => a.k - b.k || (a.fc ? -1 : b.fc ? 1 : a.n - b.n);   // nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026)
+  // Farbmarken je Schlange (opt.marks = 'farben'): Farbindex nach erstem Vorkommen im Plan, ab der 7. Schlange wieder von vorn
+  const qcols = marks === 'farben' ? (() => {
+    const m = new Map();
+    plan.steps.forEach((s, i) => { if (s[0] === 's') return; const q = Zeitplan.queueOf(plan, i); if (!m.has(q)) m.set(q, `qc${m.size % 6}`); });
+    return m;
+  })() : null;
+  const qmark = (ch, q) => `<span class="qmark ${qcols.get(q) || ''}">${ch}</span>`;
+  const qLegend = steps => {
+    if (!qcols) return '';
+    const tabs = planTabs(plan, home), qs = [...new Set(steps.map(i => Zeitplan.queueOf(plan, i)))].filter(q => qcols.has(q));
+    const label = q => {
+      const c = q.slice(2), t = tabs.find(x => x.k === (q === 'r' ? 'r' : c || 'heim'));
+      return q[0] === 's' ? `Werft${c ? ' ' + (t ? t.t : c) : ''}` : t ? t.t : q;
+    };
+    return qs.length ? `<div class="small qlegend">${qs.map(q => `<span class="tag">${qmark('⏵', q)} ${esc(label(q))}</span>`).join(' ')}</div>` : '';
+  };
   const row = r => {
     const e = done.get(r.n), run = LT.t[r.n - 1]?.run, kol = planAway(plan, r.n), isUntil = !all && r.n === until;
     const mark = run ? '⏵' : isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : !all && (st.halts || []).includes(r.n) ? '⏸' : '';
-    return `<tr class="step${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
+    const q = qcols ? Zeitplan.queueOf(plan, r.n - 1) : null;
+    const qm = !qcols ? '' : run ? qmark('▶', q) + ' ' : LT.first?.[q]?.i === r.n - 1 ? qmark('⏵', q) + ' ' : '';
+    return `<tr class="step${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${planLiveCell(LT.t[r.n - 1], e)}</td></tr>`;
   };
   const fcRow = fc => `<tr class="muted"><td></td><td>⚙ Faktor ${fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(fc.tau)}>${fcAt(fc.tau)}</td></tr>`;
@@ -703,7 +722,7 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) rows.push(stepRow(s, i)); });
     for (const fc of fcs) rows.push({ tau: fc.tau, fc, k: fcKey(fc) });
     rows.sort(cmp);
-    return `<table class="small">${rows.map(r => r.fc ? fcRow(r.fc) : row(r)).join('')}</table>`;
+    return `${qLegend(rows.filter(r => !r.fc).map(r => r.n - 1))}<table class="small">${rows.map(r => r.fc ? fcRow(r.fc) : row(r)).join('')}</table>`;
   }
   // Ausschnitt (Cockpit): im Reiter eines Planeten/der Forschung die nächsten nearLimit offenen Schritte dieses Reiters statt des Nummernfensters
   const own = plan.steps.map((s, i) => i + 1).filter(n => tab && tab !== 'alle' && planInTab(plan, tab, plan.steps[n - 1], n) && !isDone(n));
@@ -718,7 +737,7 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
   const gap = until && until - 3 > from + nearLimit;   // Ausschnitt um „bis #“ getrennt vom Anfang
   for (const r of steps) { const g = groups[groups.length - 1]; if (g && !(gap && near(g[g.length - 1].n) && !near(r.n))) g.push(r); else groups.push([r]); }
   // je Abschnitt nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026); Faktorwechsel mit ihrer Live-Zeit dazwischen
-  return `<table class="small">${groups.map(g => {
+  return `${qLegend(steps.map(r => r.n - 1))}<table class="small">${groups.map(g => {
     const ks = g.map(r => r.k), lo = Math.min(...ks), hi = Math.max(...ks);
     const list = [...g, ...fcs.map(fc => ({ tau: fc.tau, fc, k: fcKey(fc) })).filter(r => r.k >= lo && r.k <= hi)].sort(cmp);
     return list.map(r => r.fc ? fcRow(r.fc) : row(r)).join('');

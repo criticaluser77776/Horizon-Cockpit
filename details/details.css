@@ -78,3 +78,16 @@ body.atlas .badge { position: static; }
 
 /* Galaxy Mag (oeffentlich.js): Meldungen im angezeigten System hervorheben */
 .oehere td { font-weight: 600; }
+
+/* Gesamtplan (plaene.js, stepsTable opt.marks = 'farben'): aktive Schritte je Schlange (Planet/Forschung) farbig markiert */
+:root {
+  --qc0: #2563c9; --qc1: #d9730d; --qc2: #1f8a4c; --qc3: #8e44ad; --qc4: #0e9aa7; --qc5: #d6336c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --qc0: #6ea2ff; --qc1: #ffa24d; --qc2: #4cc77f; --qc3: #c58bf0; --qc4: #4fd3df; --qc5: #ff7fae; }
+}
+:root[data-theme="dark"] { --qc0: #6ea2ff; --qc1: #ffa24d; --qc2: #4cc77f; --qc3: #c58bf0; --qc4: #4fd3df; --qc5: #ff7fae; }
+.qmark { font-weight: 700; white-space: nowrap; }
+.qc0 { color: var(--qc0); } .qc1 { color: var(--qc1); } .qc2 { color: var(--qc2); }
+.qc3 { color: var(--qc3); } .qc4 { color: var(--qc4); } .qc5 { color: var(--qc5); }
+.qlegend { margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
