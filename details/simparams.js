@@ -11,14 +11,14 @@
   };
   const DEFAULTS = {
     v: 1, kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
-    kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:2'], werft: 1,
+    kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:1'], werft: 1,
     pflicht: ['kolo:4'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
     rabatt: 0.1,
     movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 1, patience: 20, kicks: 2 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
     kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '+14d',
     gewicht: [1, 2, 4], kololive: true, flugfaktor: 0.043,
-    takt: 2, taktlast: 47200, taktmod: ['tempo:-0.5'],   // Transport 2 Flüge/Tag wie Plan 21 (A2, 22.10.)
+    takt: 6, taktlast: 12000, taktmod: ['tempo:-0.5'],   // Transport 6 Flüge/Tag mit 1 PTRN (12 000 t live, Nutzer 25.10.)
   };
   const ID = '[a-z][a-z0-9_]{1,39}';
   const PAT = {
