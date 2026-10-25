@@ -888,9 +888,138 @@ async function fillPushCard() {
    Takt-Flüge des aktiven Plans (payload.transporte, cockpit/transporte.js) mit Realzeit wie die Bauschritte (Planstart + Abweichung).
    Der Nutzer fliegt von Hand und hakt ab (RPC transport_haken_setzen, nur Owner). Offene zuerst, abgehakte zugeklappt darunter. */
 const TR_ST = { faellig: ['fällig', 'warn'], naechster: ['als Nächstes', 'ok'], spaeter: ['', ''], geflogen: ['geflogen', 'muted'] };
+// Reiter Transport: oben Transportaufträge (Formular + Liste), darunter die Takt-Flüge des aktiven Plans
 async function viewTransporte() {
-  const [ap, d] = await Promise.all([loadActivePlan(), loadDrift(true)]);
-  if (!ap) { $('#view').innerHTML = '<div class="card"><h2>Transporte</h2><p class="muted">Kein Bauplan freigegeben.</p></div>'; return; }
+  const [ap, d, heads, auf] = await Promise.all([loadActivePlan(), loadDrift(true),
+    Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live', select: 'kind,collected_at,version' }).catch(() => []),
+    Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 30,
+      select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at' }).catch(() => null)]);
+  await ensureSnap(heads[0]).catch(() => {});
+  const snap = heads[0] ? S.snap?.data : null;
+  $('#view').innerHTML = `<div class="stack">${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap)}${await planTransportCard(ap, d)}</div>`;
+  if (isOwner()) bindAuftragForm(snap);
+  $('#view').querySelectorAll('button[data-tr]').forEach(b => b.addEventListener('click', async () => {
+    try { await Cloud.rpc('transport_haken_setzen', { p_plan: ap.row.id, p_nr: +b.dataset.tr, p_on: !!b.dataset.on }); route(true); } catch (e) { toast(e.message); }
+  }));
+  $('#view').querySelectorAll('button[data-ta]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm(`Transport #${b.dataset.ta} abbrechen? Ein Flug in der Luft landet trotzdem, weitere startet der Autobuilder nicht.`)) return;
+    try { await Cloud.rpc('transport_abbrechen', { p_id: +b.dataset.ta }); toast('Abgebrochen'); route(true); } catch (e) { toast(e.message); }
+  }));
+}
+
+/* Transportaufträge (Nutzer 25.10.2026, doku/stand/transporte.md): Der Owner legt Quelle, Ziel, Menge [E,M,T] und Flotte (Name oder
+   leer = Autobuilder entscheidet) an (RPC transport_anlegen, Anlegen = Freigabe). Der Autobuilder fliegt in einem oder mehreren Flügen
+   (ab PR 4) und meldet Stand und Flüge (transport_melden). Laderaum je Planet aus der Schiffsstatistik (empire.ships, split ab
+   Collector 0.4.36), Vorschau und „max“ in cockpit/transporte.js. Formularwerte in S.trForm, damit das stille Neuladen sie nicht löscht. */
+const TA_ST = { offen: ['offen', ''], laeuft: ['läuft', 'aktiv'], erledigt: ['erledigt', 'erledigt'], abgebrochen: ['abgebrochen', 'abgebrochen'], fehler: ['Fehler', 'hoch'] };
+const trPlanets = snap => empirePlanets(snap).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
+const trName = (snap, c) => trPlanets(snap).find(p => p.coords === c)?.name || c;
+const trLager = (snap, c) => { const s = trPlanets(snap).find(p => p.coords === c)?.storage; return s ? RES.map(x => +s[x] || 0) : null; };
+const trLad = l => esc(Transporte.ladungText(l, n => fmt(n)));
+// Laderaum für einen Flug: größter Laderaum in Flotten an Quelle (Liefern) oder Ziel (Abholen); freie Schiffe im Hafen zählen noch nicht
+function trInfo(snap, f) {
+  const ships = snap?.empire?.ships, kv = Transporte.kapazitaet(ships, f.von), kn = Transporte.kapazitaet(ships, f.nach);
+  const fuel = f.von && f.nach && Transporte.sameSystem(f.von, f.nach) ? Transporte.FUEL_SYSTEM : null;
+  const opt = { menge: f.menge, laderaum: Math.max(kv.flotte, kn.flotte), fuel, lager: trLager(snap, f.von) };
+  return { kv, kn, opt, v: Transporte.vorschau(opt) };
+}
+function trVorschauHtml(snap, f) {
+  if (!f.von || !f.nach || f.von === f.nach) return '<p class="small muted">Quelle und Ziel wählen.</p>';
+  const { v, opt } = trInfo(snap, f);
+  return `${v.fluege.length ? `<div class="small"><b>${v.fluege.length} ${v.fluege.length === 1 ? 'Flug' : 'Flüge'}</b> zu je höchstens ${esc(fmt(opt.laderaum))} t${v.fuel != null ? ` · T-Stoff für die Flüge ≈ ${esc(fmt(v.fuel))} (zusätzlich von der Quelle)` : ''}</div>
+    ${v.fluege.map(x => `<div class="small muted">Flug ${x.nr}: ${trLad(x.ladung)}</div>`).join('')}` : ''}
+    ${v.probleme.map(p => `<div class="small err">${esc(p)}</div>`).join('')}`;
+}
+function trKapHtml(snap) {
+  const pl = trPlanets(snap), ships = snap?.empire?.ships;
+  const rows = pl.map(p => ({ p, k: Transporte.kapazitaet(ships, p.coords) }));
+  const geteilt = rows.every(r => r.k.geteilt);
+  return `<details class="sub"><summary class="small muted">Laderaum je Planet</summary>
+    ${rows.map(({ p, k }) => `<div class="small"><b>${esc(p.name)}</b> <span class="muted">${esc(p.coords)}</span>: ${k.gesamt
+      ? `in Flotten ${esc(fmt(k.flotte))} t${k.hafen ? ` · frei im Hafen ${esc(fmt(k.hafen))} t` : ''}${k.flug ? ` · unterwegs ${esc(fmt(k.flug))} t` : ''}`
+      : '<span class="muted">keine Transporter</span>'}</div>`).join('')}
+    <p class="small muted">Schiffe aus der Schiffsstatistik × Laderaum je Typ (PTRN 12 000 t). Freie Schiffe im Hafen bilden noch keine neue Flotte (später).${geteilt ? '' : ' Der Stand enthält noch keine Aufteilung Hafen/Flotte (Collector ab 0.4.36), alles zählt als Flotte.'}</p></details>`;
+}
+function auftragFormCard(snap, head) {
+  const pl = trPlanets(snap);
+  if (!pl.length) return '<div class="card"><h2>Neuer Transport</h2><p class="muted">Kein Live-Stand mit Planeten vorhanden.</p></div>';
+  const f = S.trForm?.acc === S.acc ? S.trForm : (S.trForm = { acc: S.acc, von: pl[0].coords, nach: pl[1]?.coords || '', menge: [0, 0, 0], flotte: '' });
+  const opts = sel => pl.map(p => `<option value="${esc(p.coords)}"${p.coords === sel ? ' selected' : ''}>${esc(p.name)} (${esc(p.coords)})</option>`).join('');
+  const lager = trLager(snap, f.von);
+  return `<div class="card"><h2>Neuer Transport</h2>
+    <form id="taForm">
+      <div class="row"><label class="f" style="flex:1 1 140px"><span>Von</span><select name="von">${opts(f.von)}</select></label>
+        <label class="f" style="flex:1 1 140px"><span>Nach</span><select name="nach">${opts(f.nach)}</select></label></div>
+      <p class="small muted"><span id="taLager">${lager ? `Lager der Quelle: ${trLad(lager)}` : 'Lager der Quelle unbekannt'}</span>${head ? ` · Stand ${esc(when(head.collected_at))}` : ''}</p>
+      <div class="row">${['Eisenerz', 'Mineral', 'T-Stoff'].map((x, i) => `<label class="f" style="flex:1 1 180px;margin:2px 0"><span>${x}</span>
+        <div class="row" style="flex-wrap:nowrap;gap:4px"><input name="m${i}" type="number" min="0" step="1" inputmode="numeric" value="${f.menge[i] || ''}" style="min-width:0;flex:1">
+        <button type="button" class="small" data-max="${i}">max</button></div></label>`).join('')}</div>
+      <label class="f"><span>Flotte (Name aus dem Spiel; leer = Autobuilder entscheidet)</span><input name="flotte" maxlength="60" value="${esc(f.flotte)}" placeholder="Automatisch"></label>
+      <div id="taVorschau">${trVorschauHtml(snap, f)}</div>
+      <div class="row" style="margin-top:6px"><button class="primary">Transport anlegen</button></div>
+    </form>
+    <p class="small muted">Anlegen = Freigabe: Der Autobuilder fliegt den Auftrag (Liefern mit einer Flotte an der Quelle, Abholen mit einer am Ziel). Bauten haben Vorrang; er nimmt nur Rohstoffe, die er nicht für den Bau zurückhält. Die Vorschau ist eine Schätzung.</p>
+    ${trKapHtml(snap)}</div>`;
+}
+function bindAuftragForm(snap) {
+  const form = $('#taForm');
+  if (!form) return;
+  const f = S.trForm;
+  const read = () => {
+    f.von = form.von.value; f.nach = form.nach.value; f.flotte = form.flotte.value;
+    f.menge = [0, 1, 2].map(i => Math.max(0, Math.floor(+form['m' + i].value || 0)));
+  };
+  const show = () => {
+    $('#taVorschau').innerHTML = trVorschauHtml(snap, f);
+    const l = trLager(snap, f.von);
+    $('#taLager').textContent = l ? `Lager der Quelle: ${Transporte.ladungText(l, n => fmt(n))}` : 'Lager der Quelle unbekannt';
+  };
+  form.addEventListener('input', () => { read(); show(); });
+  form.addEventListener('change', () => { read(); show(); });
+  form.querySelectorAll('button[data-max]').forEach(b => b.addEventListener('click', () => {
+    read();
+    const i = +b.dataset.max, { opt } = trInfo(snap, f);
+    form['m' + i].value = f.menge[i] = opt.lager ? Transporte.maxMenge(i, opt) : 0;
+    show();
+  }));
+  form.addEventListener('submit', async e => {
+    e.preventDefault(); read();
+    if (f.von === f.nach) return toast('Quelle und Ziel sind gleich');
+    if (!f.menge.some(x => x > 0)) return toast('Keine Menge angegeben');
+    const { v } = trInfo(snap, f);
+    const txt = `Transport anlegen?\n${trName(snap, f.von)} → ${trName(snap, f.nach)}: ${Transporte.ladungText(f.menge, n => fmt(n))}\nFlotte: ${f.flotte.trim() || 'Autobuilder entscheidet'}${v.fluege.length ? ` · ca. ${v.fluege.length} Flug/Flüge` : ''}${v.probleme.length ? '\n\nHinweis: ' + v.probleme.join(' ') : ''}\n\nDer Autobuilder fliegt ihn, sobald er läuft.`;
+    if (!confirm(txt)) return;
+    try {
+      const id = await Cloud.rpc('transport_anlegen', { p_account: S.acc, p_von: f.von, p_nach: f.nach, p_menge: f.menge, p_flotte: f.flotte.trim() || null });
+      S.trForm = null; toast(`Transport #${id} angelegt`); route(true);
+    } catch (err) { toast(err.message); }
+  });
+}
+function auftragListCard(auf, snap) {
+  if (auf == null) return '<div class="card"><h2>Transportaufträge</h2><p class="err small">Liste nicht ladbar.</p></div>';
+  const own = isOwner(), offen = auf.filter(a => ['offen', 'laeuft'].includes(a.status)), alt = auf.filter(a => !offen.includes(a));
+  const item = a => {
+    const [st, cls] = TA_ST[a.status] || [a.status, ''];
+    const fl = Array.isArray(a.fluege) ? a.fluege : [];
+    return `<div class="list-item"><div class="row between">
+      <span><b>#${esc(a.id)}</b> ${esc(trName(snap, a.von))} → ${esc(trName(snap, a.nach))} <span class="tag ${cls}">${esc(st)}</span></span>
+      <span class="muted small nowrap">${esc(when(a.created_at))}</span></div>
+      <div class="small">Menge: ${trLad(a.menge)}${(a.geliefert || []).some(x => +x > 0) ? ` · geliefert: ${trLad(a.geliefert)}` : ''}</div>
+      <div class="small muted">Flotte: ${a.flotte ? esc(a.flotte) : 'Autobuilder entscheidet'}${fl.length ? ` · ${fl.length} ${fl.length === 1 ? 'Flug' : 'Flüge'}` : ''}${a.done_at ? ` · fertig ${esc(when(a.done_at))}` : ''}</div>
+      ${fl.length ? `<details class="sub"><summary class="small muted">Flüge</summary>${fl.map(x => `<div class="small">${esc(x.nr ?? '')} ${esc(x.befehl || '')} ${esc(x.flotte || '')}: ${trLad(x.ladung)}${x.an ? ` · an ${esc(clockT(Date.parse(x.an)))}` : ''}${x.status ? ` · ${esc(x.status)}` : ''}</div>`).join('')}</details>` : ''}
+      ${a.meldung ? `<div class="small${a.status === 'fehler' ? ' err' : ' muted'}">${esc(a.meldung)}</div>` : ''}
+      ${own && ['offen', 'laeuft'].includes(a.status) ? `<div class="row" style="margin-top:4px"><button class="small" data-ta="${esc(a.id)}">Abbrechen</button></div>` : ''}
+    </div>`;
+  };
+  return `<div class="card"><h2>Transportaufträge</h2>
+    ${offen.length ? offen.map(item).join('') : '<p class="muted">Kein offener Auftrag.</p>'}
+    ${alt.length ? `<details class="sub"><summary class="small muted">Abgeschlossen (${alt.length})</summary>${alt.map(item).join('')}</details>` : ''}
+    <p class="small muted">Ausführung durch den Autobuilder folgt (PR 4); bis dahin bleiben Aufträge „offen“.</p></div>`;
+}
+
+// Takt-Flüge des aktiven Plans als Karte (HTML); Knöpfe „Geflogen“ bindet viewTransporte
+async function planTransportCard(ap, d) {
+  if (!ap) return '<div class="card"><h2>Transporte im Plan</h2><p class="muted">Kein Bauplan freigegeben.</p></div>';
   const hk = await Cloud.q('transport_haken', { plan_id: `eq.${ap.row.id}`, select: 'nr,geflogen_at' });
   const drift = d?.plan === ap.row.id ? d : null;
   const list = Transporte.transportListe(ap.payload, drift, hk.map(h => h.nr));
@@ -909,17 +1038,14 @@ async function viewTransporte() {
   };
   const open = list.filter(x => x.status !== 'geflogen'), done = list.filter(x => x.status === 'geflogen');
   const soon = open.filter(x => x.status !== 'spaeter' || x.ab < Date.now() + 24 * 3600e3), later = open.slice(soon.length);
-  $('#view').innerHTML = !list.length
-    ? `<div class="card"><h2>Transporte</h2><p class="muted">Der aktive Plan enthält keine Transportliste. Sie kommt mit dem nächsten Plan aus der Simulation (Takt-Flüge).</p></div>`
-    : `<div class="card"><h2>Transporte</h2>
+  return !list.length
+    ? `<div class="card"><h2>Transporte im Plan</h2><p class="muted">Der aktive Plan enthält keine Transportliste. Sie kommt mit dem nächsten Plan aus der Simulation (Takt-Flüge).</p></div>`
+    : `<div class="card"><h2>Transporte im Plan</h2>
       <p class="small muted">${esc(ap.row.title || 'Aktiver Plan')} · ${open.length} offen, ${done.length} geflogen${drift?.lag != null ? ` · Zeiten verschoben: ${esc(lagText(drift.lag))}` : ''}</p>
       ${soon.length ? soon.map(item).join('') : '<p class="muted">In den nächsten 24 h kein Transport.</p>'}
       ${later.length ? `<details class="sub"><summary class="small muted">Später (${later.length})</summary>${later.map(item).join('')}</details>` : ''}
       ${done.length ? `<details class="sub"><summary class="small muted">Geflogen (${done.length})</summary>${done.map(item).join('')}</details>` : ''}
     </div>`;
-  $('#view').querySelectorAll('button[data-tr]').forEach(b => b.addEventListener('click', async () => {
-    try { await Cloud.rpc('transport_haken_setzen', { p_plan: ap.row.id, p_nr: +b.dataset.tr, p_on: !!b.dataset.on }); route(true); } catch (e) { toast(e.message); }
-  }));
 }
 
 /* ---------- Claude-Kanal (B6, 14.10.) ----------
