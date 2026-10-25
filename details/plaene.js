@@ -457,10 +457,12 @@ async function viewPlans(rest = []) {
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
-  const [execs, drift] = active ? await Promise.all([
+  // Abweichung: ein Ladeweg (loadDrift → S.drift); gilt nur, wenn der Server denselben Plan meint wie die Ansicht
+  const [execs, drift0] = active ? await Promise.all([
     loadPlanExecs(acc, active.id, active.payload),
-    Cloud.rpc('plan_abweichung', { p_plan: active.id }).catch(() => null),
+    loadDrift(true),
   ]) : [[], null];
+  const drift = drift0?.plan === active?.id ? drift0 : null;
   const gains = await draftGains(plans, active, drift).catch(() => ({}));
   const own = isOwner();
   let html = '';
@@ -478,7 +480,7 @@ async function viewPlans(rest = []) {
     const LT = planLive(plan, planStepDone(plan, hst, ex), ex, hst);
     html += `<div class="cols2"><div class="card"><div class="row between"><h2>${testPlan ? `Testplan ${esc(tpn)} <span class="tag">lokal</span>` : `${esc(planLabel(active.id))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span>`}</h2>
       <span class="small">${COCKPIT_LINK('#/plaene', '„bis #“, Start/Stopp im Cockpit')}</span></div>
-      <p class="small">${esc(tidy(testPlan ? `${plan.created || ''} · id ${plan.id}` : active.title || ''))}</p>${runBody(sess)}
+      <p class="small">${esc(tidy(testPlan ? `${plan.created || ''} · id ${plan.id}` : active.title || ''))}</p>${runBody(sess, { drift: false })}
       ${multi ? `<h3>Imperium</h3>${planEmpire(plan, tabs, planStepDone(plan, hst, ex), LT, Date.now(), !!hst?.colony)}${planTabsHtml(tabs, tab)}`
         : `<div class="small muted" style="margin:4px 0">Planet ${esc((plan.planet || S.home)?.name || 'Heimat')} ${esc((plan.planet || S.home)?.coords || '')} · Forschung gilt für alle Planeten („global“)</div>`}
       <div class="small muted" style="margin:4px 0">${PLAN_LIVE_NOTE}</div>

@@ -183,7 +183,7 @@ function overviewCard(sess, d, live, abLive, nm, W) {
   const runTxt = !r ? 'kein Lauf'
     : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis ${esc(untilTxt(r.until, r.until_by))} · ${esc(r.name || '?')}`
       + (r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : '')
-      + (['laeuft', 'schlaeft'].includes(r.state) && s.ahead != null ? ` · Vorlauf ${esc(fmt(s.ahead, 1))} h` : '') + pauseTag(r);
+      + (['laeuft', 'schlaeft'].includes(r.state) && driftLagText() ? ` · ${esc(driftLagText())}` : '') + pauseTag(r);
   let html = `<div class="card${r?.state === 'verloren' || !d ? ' warn' : ''}"><div class="row between"><h2>Überblick</h2>
     <span class="muted small">${live ? `Stand ${esc(ago(live.collected_at))}` : 'noch kein Live-Stand'}</span></div><p>${runTxt}</p>`;
   if (r && ['angehalten', 'verloren'].includes(r.state) && r.reason) html += `<p class="small muted">${esc(tidy(r.reason))}</p>`;
@@ -227,6 +227,7 @@ async function viewImperium() {
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,jobs,research,research_at,wake,queues,expires_at,ok_at,error,error_at' }).catch(() => []),
+    loadDrift(),   // füllt S.drift (Überblick und Lauf), kein Name nötig
   ]);
   const head = heads[0];
   if (head && (S.snap?.acc !== S.acc || S.snap?.at !== head.collected_at)) {

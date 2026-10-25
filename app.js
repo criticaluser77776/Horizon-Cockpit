@@ -186,7 +186,7 @@ const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, nf, effs, gds, movis] = await Promise.all([
+  const [heads, sess, nf, effs, gds, movis] = await Promise.all([   // 7. Element loadDrift füllt S.drift (für overviewCard), kein Name nötig
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     loadNotfall(),
@@ -195,6 +195,7 @@ async function viewLage() {
     Cloud.q('getdata_state', { account_id: acc, select: 'at,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
     loadDecisions('id,t,text,data:data->decision,answer:data->answer').then(l => l.filter(e => /Motivationsvideo/i.test(e.text || ''))
       .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision)).catch(() => []),
+    loadDrift(),
   ]);
   // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
   const head = heads[0];
@@ -284,7 +285,7 @@ function overviewCard(sess, d, live, abLive, nm, W, extra = '') {
   const runTxt = !r ? 'kein Lauf'
     : `<b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> bis ${esc(untilTxt(r.until, r.until_by))} · ${esc(r.name || '?')}`
       + (r.state === 'schlaeft' && r.wake_at ? ` · Login ${esc(clockT(r.wake_at))}` : '')
-      + (['laeuft', 'schlaeft'].includes(r.state) && s.ahead != null ? ` · Vorlauf ${esc(fmt(s.ahead, 1))} h` : '') + pauseTag(r);
+      + (['laeuft', 'schlaeft'].includes(r.state) && driftLagText() ? ` · ${esc(driftLagText())}` : '') + pauseTag(r);
   let html = `<div class="card${r?.state === 'verloren' || !d ? ' warn' : ''}"><div class="row between"><h2>Überblick</h2>
     <span class="muted small">${live ? `Stand ${esc(ago(live.collected_at))}` : 'noch kein Live-Stand'}</span></div><p>${runTxt}</p>`;
   if (r && ['angehalten', 'verloren'].includes(r.state) && r.reason) html += `<p class="small muted">${esc(tidy(r.reason))}</p>`;
@@ -580,7 +581,7 @@ function abCard(active, sess, cmds, own, execs, W, drift) {
     || live.find(x => x.ab.state.page === 'game') || live[0] || null;
   const st = target?.ab?.state || {};
   let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2><span class="muted small">${run ? `seit ${esc(dt(run.since))}` : ''}</span></div>`;
-  html += runBody(sess);
+  html += runBody(sess, { drift: false });   // driftLine zeigt die Abweichung weiter unten
   if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Faktoren gehen jederzeit unter <a href="#/lage">Lage → Notfallzentrale</a>.</p>' + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
   html += `<p class="small">Freigegeben: <b>${esc(planLabel(active.id))}</b> · ${esc(tidy(active.title))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span></p>`;
   if (!live.length) html += '<p class="err small">Kein Autobuilder erreichbar (Browser zu oder Skripte aus).</p>';
@@ -811,10 +812,12 @@ async function viewPlans(rest = []) {
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
-  const [execs, drift] = active ? await Promise.all([
+  // Abweichung: ein Ladeweg (loadDrift → S.drift); gilt nur, wenn der Server denselben Plan meint wie die Ansicht
+  const [execs, drift0] = active ? await Promise.all([
     loadPlanExecs(acc, active.id, active.payload),
-    Cloud.rpc('plan_abweichung', { p_plan: active.id }).catch(() => null),
-  ]) : [[], null];
+    loadDrift(true),
+  ]) : [[], await loadDrift(true)];
+  const drift = drift0?.plan === active?.id ? drift0 : null;
   // B14: nur bessere Entwürfe zeigen (Karte und Liste); Gewinn gegen das erwartete Ende des aktiven Plans
   const gains = await draftGains(plans, active, drift).catch(() => ({}));
   const offer = newPlanOffer(plans, active, gains);

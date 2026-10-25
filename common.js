@@ -112,6 +112,13 @@ function dur(sec) {
   const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
   return (d ? `${d} d ` : '') + `${h} h ${String(m).padStart(2, '0')} min`;
 }
+// Restzeit als dd:hh:mm (ab 1 Tag), darunter hh:mm; zweistellig, ohne Wert „–“
+function durDHM(sec) {
+  if (sec == null || !isFinite(sec)) return '–';
+  sec = Math.max(0, Math.round(sec));
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), p = n => String(n).padStart(2, '0');
+  return (d ? `${p(d)}:` : '') + `${p(h)}:${p(m)}`;
+}
 function toast(msg, action) {     // action = { label, run } → Knopf im Toast (z. B. Rückgängig), dann 6 s sichtbar
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
   if (action) {
@@ -293,7 +300,7 @@ async function loadSessions() {
   return { run, devs };
 }
 // Zustand des Laufs (wer baut gerade, bis #, schläft/verloren, Status der letzten Prüfung)
-function runBody(sess) {
+function runBody(sess, { drift = true } = {}) {   // drift:false, wenn direkt darunter driftLine/driftCard dieselbe Zahl zeigen
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   if (!r) return '<p class="muted">Noch kein Lauf. Start im Spiel (Knopf) oder unter Pläne.</p>';
   let html = `<p><b class="${r.state === 'verloren' ? 'err' : ''}">${esc(RUNST[r.state] || r.state)}</b> · ${r.mode === 'live' ? 'Lauf' : 'Probelauf'} bis ${esc(untilTxt(r.until, r.until_by))}
@@ -301,7 +308,8 @@ function runBody(sess) {
   if (r.paused_at && s.hand) html += `<p class="small warn">In der Pause von Hand: ${esc(s.hand)}</p>`;
   if (r.state === 'verloren' || r.state === 'angehalten') html += `<p class="small ${r.state === 'verloren' ? 'err' : 'muted'}">${esc(tidy(r.reason))}</p>`;
   if (['laeuft', 'schlaeft'].includes(r.state) && h?.ab) {
-    html += `<p class="small muted">${s.planInfo ? esc(tidy(s.planInfo)) : s.ahead != null ? `Vorlauf ${esc(fmt(s.ahead, 1))} h` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
+    const dl = drift ? driftLagText() : '';   // eine Abweichungszahl: Server (plan_abweichung_akt), nicht der Vorlauf des Autobuilders
+    html += `<p class="small muted">${s.planInfo ? esc(tidy(s.planInfo)) : ''}${dl ? `${s.planInfo ? ' · ' : ''}${esc(dl)}` : ''}${s.next ? ` · nächste Prüfung ${esc(clockT(s.next))}` : ''}
       · Lebenszeichen ${esc(ago(h.ab.at))}</p>${s.status ? `<p class="small">${esc(tidy(s.status))}</p>` : ''}`;
   }
   return html;
@@ -629,4 +637,16 @@ function planDetails(p) {
 
 /* ---------- Planabweichung (B4): Stundentexte ---------- */
 const hrs = h => `${fmt(Math.abs(h), 1)} h`;
-const lagText = h => h == null ? '–' : h >= 0.05 ? `${hrs(h)} hinter dem Plan` : h <= -0.05 ? `${hrs(h)} Vorlauf` : 'genau im Plan';
+const lagText = h => h == null ? '–' : h >= 0.05 ? `Plan läuft ${hrs(h)} nach` : h <= -0.05 ? `Plan läuft ${hrs(h)} vor` : 'genau im Plan';
+// Abweichung des aktiven Bauplans vom Server (RPC plan_abweichung_akt = private.plan_lag), 60 s im Cache: S.drift = { acc, at, d }.
+// Fehler → d null (Anzeige bleibt leer). force = Cache ignorieren (Pläne-Ansicht lädt alle 30 s neu).
+async function loadDrift(force = false) {
+  if (!force && S.drift?.acc === S.acc && Date.now() - S.drift.at < 60000) return S.drift.d;
+  const acc = S.acc;
+  let d = null;
+  try { d = await Cloud.rpc('plan_abweichung_akt', { p_account: acc }) || null; } catch { d = null; }
+  S.drift = { acc, at: Date.now(), d };
+  return d;
+}
+// Text der Abweichung für Lauf-Zeilen: leer, solange nichts geladen, kein Plan oder noch nichts gestartet (lag null); nach 5 min veraltet
+const driftLagText = () => S.drift?.d?.lag != null && S.drift.acc === S.acc && Date.now() - S.drift.at < 300000 ? lagText(S.drift.d.lag) : '';
