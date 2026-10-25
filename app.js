@@ -141,7 +141,7 @@ function renderNoAccount() {
 /* ---------- Navigation ---------- */
 
 // ereignisse = alter Name von Meldungen (ältere Push-Nachrichten mit „#/ereignisse“, Links in common.js)
-const VIEWS = { lage: viewLage, meldungen: viewMeldungen, ereignisse: viewMeldungen, plaene: viewPlans, claude: viewClaude, mehr: viewMore };
+const VIEWS = { lage: viewLage, meldungen: viewMeldungen, ereignisse: viewMeldungen, plaene: viewPlans, transporte: viewTransporte, claude: viewClaude, mehr: viewMore };
 const TAB_OF = { ereignisse: 'meldungen' };
 
 // soft = automatische Aktualisierung: ohne „Lädt …“, die Ansicht bleibt bis zum Neuaufbau stehen
@@ -159,11 +159,11 @@ async function route(soft) {
   updateBadge();
 }
 
-// Lage, Pläne und Meldungen alle 30 s still neu laden (nur sichtbar, nicht während einer Eingabe oder bei aufgeklappter Liste).
+// Lage, Pläne, Transporte und Meldungen alle 30 s still neu laden (nur sichtbar, nicht während einer Eingabe oder bei aufgeklappter Liste).
 // Der große Live-Stand kommt dabei nur bei neuem Zeitstempel (S.snap), sonst nur Lauf, Lebenszeichen, Ereignisse.
 setInterval(() => {
   const tab = location.hash.replace(/^#\/?/, '').split('/')[0] || 'lage';
-  if (document.visibilityState !== 'visible' || !['lage', 'plaene', 'meldungen', 'ereignisse'].includes(tab)) return;
+  if (document.visibilityState !== 'visible' || !['lage', 'plaene', 'transporte', 'meldungen', 'ereignisse'].includes(tab)) return;
   if (document.activeElement?.matches?.('input,select,textarea')) return;
   route(true);
 }, 30000);
@@ -882,6 +882,44 @@ async function fillPushCard() {
   act('pushOn', async () => { await pushOn(); toast('Push eingeschaltet'); });
   act('pushOff', async () => { await pushOff(); toast('Push abgemeldet'); });
   act('pushTest', async () => { const r = await Cloud.rpc('push_test', { p_account: S.acc }); toast(r.ok ? 'Test-Push gesendet – kommt in wenigen Sekunden' : r.text); });
+}
+
+/* ---------- Transporte (Nutzer 25.10.2026) ----------
+   Takt-Flüge des aktiven Plans (payload.transporte, cockpit/transporte.js) mit Realzeit wie die Bauschritte (Planstart + Abweichung).
+   Der Nutzer fliegt von Hand und hakt ab (RPC transport_haken_setzen, nur Owner). Offene zuerst, abgehakte zugeklappt darunter. */
+const TR_ST = { faellig: ['fällig', 'warn'], naechster: ['als Nächstes', 'ok'], spaeter: ['', ''], geflogen: ['geflogen', 'muted'] };
+async function viewTransporte() {
+  const [ap, d] = await Promise.all([loadActivePlan(), loadDrift(true)]);
+  if (!ap) { $('#view').innerHTML = '<div class="card"><h2>Transporte</h2><p class="muted">Kein Bauplan freigegeben.</p></div>'; return; }
+  const hk = await Cloud.q('transport_haken', { plan_id: `eq.${ap.row.id}`, select: 'nr,geflogen_at' });
+  const drift = d?.plan === ap.row.id ? d : null;
+  const list = Transporte.transportListe(ap.payload, drift, hk.map(h => h.nr));
+  const home = ap.payload?.planet;   // Heimat steht nicht in plan.planets, sondern als planet {name, coords}
+  const own = isOwner(), plName = c => !c ? '?' : esc(c === home?.coords ? home.name || 'Heimat' : planTabName(ap.payload, c));
+  const lad = l => esc(Transporte.ladungText(l, n => fmt(n)));
+  const item = x => {
+    const [st, cls] = TR_ST[x.status] || ['', ''];
+    return `<div class="list-item"><div class="row between">
+      <span><b>#${x.nr}</b> ${plName(x.von)} → ${plName(x.nach)}${st ? ` <span class="tag ${cls}">${st}</span>` : ''}</span>
+      <span class="nowrap"${x.ab ? ` title="${esc(dt(x.ab))}"` : ''}>${esc(clockT(x.ab))}</span></div>
+      <div class="small">hin: ${lad(x.hin)} · zurück: ${lad(x.zurueck)}</div>
+      <div class="small muted">Ankunft ${esc(clockT(x.an))} · zurück ${esc(clockT(x.rueck))}${x.fuel != null ? ` · Treibstoff ${esc(fmt(x.fuel))}` : ''}</div>
+      ${own ? `<div class="row" style="margin-top:4px"><button class="small${x.status === 'faellig' ? ' primary' : ''}" data-tr="${x.nr}" data-on="${x.status === 'geflogen' ? '' : 1}">${x.status === 'geflogen' ? 'Haken lösen' : 'Geflogen'}</button></div>` : ''}
+    </div>`;
+  };
+  const open = list.filter(x => x.status !== 'geflogen'), done = list.filter(x => x.status === 'geflogen');
+  const soon = open.filter(x => x.status !== 'spaeter' || x.ab < Date.now() + 24 * 3600e3), later = open.slice(soon.length);
+  $('#view').innerHTML = !list.length
+    ? `<div class="card"><h2>Transporte</h2><p class="muted">Der aktive Plan enthält keine Transportliste. Sie kommt mit dem nächsten Plan aus der Simulation (Takt-Flüge).</p></div>`
+    : `<div class="card"><h2>Transporte</h2>
+      <p class="small muted">${esc(ap.row.title || 'Aktiver Plan')} · ${open.length} offen, ${done.length} geflogen${drift?.lag != null ? ` · Zeiten verschoben: ${esc(lagText(drift.lag))}` : ''}</p>
+      ${soon.length ? soon.map(item).join('') : '<p class="muted">In den nächsten 24 h kein Transport.</p>'}
+      ${later.length ? `<details class="sub"><summary class="small muted">Später (${later.length})</summary>${later.map(item).join('')}</details>` : ''}
+      ${done.length ? `<details class="sub"><summary class="small muted">Geflogen (${done.length})</summary>${done.map(item).join('')}</details>` : ''}
+    </div>`;
+  $('#view').querySelectorAll('button[data-tr]').forEach(b => b.addEventListener('click', async () => {
+    try { await Cloud.rpc('transport_haken_setzen', { p_plan: ap.row.id, p_nr: +b.dataset.tr, p_on: !!b.dataset.on }); route(true); } catch (e) { toast(e.message); }
+  }));
 }
 
 /* ---------- Claude-Kanal (B6, 14.10.) ----------
