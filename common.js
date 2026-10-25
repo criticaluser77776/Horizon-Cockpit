@@ -435,7 +435,17 @@ function planLive(plan, isDone, execs, hb, now = Date.now()) {
   F.lagB = Zeitplan.lagsFrom(plan, starts).b ?? lag;
   return F;
 }
-const PLAN_LIVE_NOTE = 'Zeiten live je Schlange (Heimat, Forschung, je Kolonie): laufende Aufträge bis zu ihrem Ende, sonst Startschätzung des Autobuilders bzw. Abweichung der Schlange; Überfälliges ab jetzt (reine Planzeit als Tooltip)';
+// Zeit-Feed (zeitfeed.js): je Schlange „läuft gerade / nächster Start + Wartegrund“ aus getData (gd = Zeile getdata_state), dem
+// Lebenszeichen des Laufhalters (sonst eines Geräts mit diesem Plan) und dem Live-Zeitplan. Ergebnis: Zeitfeed.feed (Array je Schlange).
+function planFeed(plan, execs, sess, gd, now = Date.now()) {
+  const dev = sess?.devs?.find(x => x.holds && x.ab) || sess?.devs?.find(x => x.ab?.state?.plan === plan.id) || null;
+  const st = dev?.ab?.state || {}, hst = st.plan === plan.id ? st : {};
+  const ex = execs || [];
+  const F = planLive(plan, planStepDone(plan, hst, ex), ex, hst, now);
+  const hb = dev?.ab ? { ...st, at: dev.ab.at } : null;
+  return Zeitfeed.feed(plan, F, { gd: gd || null, hb, execs: ex }, now);
+}
+const PLAN_LIVE_NOTE ='Zeiten live je Schlange (Heimat, Forschung, je Kolonie): laufende Aufträge bis zu ihrem Ende, sonst Startschätzung des Autobuilders bzw. Abweichung der Schlange; Überfälliges ab jetzt (reine Planzeit als Tooltip)';
 // Zeitzelle eines Schritts (Tabellen und Kopfzeile): läuft bis …, fällig seit … oder erwarteter Start; done = Ausführung
 function planLiveCell(x, e) {
   if (!x) return e ? esc(dt(e.t)) : '';

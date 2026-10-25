@@ -192,7 +192,7 @@ async function viewLage() {
     loadNotfall(),
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
-    Cloud.q('getdata_state', { account_id: acc, select: 'at,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
+    Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,queues,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
     loadDecisions('id,t,text,data:data->decision,answer:data->answer').then(l => l.filter(e => /Motivationsvideo/i.test(e.text || ''))
       .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision)).catch(() => []),
     loadDrift(),

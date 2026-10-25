@@ -226,7 +226,7 @@ async function viewImperium() {
     Cloud.q('features', { account_id: acc, order: 'key' }),
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
-    Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,jobs,research,research_at,wake,queues,expires_at,ok_at,error,error_at' }).catch(() => []),
+    Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,jobs,research,research_at,wake,queues,expires_at,ok_at,error,error_at' }).catch(() => []),
     loadDrift(),   // füllt S.drift (Überblick und Lauf), kein Name nötig
   ]);
   const head = heads[0];
