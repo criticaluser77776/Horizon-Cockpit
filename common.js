@@ -455,3 +455,178 @@ async function loadWissen() {
   for (const o of Object.values(d.B)) o.L = Object.fromEntries(o.l.map(x => [x[0], x]));
   return (S.wissen = d);
 }
+
+// ---- Gemeinsame Plan-/Imperiums-Helfer (PR cockpit-umbau) ----
+// Vorher doppelt in app.js und details/plaene.js bzw. details/imperium.js. RES (Rohstoffliste) bleibt je Seite in app.js bzw.
+// details/imperium.js und wird von empireRes erst beim Aufruf gelesen.
+
+/* ---------- Imperium (B2/B10): Planeten aus d.empire, Rohstoffe gesamt ---------- */
+function empirePlanets(d) {
+  const e = d?.empire;
+  if (!e || e.error) return [];
+  const list = (e.planets || []).map(p => ({ ...p }));
+  // Spalten der Übersicht (Koordinaten) und Zeilen von emp_prod (nur Name) den Planeten zuordnen
+  for (const p of list) {
+    for (const t of ['buildings', 'ships', 'defence']) {
+      const o = e[t], k = o?.planets ? o.planets.findIndex(x => x.coords === p.coords) : -1;
+      p[t] = k >= 0 ? o.items.map(i => ({ type: i.type, cat: i.cat, n: i.values[k], busy: (i.busy || []).includes(k) })).filter(i => i.n) : [];
+    }
+    for (const [t, v] of Object.entries(e.res || {})) p[t] = v?.planets?.find(x => x.name === p.name) || null;
+  }
+  return list;
+}
+function empireRes(d, hrs) {
+  const pl = empirePlanets(d).filter(p => p.storage);
+  if (!pl.length) return null;
+  const cur = d.start?.coords, stab = d.prod?.['Maximal stabile Menge'] || {};
+  return RES.map(x => {
+    let now = 0, net = 0, full = null;
+    for (const p of pl) {
+      const r = (p.production?.[x] ?? 0) / 24, cap = p.coords === cur ? stab[x] : null;   // Grenze nur für den gewählten Planeten bekannt
+      const v = Math.min((p.storage[x] || 0) + r * hrs, cap || Infinity);
+      now += v; net += r;
+      if (r > 0 && cap && pl.length === 1) full = (cap - v) / r * 3600;
+    }
+    return { x, now, net, full };
+  });
+}
+
+/* ---------- Plan: Faktorwechsel, Erledigt-Logik, Schrittliste ---------- */
+const FMT_PCT = f => `${Math.round(f * 10) * 10} %`;
+// Faktorwechsel des Plans: [Planzeit h, {typ: Anteil}] → nur die Änderungen gegenüber der vorigen Liste
+function factorChanges(plan) {
+  const out = [];
+  let prev = {};
+  for (const [tau, f] of plan.factors || []) {
+    const ch = Object.entries(f).filter(([k, v]) => Math.round((prev[k] ?? 1) * 10) !== Math.round(v * 10)).map(([k, v]) => [k, prev[k] ?? 1, v]);
+    if (ch.length) out.push({ tau, ch });
+    prev = { ...prev, ...f };
+  }
+  return out;
+}
+// Erledigt: Ausführung (executions) oder vor dem ersten offenen Schritt des Autobuilders – Kolonie-Schritte baut er (bis M3)
+// nicht, für sie zählt nur eine Ausführung
+const planStepDone = (plan, st, execs) => {
+  const open = (st.open || []).filter(Number.isInteger), first = open.length ? Math.min(...open) : null;
+  const done = new Set(execs.filter(e => e.step).map(e => e.step));
+  return n => done.has(n) || (first != null && n < first && !planAway(plan, n));
+};
+/* Planschritte (Reiter aus planTabs/planInTab, M5): tab = 'alle' | 'heim' | Koordinaten einer Kolonie | 'r' (Forschung).
+   Zeiten: Live-Zeitplan (LT = planLive, Nutzer 24.10.2026, wie im Autobuilder), reine Planzeit als Tooltip.
+   opt.all = true: alle Schritte nach Live-Zeit mit Historie (Atlas, Pläne); false: Ausschnitt wie im Cockpit (C1, 17.10.2026) –
+   die nächsten opt.nearLimit Schritte ab dem ersten offenen (im Reiter eines Planeten: die nächsten offenen dieses Reiters)
+   und ±3 um „bis #“, Lücken als „…“, mit ⏸ (Halt) und Marke „bis #“.
+   opt.fcRows = false lässt die Faktorwechsel-Zeilen weg. opt.marks: Platzhalter für farbige Markierungen, noch ohne Wirkung. */
+function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
+  const { all = false, fcRows = true, nearLimit = 12 /*, marks = null */ } = opt;
+  const t0 = Date.parse(plan.startTime);
+  const tip = tau => ` title="Plan: ${esc(dt(t0 + tau * 3600e3))}"`;
+  const fcAt = tau => esc(dt(Zeitplan.atTau(plan, LT, tau, 'b', LT.lagB)));
+  const open = (st.open || []).filter(Number.isInteger);
+  const first = open.length ? Math.min(...open) : null;
+  const until = st.until || null;
+  const done = new Map(execs.filter(e => e.step).map(e => [e.step, e]));
+  const isDone = planStepDone(plan, st, execs);
+  const nameOf = k => W?.B?.[k]?.n || k;
+  const fcs = fcRows && (!tab || tab === 'alle' || tab === 'heim') ? factorChanges(plan) : [];   // Faktoren gelten für die Heimat
+  const fcKey = fc => Zeitplan.atTau(plan, LT, fc.tau, 'b', LT.lagB);
+  const stepRow = (s, i) => ({ tau: s[3], n: i + 1, s, k: Zeitplan.sortKey(plan, LT, i, Date.parse(done.get(i + 1)?.t)) });
+  const cmp = (a, b) => a.k - b.k || (a.fc ? -1 : b.fc ? 1 : a.n - b.n);   // nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026)
+  const row = r => {
+    const e = done.get(r.n), run = LT.t[r.n - 1]?.run, kol = planAway(plan, r.n), isUntil = !all && r.n === until;
+    const mark = run ? '⏵' : isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : !all && (st.halts || []).includes(r.n) ? '⏸' : '';
+    return `<tr class="step${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
+      <td class="num"${tip(r.tau)}>${planLiveCell(LT.t[r.n - 1], e)}</td></tr>`;
+  };
+  const fcRow = fc => `<tr class="muted"><td></td><td>⚙ Faktor ${fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(fc.tau)}>${fcAt(fc.tau)}</td></tr>`;
+  if (all) {   // alle Schritte, erledigte nach ihrem Start; tau bleibt Planzeit (Tooltip)
+    const rows = [];
+    plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) rows.push(stepRow(s, i)); });
+    for (const fc of fcs) rows.push({ tau: fc.tau, fc, k: fcKey(fc) });
+    rows.sort(cmp);
+    return `<table class="small">${rows.map(r => r.fc ? fcRow(r.fc) : row(r)).join('')}</table>`;
+  }
+  // Ausschnitt (Cockpit): im Reiter eines Planeten/der Forschung die nächsten nearLimit offenen Schritte dieses Reiters statt des Nummernfensters
+  const own = plan.steps.map((s, i) => i + 1).filter(n => tab && tab !== 'alle' && planInTab(plan, tab, plan.steps[n - 1], n) && !isDone(n));
+  const from = tab && tab !== 'alle' ? own[0] ?? first ?? 1 : first ?? 1;
+  const near = n => tab && tab !== 'alle' ? own.indexOf(n) >= 0 && own.indexOf(n) < nearLimit : n >= from && n < from + nearLimit;
+  const show = n => near(n) || (until && Math.abs(n - until) <= 3);
+  const steps = [];
+  plan.steps.forEach((s, i) => { if (s[0] !== 's' && show(i + 1) && planInTab(plan, tab, s, i + 1)) steps.push(stepRow(s, i)); });
+  if (!steps.length) return `<p class="muted small">Kein offener Schritt${until ? ` bis #${esc(until)}` : ''}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
+  // zusammenhängende Gruppen (Lücke = „…“); Faktorwechsel nur innerhalb einer Gruppe
+  const groups = [];
+  const gap = until && until - 3 > from + nearLimit;   // Ausschnitt um „bis #“ getrennt vom Anfang
+  for (const r of steps) { const g = groups[groups.length - 1]; if (g && !(gap && near(g[g.length - 1].n) && !near(r.n))) g.push(r); else groups.push([r]); }
+  // je Abschnitt nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026); Faktorwechsel mit ihrer Live-Zeit dazwischen
+  return `<table class="small">${groups.map(g => {
+    const ks = g.map(r => r.k), lo = Math.min(...ks), hi = Math.max(...ks);
+    const list = [...g, ...fcs.map(fc => ({ tau: fc.tau, fc, k: fcKey(fc) })).filter(r => r.k >= lo && r.k <= hi)].sort(cmp);
+    return list.map(r => r.fc ? fcRow(r.fc) : row(r)).join('');
+  }).join('<tr class="muted"><td></td><td>…</td><td></td></tr>')}</table>`;
+}
+
+/* ---------- Entwürfe: Gewinn gegenüber dem aktiven Plan (B14) ---------- */
+const PLAN_GAIN_MIN = 0.5;   // h, Rückfall ohne Förderung-Maß, wie SCHWELLE in tools/push_plan.py
+const PLAN_GAIN_MIN_PCT = 1;   // % gewichtete Förderung bei T (Schritt 2, Nutzer 24.10.2026), wie SCHWELLE_PCT in tools/push_plan.py
+const planEnd = p => {
+  const h = +p?.hours || +(String(p?.created || '').match(/([\d.]+) h$/) || [])[1];
+  return p?.startTime && h ? Date.parse(p.startTime) + h * 3600e3 : null;
+};
+// Verschiebung des aktiven Plans in h (positiv = später): Startverzug + Rückstand bzw. − Vorlauf; vor dem ersten Start die Wartezeit
+const planShift = drift => !drift ? 0 : drift.lag != null ? (+drift.offset || 0) + +drift.lag : Math.max(+drift.wait || 0, 0);
+const activeEnd = (active, drift) => {
+  const end = planEnd(active?.payload);
+  return end ? end + planShift(drift) * 3600e3 : null;
+};
+// Förderung bei T (Schritt 2, B8): { pctF, massNeu, massAkt } oder null. Aktiver Wert: vergleich des Entwurfs (Optimierer --gegen), wenn
+// vergleich.planId = Plan-id des aktiven Plans und zulässig; sonst bis.mass des aktiven Plans bei gleichem bis.t; sonst kein Vergleich (Stunden-Rückfall)
+function foerderVergleich(d, active) {
+  const neu = d.bisMass != null && d.bisMass !== '' ? +d.bisMass : NaN;
+  if (!(neu >= 0)) return null;
+  let akt = NaN;
+  if (d.vPlan && active?.plan_hash && d.vPlan === active.plan_hash && d.vOk === 'true' && d.vMass != null) akt = +d.vMass;
+  else if (active?.payload?.bis?.mass != null && active.payload.bis.t && active.payload.bis.t === d.bisT) akt = +active.payload.bis.mass;
+  return akt > 0 ? { pctF: (neu - akt) / akt * 100, massNeu: neu, massAkt: akt } : null;
+}
+// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), pctF/massNeu/massAkt (Förderung bei T), agreed, better }
+async function draftGains(plans, active, drift) {
+  const drafts = plans.filter(p => p.kind === 'build' && p.status === 'entwurf');
+  if (!drafts.length) return {};
+  const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
+    select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil,'
+      + 'bisT:payload->bis->>t,bisMass:payload->bis->>mass,vPlan:payload->vergleich->>planId,vMass:payload->vergleich->>mass,vOk:payload->vergleich->>ok' });
+  const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
+  // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan
+  const teile = rows.filter(d => d.teil).map(d => d.id), teilOf = {};
+  if (teile.length) for (const t of await Cloud.q('plans', { id: `in.(${teile.join(',')})`, select: 'id,payload' })) teilOf[t.id] = planTeilDiff(t.payload, active);
+  const out = {};
+  for (const d of rows) {
+    const p = drafts.find(x => x.id === d.id), end = planEnd(d);
+    // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
+    const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
+    const f = p.source !== 'user' ? foerderVergleich(d, active) : null;
+    out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, ...(f || {}), agreed, teil: teilOf[d.id] || null,
+      better: agreed || !!teilOf[d.id] || !active || (f ? f.pctF >= PLAN_GAIN_MIN_PCT : gain == null || gain > PLAN_GAIN_MIN) };
+  }
+  return out;
+}
+const gainText = g => g?.pctF != null ? `Förderung bei T: ${g.pctF >= 0 ? '+' : '−'}${fmt(Math.abs(g.pctF), 1)} % (aktiv ${fmt(g.massAkt, 0)} → neu ${fmt(g.massNeu, 0)} /h gewichtet)`
+  : g?.gain == null ? '' : `SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`;
+const gainOk = g => g?.pctF != null ? g.pctF >= PLAN_GAIN_MIN_PCT : g?.gain > PLAN_GAIN_MIN;
+
+// Herkunft und Klapper „Details“ eines Plans (B16): Notiz in Anzeigeform, darunter die technischen Kennungen.
+// Werft-/Def-Pläne: im Atlas die Vorschau aus details/werft.js, im Cockpit ein Link dorthin (Vorschau seit C1 im Atlas)
+const SRC = { optimizer: 'Optimierer', user: 'eigener Entwurf', claude: 'Claude' };
+const WERFT_KINDS = ['ship', 'defense', 'probe'];
+function planDetails(p) {
+  if (!p.note && !p.plan_hash && !p.id) return '';
+  return `<details class="sub"><summary class="small muted">Details</summary>${p.note ? `<div class="small wrapall" style="white-space:pre-wrap">${esc(tidy(p.note))}</div>` : ''}
+    <div class="small muted wrapall">Plan-id ${esc(p.plan_hash || '–')} · Datensatz ${esc(p.id)}${p.parent_id ? ` · Vorlage ${esc(p.parent_id)}` : ''}</div></details>`
+    + (ATLAS ? (window.HzWerftCockpit?.details(p) || '')
+      : WERFT_KINDS.includes(p.kind) ? `<div class="small"><a href="details/#/werft" target="_blank" rel="noopener">Schritte und Auftragsliste im Atlas →</a></div>` : '');
+}
+
+/* ---------- Planabweichung (B4): Stundentexte ---------- */
+const hrs = h => `${fmt(Math.abs(h), 1)} h`;
+const lagText = h => h == null ? '–' : h >= 0.05 ? `${hrs(h)} hinter dem Plan` : h <= -0.05 ? `${hrs(h)} Vorlauf` : 'genau im Plan';

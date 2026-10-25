@@ -51,20 +51,6 @@ function getdataCard(g, nm) {
    (cmd=status) nur für den im Spiel gewählten Planeten → nur dort. Arbeiter, Energie, Bauplatz nur in der Ansicht eines
    Planeten; Bauleistung entfällt, dafür „Ausbau x / y“ wie im alten horizon-enhanced (Nutzer 16.10.). */
 const EMP_RES = [['Eisenerz', 'Eisenerz'], ['Mineral', 'Minerale'], ['Treibstoff', 'T-Stoff']];
-function empirePlanets(d) {
-  const e = d?.empire;
-  if (!e || e.error) return [];
-  const list = (e.planets || []).map(p => ({ ...p }));
-  // Spalten der Übersicht (Koordinaten) und Zeilen von emp_prod (nur Name) den Planeten zuordnen
-  for (const p of list) {
-    for (const t of ['buildings', 'ships', 'defence']) {
-      const o = e[t], k = o?.planets ? o.planets.findIndex(x => x.coords === p.coords) : -1;
-      p[t] = k >= 0 ? o.items.map(i => ({ type: i.type, cat: i.cat, n: i.values[k], busy: (i.busy || []).includes(k) })).filter(i => i.n) : [];
-    }
-    for (const [t, v] of Object.entries(e.res || {})) p[t] = v?.planets?.find(x => x.name === p.name) || null;
-  }
-  return list;
-}
 // Baustellen je Planet (wie das alte horizon-enhanced): im Spiel gewählter Planet genau aus cmd=status (CONSTRUCTION,
 // Summe Baustellen), alle anderen aus den Stufen (stat overview) und den Spieldaten: Σ Baustellen je Stufe (Hauptquartier,
 // Gebäudeerstellung, Rechenzentrum) + 1 je Kolonialzentrum (in den Spieldaten ohne Wert). Boni fehlen → „≈“. Nur ganze zählen.
@@ -192,21 +178,6 @@ function bindPlanets(d, nm, W) {
 /* ---------- Überblick (B10): Lauf, Rohstoffe, laufende Aufträge in wenigen Zeilen ----------
    Ab 16.10. (Nutzer) Gesamtwerte des Imperiums: Rohstoffe aller Planeten (emp_prod: Lager + Netto-Förderung, auf jetzt
    hochgerechnet), Koloniepunkte benutzt/gesamt (cmd=orden, Collector ab 0.4.7), Ausbau x / y über alle Planeten. */
-function empireRes(d, hrs) {
-  const pl = empirePlanets(d).filter(p => p.storage);
-  if (!pl.length) return null;
-  const cur = d.start?.coords, stab = d.prod?.['Maximal stabile Menge'] || {};
-  return RES.map(x => {
-    let now = 0, net = 0, full = null;
-    for (const p of pl) {
-      const r = (p.production?.[x] ?? 0) / 24, cap = p.coords === cur ? stab[x] : null;   // Grenze nur für den gewählten Planeten bekannt
-      const v = Math.min((p.storage[x] || 0) + r * hrs, cap || Infinity);
-      now += v; net += r;
-      if (r > 0 && cap && pl.length === 1) full = (cap - v) / r * 3600;
-    }
-    return { x, now, net, full };
-  });
-}
 function overviewCard(sess, d, live, abLive, nm, W) {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   const runTxt = !r ? 'kein Lauf'
