@@ -184,6 +184,14 @@ async function updateBadge() {
 
 const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
+// Live-Stand (ca. 35 KB) nur laden, wenn er neu ist (head = Kopfzeile aus state_latest mit collected_at); gemeinsam für Lage und Pläne in S.snap
+async function ensureSnap(head) {
+  if (head && (S.snap?.acc !== S.acc || S.snap?.at !== head.collected_at)) {
+    const full = await Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live', select: 'collected_at,data' });
+    S.snap = { acc: S.acc, at: head.collected_at, data: full[0]?.data };
+  }
+}
+
 async function viewLage() {
   const acc = `eq.${S.acc}`;
   const [heads, sess, ap, effs, gds, movis] = await Promise.all([   // 7. Element loadDrift füllt S.drift (für overviewCard), kein Name nötig
@@ -197,12 +205,8 @@ async function viewLage() {
       .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision)).catch(() => []),
     loadDrift(),
   ]);
-  // Live-Stand (ca. 35 KB) nur laden, wenn er neu ist
   const head = heads[0];
-  if (head && (S.snap?.acc !== S.acc || S.snap?.at !== head.collected_at)) {
-    const full = await Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'collected_at,data' });
-    S.snap = { acc: S.acc, at: head.collected_at, data: full[0]?.data };
-  }
+  await ensureSnap(head);
   const live = head ? { collected_at: head.collected_at } : null;
   const d = head ? S.snap?.data : null;
   // jüngster Stand des Autobuilders (laufende Aufträge, Rohstoffe aus seiner letzten Prüfung)
@@ -252,17 +256,12 @@ async function planetenKarten(d, ap, gd, sess, W) {
     plan ? loadPlanExecs(`eq.${S.acc}`, ap.row.id, plan).catch(() => []) : [],
     loadLageWerte(pl),
   ]);
-  const home = (typeof gd?.colony?.coords === 'string' && gd.colony.coords) || (typeof plan?.planet === 'string' && plan.planet) || pl[0].coords;
+  const home = planHomeCoords(plan, gd, pl[0].coords);
   let feed = plan ? planFeed(plan, execs, sess, gd) : [];
   if (!feed.length) feed = liveJobRows(gd, home, W);
-  // Zuordnung: Bau/Werft über die Koordinaten der Schlange ('heim' = Heimat), Forschung über den Startplaneten des nächsten/laufenden Schritts
-  const owner = r => {
-    if (r.q === 'r') { const i = (r.next || r.run)?.i; return (plan && Number.isInteger(i) && planResPlanet(plan, i + 1)) || (r.planet !== null && r.planet !== undefined && r.planet !== 'heim' ? r.planet : home); }
-    return r.planet === 'heim' || !r.planet ? home : r.planet;
-  };
-  const cur = d?.start?.coords;
+  const by = feedByPlanet(plan, feed, home, pl), cur = d?.start?.coords;   // Zuordnung gemeinsam mit den Planeten-Karten unter Pläne (common.js)
   return pl.map(p => {
-    const rows = feed.filter(r => owner(r) === p.coords);
+    const rows = by[p.coords];
     return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), werte: werte[p.coords] || null, steps: plan?.steps, current: p.coords === cur, plan: null });
   }).join('');
 }
@@ -612,38 +611,16 @@ function setBis(active, sess, n, dev) {
   S.abSel = g ? { ...S.abSel, by: { ...base.by, [g]: n } } : { ...S.abSel, until: n, by: S.abSel?.by || base.by };
   return step;
 }
-function abCard(active, sess, own, execs, W, drift) {
-  const plan = active?.payload, run = sess.run;
-  const holder = sess.devs.find(x => x.holds);
-  const target = abTarget(sess);
-  const st = target?.ab?.state || {};
-  let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2><span class="muted small">${run ? `seit ${esc(dt(run.since))}` : ''}</span></div>`;
-  html += runBody(sess, { drift: false });   // driftLine zeigt die Abweichung weiter unten
-  if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Start gehen unter <a href="#/lage">Lage → Steuerung</a>.</p></div>';
-  html += `<p class="small">Freigegeben: <b>${esc(planLabel(active.id))}</b> · ${esc(tidy(active.title))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span>
-    · <a href="#/lage">Start/Stopp unter Lage</a></p>`;
-  html += driftLine(drift, own);
-  if (plan) {
-    const hst = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
-    // Mehrere Planeten (M5): Kopfzeile Imperium und Reiter wie im Atlas, Nummern und „bis #“ global
-    const multi = planMulti(plan), tabs = multi ? planTabs(plan, S.home) : null, tab = multi ? planTabCur(tabs) : null;
-    const home = plan.planet || S.home;
-    const isDone = (() => { const o = (hst.open || []).filter(Number.isInteger), f = o.length ? Math.min(...o) : null, d = new Set(execs.filter(e => e.step).map(e => e.step));
-      return n => d.has(n) || (f != null && n < f && !planAway(plan, n)); })();
-    const LT = planLive(plan, isDone, execs, hst);
-    // Grenze im Reiter (M8) und Haltepunkte inkl. vom Vorplan übernommener (Lebenszeichen halts, ab 0.5.65; Review C1)
-    const tg = tabGrp(tab), halts = Array.isArray(hst.halts) ? hst.halts.filter(Number.isInteger) : [];
-    const hstTab = { ...hst, until: (tg && hst.untilBy?.[tg]) || hst.until, halts };
-    html += `<div class="row between" style="margin-top:10px"><h3 style="margin:0">Nächste Planschritte <span class="muted small">bis ${esc(hst.until ? untilTxt(hst.until, hst.untilBy, plan) : '#–')}</span></h3>
-      <a class="small" href="details/#/plaene" target="_blank" rel="noopener">alle im Atlas</a></div>
-      ${multi ? planEmpire(plan, tabs, isDone, LT, Date.now(), !!hst.colony) + planTabsHtml(tabs, tab)
-        : home?.coords ? `<div class="small muted" style="margin:4px 0">Planet ${esc(`${home.name || 'Planet'} (${home.coords})`)} · Forschung gilt für alle Planeten („global“)</div>` : ''}
-      <div class="small muted" style="margin:4px 0">${PLAN_LIVE_NOTE}</div>
-      ${halts.length ? `<div class="small" style="margin:4px 0">⏸ Haltepunkte vor #${halts.map(n => esc(n)).join(', #')}${(plan.halts || []).length || (plan.haltKeys || []).length ? '' : ' <span class="muted">(vom Vorplan übernommen)</span>'}</div>` : ''}
-      ${stepsTable(plan, hstTab, execs, W, tab, LT, { all: false })}
-      ${own ? `<div class="row between small" style="margin-top:6px"><span class="muted">Tipp auf einen Schritt = „bis #“ (Start unter Lage)</span><a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a></div>` : ''}`;
-  }
-  return html + '</div>';
+// Plan-Kopf (PR 6, 25.10.2026): ein Plan, Status, „bis #“, Lauf, eine Abweichungszeile. Die Schrittlisten stehen in den Planeten-Karten (planetKarte, common.js).
+function planKopfCard(active, sess, own, drift, hst) {
+  if (!active) return `<div class="card"><h2>Plan</h2>${runBody(sess, { drift: false })}
+    <p class="muted small">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Start gehen unter <a href="#/lage">Lage → Steuerung</a>.</p></div>`;
+  const plan = active.payload;
+  return `<div class="card"><div class="row between"><h2>${esc(planLabel(active.id))}</h2><span class="tag ${esc(active.status)}">${esc(active.status)}</span></div>
+    <p class="small">${esc(tidy(active.title))}${plan ? ` · bis <b>${esc(hst.until ? untilTxt(hst.until, hst.untilBy, plan) : '#–')}</b>` : ''}</p>
+    ${runBody(sess, { drift: false })}${driftLine(drift)}
+    <div class="row between small"><a href="#/lage">Start/Stopp unter Lage</a>${own && active.plan_hash ? `<a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a>` : ''}</div>
+    ${own ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(active.id)}">Plan abbrechen</button></div>` : ''}</div>`;
 }
 
 // „Letzte Kommandos“ (cmdTable, watchCmds) stehen seit PR 4 in common.js und nur noch im Atlas (Imperium → Wartung).
@@ -735,79 +712,53 @@ Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein 
   } catch (e) { toast(e.message); }
 }
 
-/* ---------- Neuer Plan: Planlauf auf Work (18.10.) ----------
-   Seit 18.10. rechnet der PC „Work“ die Optimierer-Läufe (tools/sim_work.py): täglich 05:17 bei neuem Snapshot und auf
-   Auftrag „Plan rechnen“. Der Knopf stellt den Auftrag über public.plan_rechnen (nur Owner; höchstens einer offen), der
-   Stand kommt aus public.planlauf_status – dieselben Daten wie im Autobuilder-Panel. Ergebnis: Entwurf hier unter Pläne. */
-const SIMPH = { start: 'läuft', fertig: 'fertig', ausgefallen: 'fiel aus', ausgelassen: 'ausgelassen', fehler: 'Fehler' };
-function optCard(pl, own) {
-  const lines = [];
-  let open = null;
-  if (!pl?.now) lines.push('Stand nicht abrufbar');
-  else {
-    const w = (pl.work || [])[0], ws = w?.state || {}, wt = w ? new Date(w.at) : 0, age = Date.now() - wt;
-    const running = ws.phase === 'start' && age < 3 * 3600e3;
-    lines.push(!w ? 'Work: kein Lebenszeichen' : running ? `Work: rechnet seit ${clockT(wt)}`
-      : age > 15 * 60e3 ? `Work: aus (zuletzt ${clockT(wt)})` : `Work: bereit (${ago(wt)})`);
-    if (ws.auto) lines.push(`Auto-Lauf: ${ws.auto}`);
-    if (ws.sperre && !/^frei/i.test(ws.sperre)) lines.push(`Sim-Sperre: ${ws.sperre}`);
-    const l = ws.last;
-    if (l?.at) lines.push(`Letzter Lauf: ${clockT(l.at)} ${SIMPH[l.phase] || l.phase}${l.minutes != null ? ` (${l.minutes} min)` : ''}`);
-    for (const q of pl.offen || []) {
-      const work = q.kind !== 'optimierer';
-      if (work && !open) open = q;
-      lines.push(`${work ? 'Auftrag' : 'GitHub-Lauf'}: ${q.status === 'in_arbeit' ? 'in Arbeit' : 'angefordert'} seit ${clockT(q.created_at)}`);
-    }
-  }
-  return `<div class="card"><div class="row between"><h2>Neuer Plan</h2>${open ? '<span class="tag">angefordert</span>' : ''}</div>
-    <p class="muted small">Work rechnet neue Pläne (täglich 05:17 bei neuem Snapshot oder auf Knopfdruck, ≈ 1 h); das Ergebnis erscheint hier als Entwurf. Freigeben und starten weiterhin du.</p>
-    ${lines.map(t => `<div class="small wrapall">${esc(tidy(t))}</div>`).join('')}
-    ${own ? `<div class="row" style="margin-top:6px"><button id="optGo"${open || !pl?.now ? ' disabled' : ''} title="${open ? 'Ein Plan-Lauf ist schon angefordert' : 'Work rechnet einen neuen Plan (≈ 1 h, niedrige Priorität)'}">Work rechnen lassen</button></div>` : ''}</div>`;
-}
-async function optAsk() {
-  if (!confirm('Work soll jetzt einen neuen Plan rechnen (≈ 1 h, niedrige Priorität).\nDer Entwurf erscheint danach hier unter Pläne; freigeben und starten weiterhin du.\nAnfordern?')) return;
-  try { const r = await Cloud.rpc('plan_rechnen', { p_account: S.acc, p_note: 'Cockpit' }); toast(r.text || (r.ok ? 'Angefordert' : 'Nicht angefordert')); route(true); }
-  catch (e) { toast(e.message); }
-}
-
 /* ---------- Planabweichung (B4, 14.10.) ----------
    public.plan_abweichung rechnet je Schritt Plan-Start gegen echten Start (executions) und überfällige offene Schritte;
    der Startverzug (erster Start nach dem Planstart, weil der Plan ab seinem Snapshot rechnet) ist abgezogen. Der Wächter in
    Supabase meldet ab 2 h Rückstand „mittel“ (je weitere 2 h erneut) mit dem Angebot, neu zu planen. */
-// Im Cockpit seit C1 nur der Rückstand als Zahl (eine Zeile im Autobuilder) und ab der Meldegrenze „Neu planen“; Grafik im Atlas
-function driftLine(d, own) {
+// Im Cockpit nur der Rückstand als Zahl in einer Zeile (Plan-Kopf), dazu ein überfälliger Schritt; Grafik im Atlas
+function driftLine(d) {
   if (!d) return '';
-  if (d.lag == null) return `<p class="small muted">Abweichung: noch kein Schritt dieses Plans gestartet.</p>`;
+  const atlas = '<a href="details/#/plaene" target="_blank" rel="noopener">Grafik im Atlas</a>';
+  if (d.lag == null) return `<p class="small muted">Abweichung: noch kein Schritt gestartet · ${atlas}</p>`;
   const cls = d.lag >= d.limit ? 'err' : d.lag >= 1 ? 'warn' : 'ok';
-  return `<div class="row between small" style="margin:6px 0;gap:6px"><span>Abweichung: <b class="${cls}">${esc(lagText(d.lag))}</b>${d.due?.lag > 0 ? ` · überfällig #${esc(d.due.n)}` : ''}
-    · <a href="details/#/plaene" target="_blank" rel="noopener">Grafik im Atlas</a></span></div>`;
+  return `<p class="small">Abweichung: <b class="${cls}">${esc(lagText(d.lag))}</b>${d.due?.lag > 0 ? ` · überfällig #${esc(d.due.n)}` : ''} · ${atlas}</p>`;
 }
 
+/* ---------- Pläne (PR 6, 25.10.2026) ----------
+   Aufbau: Angebot „Neuer Plan“ (nur wenn besser) · Plan-Kopf (Status, „bis #“, Lauf, Abweichung) · je Planet eine Karte
+   (Bau/Forschung/Werft in Realzeit, nächste Planschritte, letzte Schritte; planetKarte mit opts.plan) · Entwürfe (der neueste je Art).
+   „bis #“ ist hier global (Tipp auf einen Schritt, Start unter Lage); Reiter je Planet gibt es im Cockpit nicht mehr. */
 async function viewPlans(rest = []) {
   // Plan-Editor seit C1 nur im Atlas; alte Links (#/plaene/edit/<id>) dorthin umleiten
   if (rest[0] === 'edit' && rest[1]) { location.replace(`details/#/plaene/edit/${encodeURIComponent(rest[1])}`); return; }
   const acc = `eq.${S.acc}`;
-  let [plans, heads, sess, W, homes, opt] = await Promise.all([
+  let [plans, heads, sess, W, lives, gds] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 30,
       select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
       select: 'id,status,title,plan_hash' }),
     loadSessions(),
     loadWissen().catch(() => null),
-    S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
-    Cloud.rpc('planlauf_status', { p_account: S.acc }).catch(() => null),
+    Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }).catch(() => []),
+    Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,queues,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
   ]);
-  if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
+  await ensureSnap(lives[0]).catch(() => {});
+  const d = lives[0] ? S.snap?.data : null;
+  if (S.home?.acc !== S.acc) { const st = d?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   if (plans.some(p => !planNo(p.id))) await loadNums(true);   // neuer Plan seit dem letzten Zählen
   // Plan-Inhalt (bis ca. 30 KB) nur einmal je Plan laden
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
+  const plan = active?.payload && Array.isArray(active.payload.steps) ? active.payload : null;
+  const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
   // Abweichung: ein Ladeweg (loadDrift → S.drift); gilt nur, wenn der Server denselben Plan meint wie die Ansicht
-  const [execs, drift0] = active ? await Promise.all([
-    loadPlanExecs(acc, active.id, active.payload),
+  const [execs, drift0, werte] = await Promise.all([
+    plan ? loadPlanExecs(acc, active.id, plan) : [],
     loadDrift(true),
-  ]) : [[], await loadDrift(true)];
+    plan && pl.length ? loadLageWerte(pl) : {},
+  ]);
   const drift = drift0?.plan === active?.id ? drift0 : null;
   // B14: nur bessere Entwürfe zeigen (Karte und Liste); Gewinn gegen das erwartete Ende des aktiven Plans
   const gains = await draftGains(plans, active, drift).catch(() => ({}));
@@ -815,29 +766,33 @@ async function viewPlans(rest = []) {
   const hidden = plans.filter(p => gains[p.id] && !gains[p.id].better);
   plans = plans.filter(p => !hidden.includes(p));
   const own = isOwner();
-  // B15 (15.10.): nur der freigegebene/aktive Plan, der angebotene Entwurf („Neuer Plan verfügbar“) und je Art der neueste
-  // Entwurf; ältere Pläne (verworfen, abgebrochen, erledigt, überholte Entwürfe) und Löschen seit C1 im Atlas.
-  const newest = new Set(offer ? [offer.draft.id] : []), kinds = new Set();   // plans ist nach created_at absteigend sortiert
-  for (const p of plans) if (p.status === 'entwurf' && !kinds.has(p.kind)) { kinds.add(p.kind); newest.add(p.id); }
-  const run = p => ['freigegeben', 'aktiv'].includes(p.status);
-  const cur = [...plans.filter(run), ...plans.filter(p => !run(p) && newest.has(p.id))];
-  const old = plans.filter(p => !cur.includes(p));
+  // Stand des Autobuilders für diesen Plan (Lauf-Halter bevorzugt), Erledigt-Logik und Live-Zeitplan
+  let hst = {}, planCards = '';
+  if (plan) {
+    const holder = sess.devs.find(x => x.holds), st = abTarget(sess)?.ab?.state || {};
+    const h0 = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
+    // Haltepunkte inkl. vom Vorplan übernommener (Lebenszeichen halts, ab 0.5.65)
+    hst = { ...h0, halts: Array.isArray(h0.halts) ? h0.halts.filter(Number.isInteger) : [] };
+    const LT = planLive(plan, planStepDone(plan, hst, execs), execs, hst);
+    const gd = gds[0] || null, home = planHomeCoords(plan, gd, pl[0]?.coords), cur = d?.start?.coords;
+    const by = feedByPlanet(plan, planFeed(plan, execs, sess, gd), home, pl);
+    planCards = pl.map(p => planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'), werte: werte[p.coords] || null,
+      steps: plan.steps, current: p.coords === cur, plan: { plan, st: hst, execs, W, LT, home } })).join('');
+  }
+  // B15: je Art nur der neueste Entwurf (der angebotene steht schon oben im Angebot); ältere Pläne und Löschen im Atlas
+  const kinds = new Set(), list = [];   // plans ist nach created_at absteigend sortiert
+  for (const p of plans) if (p.status === 'entwurf' && !kinds.has(p.kind)) { kinds.add(p.kind); if (p.id !== offer?.draft.id) list.push(p); }
+  const old = plans.filter(p => p.id !== active?.id && p.id !== offer?.draft.id && !list.includes(p));
   const item = p => `<div class="list-item"><div class="row between">
-      <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span>
-      <span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
+      <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span><span class="muted small">${esc(when(p.created_at))}</span></div>
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
       ${gainText(gains[p.id]) ? `<div class="small ${gainOk(gains[p.id]) ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
-      ${planTeilHtml(gains[p.id]?.teil)}
-      <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}</div>
-      ${planDetails(p)}
-      ${own && p.status === 'entwurf' ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
+      ${planTeilHtml(gains[p.id]?.teil)}${planDetails(p)}
+      ${own ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
-      ${own && run(p) ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(p.id)}">Abbrechen</button></div>` : ''}
-      ${own && p.kind === 'build' && p.plan_hash ? `<div class="small" style="margin-top:6px"><a href="details/#/plaene/edit/${esc(p.id)}" target="_blank" rel="noopener">Plan ändern (Atlas, neuer Entwurf) →</a></div>` : ''}
     </div>`;
-  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, own, execs, W, drift) + optCard(opt, own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
-    <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude; gezeigt werden nur Baupläne, die das Ziel früher erreichen als der aktive Plan${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
-    ${cur.length ? cur.map(item).join('') : `<p class="muted">${old.length ? 'Kein freigegebener Plan und kein offener Entwurf.' : 'Noch keine Pläne. Der Optimierer legt jeden neuen Bauplan hier als Entwurf ab.'}</p>`}
+  $('#view').innerHTML = newPlanCard(offer, own) + planKopfCard(active, sess, own, drift, hst) + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
+    + `<div class="card"><h2>Entwürfe</h2>${list.length ? list.map(item).join('') : `<p class="muted small">Kein offener Entwurf.${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
   $('#view').querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act, p = plans.find(x => x.id === b.dataset.id);
@@ -849,14 +804,12 @@ async function viewPlans(rest = []) {
     catch (e) { toast(e.message); }
   }));
   $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
-  $('#optGo')?.addEventListener('click', optAsk);
   $('#npNo')?.addEventListener('click', async () => {
     if (!confirm('Entwurf verwerfen?')) return;
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
   });
-  planTabsWire($('#view'));
   // Tipp auf einen Planschritt = „bis #“ (gemeinsamer Zustand S.abSel); gestartet wird unter Lage (Steuerung)
-  if (own && active?.payload?.steps) {
+  if (own && plan) {
     $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => {
       const n = +r.dataset.i, st = setBis(active, sess, n);
       if (st) toast(`bis #${n} gewählt (${st[5]}) – Start unter Lage`);
