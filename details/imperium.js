@@ -1,7 +1,7 @@
 'use strict';
 /* Horizon Atlas – Reiter Imperium (D2, 17.10.2026): volle Fassung von Überblick, getData-Wächter, Planeten/Statistik,
    Gebäude/Forschung/Funktionen und laufenden Effekten. Karten als Kopie aus cockpit/app.js (im Cockpit bis C1);
-   Notfallzentrale und Werbebanner bleiben im Cockpit. */
+   Notfallzentrale und Werbebanner bleiben im Cockpit; Wartung (Faktoren, Kommandoliste) seit PR 4 hier. */
 
 const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
@@ -216,17 +216,62 @@ function overviewCard(sess, d, live, abLive, nm, W) {
   return html + '</div>';
 }
 
+/* ---------- Wartung (Cockpit-Umbau PR 4, 25.10.2026) ----------
+   Aus der Cockpit-Lage hierher verlegt: „Faktoren sichern“ (Faktor-Regel einmal anwenden), „Faktor von Hand“ und die Liste der
+   letzten Kommandos (cmdTable/watchCmds aus common.js). Nur Owner sehen die Knöpfe; beides braucht den Autobuilder (ab 0.5.9). */
+function wartungCard(sess, d, nm, cmds) {
+  const own = isOwner();
+  if (!own && !cmds.length) return '';
+  const devs = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
+  const facts = (d?.buildings?.items || []).filter(i => i.factor && i.factor.set != null);
+  const sel = devs.find(x => x.holds) || devs.find(x => x.ab.state?.page === 'game') || devs[0] || null;
+  let html = '<div class="card" id="wartung"><div class="row between"><h2>Wartung</h2><span class="muted small">Faktoren, Kommandos</span></div>';
+  if (own) {
+    if (devs.length) {
+      html += `<div class="row" style="margin:8px 0;gap:6px"><select id="wtDev" title="Gerät für die Knöpfe">${devs.map(x => `<option value="${esc(x.device)}"${x === sel ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)}</option>`).join('')}</select>
+        <button data-wt="factors" title="Faktor-Regel einmal anwenden (Minen und Lieferanten laufender Aufträge zuerst), ohne Lauf">Faktoren sichern</button></div>`;
+      if (facts.length) {
+        html += `<details><summary class="small muted">Faktor von Hand</summary><div class="row small" style="margin:6px 0;gap:6px"><select id="wtType">${facts.map(i => `<option value="${esc(i.type)}">${esc(nm(i, 'B'))} (${esc(i.factor.set)} %)</option>`).join('')}</select>
+          <select id="wtTo">${[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(v => `<option${v === facts[0].factor.set ? ' selected' : ''}>${v}</option>`).join('')}</select> %
+          <button data-wt="factor" title="Risiko-Grenzen gelten (Fusionskraftwerk ≤ 20 %, Waffentestgelände ≥ 10 %); ein laufender Lauf wendet danach wieder die Faktor-Regel an">Setzen</button></div></details>`;
+      }
+    } else html += '<p class="err small">Kein Autobuilder erreichbar – Browser bzw. PC prüfen.</p>';
+  }
+  return html + `<div id="nfCmds">${cmdTable(cmds)}</div></div>`;
+}
+function bindWartung(sess, d, cmds) {
+  const facts = (d?.buildings?.items || []).filter(i => i.factor && i.factor.set != null);
+  $('#wtType')?.addEventListener('change', e => { const f = facts.find(i => i.type === e.target.value)?.factor?.set; if (f != null) $('#wtTo').value = String(f); });
+  $('#view').querySelectorAll('button[data-wt]').forEach(b => b.addEventListener('click', async () => {
+    const dev = sess.devs.find(x => x.device === ($('#wtDev')?.value || ''));
+    if (!dev) return toast('Kein Gerät gewählt');
+    const cmd = b.dataset.wt;
+    let args = {};
+    if (cmd === 'factor') {
+      args = { type: $('#wtType').value, to: +$('#wtTo').value };
+      if (!confirm(`Faktor ${$('#wtType').selectedOptions[0].textContent} auf ${args.to} % setzen (${dev.name})?`)) return;
+    } else if (!confirm(`Faktoren auf ${dev.name} jetzt sichern (Regel F1: Minen und Lieferanten laufender Aufträge auf 100 %, andere geben bei Mangel ab)?`)) return;
+    try {
+      await postCmd(dev, cmd, args);
+      toast(`Kommando an ${dev.name} gesendet – Ergebnis in 15–60 s`);
+      setTimeout(() => route(true), 1500);
+    } catch (e) { toast(e.message); }
+  }));
+  watchCmds(cmds, Date.now(), '#nfCmds', { cmd: `in.(${NF_CMDS.join(',')})` });
+}
+
 /* Reiter Imperium: alles aus der Lage des Cockpits außer Steuerung (Notfall, Banner) – Überblick, getData, Planeten,
    aktive Effekte, Gebäude/Forschung/Funktionen offen. Der große Live-Stand (≈ 35 KB) kommt nur bei neuem Zeitstempel. */
 async function viewImperium() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, feats, effs, gds] = await Promise.all([
+  const [heads, sess, feats, effs, gds, cmds] = await Promise.all([
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     Cloud.q('features', { account_id: acc, order: 'key' }),
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,jobs,research,research_at,wake,queues,expires_at,ok_at,error,error_at' }).catch(() => []),
+    Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', cmd: `in.(${NF_CMDS.join(',')})`, order: 'id.desc', limit: 5 }).catch(() => []),
     loadDrift(),   // füllt S.drift (Überblick und Lauf), kein Name nötig
   ]);
   const head = heads[0];
@@ -240,7 +285,7 @@ async function viewImperium() {
   const W = await loadWissen().catch(() => null);
   S.build = liveBuild(live, abLive, gds[0]);
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  let html = `<div class="cols2"><div class="stack">${overviewCard(sess, d, live, abLive, nm, W)}<div class="card"><h2>Lauf</h2>${runBody(sess)}
+  let html = `<div class="cols2"><div class="stack">${overviewCard(sess, d, live, abLive, nm, W)}${wartungCard(sess, d, nm, cmds)}<div class="card"><h2>Lauf</h2>${runBody(sess)}
     <p class="small muted">Steuern (Start/Stopp, Pause, Notfall, Werbebanner): ${COCKPIT_LINK('#/lage', 'im Cockpit')}</p></div>${effectsCard(effs)}</div>
     <div class="stack">${getdataCard(gds[0], nm)}</div></div>${planetsCard(d, nm, W)}`;
   if (d) {
@@ -255,4 +300,5 @@ async function viewImperium() {
   }
   $('#view').innerHTML = html;
   bindPlanets(d, nm, W);
+  bindWartung(sess, d, cmds);
 }

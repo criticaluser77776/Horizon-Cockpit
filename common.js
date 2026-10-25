@@ -660,3 +660,43 @@ async function loadDrift(force = false) {
 }
 // Text der Abweichung für Lauf-Zeilen: leer, solange nichts geladen, kein Plan oder noch nichts gestartet (lag null); nach 5 min veraltet
 const driftLagText = () => S.drift?.d?.lag != null && S.drift.acc === S.acc && Date.now() - S.drift.at < 300000 ? lagText(S.drift.d.lag) : '';
+
+/* ---------- Kommandos: Liste und Nachsehen (Cockpit-Lage und Atlas, Cockpit-Umbau PR 4) ----------
+   „Letzte Kommandos“ steht seit PR 4 nur noch im Atlas (Imperium → Wartung); die Lage zeigt keine Kommandoliste mehr.
+   NF_CMDS = Kommandos der Notfallzentrale/Wartung (Filter für die Liste). */
+const NF_CMDS = ['stop', 'reload', 'snapshot', 'factors', 'factor', 'notfall', 'antwort'];
+// Kommandos als zweizeilige Liste (B16: passt aufs Handy): Was → Gerät, Zeit; darunter Status und Ergebnis
+const CMD_DE = { start: 'Start', stop: 'Stopp', adopt: 'Plan übernehmen', reload: 'Neu laden', snapshot: 'Lage lesen', factors: 'Faktoren sichern',
+  factor: 'Faktor', banner: 'Werbebanner', pause: 'Pause', weiter: 'Weiter' };
+const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3>${cmds.map(c => `<div class="list-item small"><div class="row between">
+    <span><b>${esc(c.cmd === 'start' && c.args?.mode === 'dry' ? 'Probelauf' : CMD_DE[c.cmd] || c.cmd)}</b>${c.args?.accept ? ' (von Hand übernehmen)' : ''}${c.args?.until ? ' bis ' + esc(untilTxt(c.args.until, c.args.untilBy)) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</span>
+    <span class="muted nowrap">${esc(when(c.created_at))}</span></div>
+    <div><span class="tag">${esc(c.status)}</span> <span class="muted">${esc(tidy(c.result))}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</span></div></div>`).join('')}`;
+
+// Offene Kommandos (neu/angenommen) alle 5 s nachsehen, ohne die Seite neu aufzubauen; fertig → einmal neu laden
+const OPEN_CMD = c => ['neu', 'angenommen'].includes(c.status);
+function watchCmds(cmds, since = Date.now(), el = '#nfCmds', filter = {}) {
+  clearTimeout(watchCmds.t);
+  if (!cmds.some(OPEN_CMD)) return;
+  watchCmds.t = setTimeout(async () => {
+    if (!$(el) || Date.now() - since > 5 * 60e3) return;
+    try {
+      const fresh = await Cloud.q('commands', { account_id: `eq.${S.acc}`, script: 'eq.autobuilder', order: 'id.desc', limit: 5, ...filter });
+      if (!$(el)) return;
+      $(el).innerHTML = cmdTable(fresh);
+      if (fresh.some(OPEN_CMD)) watchCmds(fresh, since, el, filter); else route(true);
+    } catch { watchCmds(cmds, since, el, filter); }
+  }, 5000);
+}
+
+/* ---------- Aktiver Bauplan (Lage-Steuerung und Pläne) ----------
+   Kopf des freigegebenen/aktiven Bauplans plus Payload (bis ca. 30 KB, nur einmal je Plan über S.planCache geladen).
+   Liefert { row, payload } oder null, wenn kein Plan freigegeben ist. */
+async function loadActivePlan() {
+  const heads = await Cloud.q('plans', { account_id: `eq.${S.acc}`, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
+    select: 'id,status,title,plan_hash' });
+  const row = heads[0];
+  if (!row) return null;
+  if (S.planCache?.id !== row.id) S.planCache = { id: row.id, payload: (await Cloud.q('plans', { id: `eq.${row.id}`, select: 'payload' }))[0]?.payload };
+  return { row, payload: S.planCache.payload };
+}

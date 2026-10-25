@@ -186,10 +186,10 @@ const RES = ['Eisenerz', 'Mineral', 'Treibstoff'];
 
 async function viewLage() {
   const acc = `eq.${S.acc}`;
-  const [heads, sess, nf, effs, gds, movis] = await Promise.all([   // 7. Element loadDrift füllt S.drift (für overviewCard), kein Name nötig
+  const [heads, sess, ap, effs, gds, movis] = await Promise.all([   // 7. Element loadDrift füllt S.drift (für overviewCard), kein Name nötig
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
-    loadNotfall(),
+    loadActivePlan(),   // aktiver Bauplan für die Steuerung („bis #“, Start)
     Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
       select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,queues,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
@@ -207,15 +207,16 @@ async function viewLage() {
   const d = head ? S.snap?.data : null;
   // jüngster Stand des Autobuilders (laufende Aufträge, Rohstoffe aus seiner letzten Prüfung)
   const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
-  // C1 (17.10.2026): Lage kompakt – Überblick (mit getData und Effekten in je einer Zeile), Steuerung, Banner.
-  // Planeten, Gebäude/Forschung/Funktionen und die volle getData-Karte stehen im Horizon Atlas unter Imperium.
-  const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen, Baustellen je Stufe
-  S.build = liveBuild(live, abLive, gds[0]);
+  // C1 (17.10.2026), PR 4 (25.10.2026): Lage kompakt – Werbebanner (nur wenn handelbar), Überblick (mit getData und Effekten in je einer
+  // Zeile), Steuerung (Geräte, Lauf, Notfall), Motivationsvideo. Planeten, Ausbau, Gebäude/Forschung, die volle getData-Karte,
+  // Wartung (Faktoren, Kommandoliste) stehen im Horizon Atlas unter Imperium.
+  const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
+  const active = ap ? { ...ap.row, payload: ap.payload } : null, nf = { active: ap?.row || null, known: {} };
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  $('#view').innerHTML = overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + notfallCard(sess, nf, d) + bannerCard(sess) + moviCard(sess, abLive, movis)
+  $('#view').innerHTML = bannerCard(sess) + overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
     + '<p class="small muted pad">Planeten, Gebäude, Forschung: <a href="details/#/imperium" target="_blank" rel="noopener">Imperium im Atlas →</a></p>';
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
-  bindNotfall(sess, nf);
+  bindSteuerung(sess, nf, active);
 }
 
 /* ---------- getData-Wächter (B18, 16.10.2026; Migrationen 20261016000001/2) ----------
@@ -237,49 +238,9 @@ function effectsLine(effs) {
     .sort((a, b) => Date.parse(a.eff.until) - Date.parse(b.eff.until));
   return list.length ? `<p class="small">Effekte: ${list.map(r => `${esc(String(r.eff.name || '').split(/\s*·\s*/)[0])} <span class="muted">bis ${esc(clockT(r.eff.until))}${r.eff.src === 'typisch' ? ' (geschätzt)' : ''}</span>`).join(' · ')}</p>` : '';
 }
-/* ---------- Planeten + Statistik Imperium (B2, 14.10.2026; Collector ab 0.4.5 → d.empire) ----------
-   Alle Planeten ohne Planetenwechsel: Kurzinfo wie die Übersicht im Spiel (main.php?cmd=start), Stufen/Schiffe/Verteidigung
-   je Planet (stat_main.php?cmd=overview), Rohstoffe je Kolonie (cmd=emp_prod, Tageswerte). Verbrauch gibt das Spiel
-   (cmd=status) nur für den im Spiel gewählten Planeten → nur dort. Arbeiter, Energie, Bauplatz nur in der Ansicht eines
-   Planeten; Bauleistung entfällt, dafür „Ausbau x / y“ wie im alten horizon-enhanced (Nutzer 16.10.). */
-// Baustellen je Planet (wie das alte horizon-enhanced): im Spiel gewählter Planet genau aus cmd=status (CONSTRUCTION,
-// Summe Baustellen), alle anderen aus den Stufen (stat overview) und den Spieldaten: Σ Baustellen je Stufe (Hauptquartier,
-// Gebäudeerstellung, Rechenzentrum) + 1 je Kolonialzentrum (in den Spieldaten ohne Wert). Boni fehlen → „≈“. Nur ganze zählen.
-function planetSlots(d, p, W) {
-  if (p.coords === d.start?.coords) {
-    const v = d.status?.CONSTRUCTION?.tables?.[0]?.Summe?.Baustellen;
-    if (v != null) return { n: Math.floor(+v + 1e-9), exact: true };
-  }
-  if (!W?.B || !p.buildings) return null;
-  let n = 0;
-  for (const b of p.buildings) {
-    const k = String(b.type).toLowerCase();
-    n += +(W.B[k]?.L?.[b.n]?.[4]?.Baustellen || 0) + (k === 'colonycenter' && b.n > 0 ? 1 : 0);
-  }
-  return { n: Math.floor(n + 1e-9), exact: false };
-}
-// „Ausbau x / y“: x = laufende Bauaufträge, y = Baustellen. x steht im Snapshot nur als erste Zahl der Kurzinfo „Ausbau a/b/c“
-// (main.php?cmd=start) und ist oft veraltet (17.10.: Snapshot 06:04 „0“, HQ 4 lief seit 06:06). Für den im Spiel gewählten
-// Planeten zählt deshalb die jüngste Quelle mit laufenden Aufträgen (Lebenszeichen des Autobuilders oder getData), wenn sie
-// neuer als der Snapshot ist; sonst der Snapshot-Wert mit „Stand hh:mm“. Die 2./3. Zahl der Kurzinfo ist ungeprüft
-// (laut Snapshots 16.10. nicht Forschung) und wird nicht angezeigt.
-function liveBuild(live, abLive, gd) {
-  const snapAt = live ? new Date(live.collected_at).getTime() : 0;
-  const src = [abLive?.jobs && { at: +abLive.liveAt, jobs: abLive.jobs, from: 'Autobuilder' },
-    gd?.at && gd.jobs && { at: new Date(gd.at).getTime(), jobs: gd.jobs, from: 'getData' }]
-    .filter(x => x && x.at > snapAt).sort((a, b) => b.at - a.at)[0];
-  return src ? { n: src.jobs.filter(j => j.k === 'b' && !(new Date(j.end) <= Date.now())).length, at: src.at, from: src.from } : { snapAt };
-}
-const ausbau = (d, p, W) => {
-  const b = S.build || {}, lv = b.from && p.coords === d.start?.coords;
-  return { busy: lv ? b.n : +(p.Ausbau?.[0] || 0), at: lv ? b.at : b.snapAt || null, from: lv ? b.from : 'Snapshot', slots: planetSlots(d, p, W) };
-};
-const AUSBAU_TIP = 'x = laufende Bauaufträge, y = Baustellen. Die weiteren Zahlen der Kurzinfo im Spiel (Ausbau a/b/c) sind ungeprüft – laut Snapshots 16.10. ist die zweite nicht Forschung.';
-const ausbauText = a => `<span title="${esc(`${AUSBAU_TIP} Quelle x: ${a.from || 'Snapshot'}${a.at ? ` ${clockT(a.at)}` : ''}.`)}">${fmt(a.busy)} / ${a.slots ? `${a.slots.exact ? '' : '≈'}${fmt(a.slots.n)}` : '–'}</span>`
-  + (a.from === 'Snapshot' && a.at ? ` <span class="muted">Stand ${esc(clockT(a.at))}</span>` : '');
 /* ---------- Überblick (B10): Lauf, Rohstoffe, laufende Aufträge in wenigen Zeilen ----------
    Ab 16.10. (Nutzer) Gesamtwerte des Imperiums: Rohstoffe aller Planeten (emp_prod: Lager + Netto-Förderung, auf jetzt
-   hochgerechnet), Koloniepunkte benutzt/gesamt (cmd=orden, Collector ab 0.4.7), Ausbau x / y über alle Planeten. */
+   hochgerechnet), Koloniepunkte benutzt/gesamt (cmd=orden, Collector ab 0.4.7). „Ausbau x / y“ steht nur noch im Atlas (Imperium). */
 function overviewCard(sess, d, live, abLive, nm, W, extra = '') {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
   const runTxt = !r ? 'kein Lauf'
@@ -300,11 +261,10 @@ function overviewCard(sess, d, live, abLive, nm, W, extra = '') {
     });
     html += `<table class="small"><tr class="muted"><td>${pl.length > 1 ? `Imperium (${pl.length} Planeten)` : 'Rohstoffe'}</td><td class="num">Bestand</td><td class="num">Förderung</td></tr>${rows.map(({ x, now, net, full }) =>
       `<tr><td>${x}${full == null ? '' : `<div class="muted">voll in ${dur(full)}</div>`}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td></tr>`).join('')}</table>`;
-    const col = d.empire?.colony, ab = pl.map(p => ausbau(d, p, W)), abFrom = ab.find(a => a.from !== 'Snapshot');
-    const slots = ab.length && ab.every(a => a.slots) ? { n: ab.reduce((s, a) => s + a.slots.n, 0), exact: ab.every(a => a.slots.exact) } : null;
+    const col = d.empire?.colony;
     html += `<div class="row small" style="margin:4px 0">${col?.max != null
       ? `<span class="${col.free < 0 ? 'err' : ''}" title="frei ${esc(fmt(col.free, 3))}">Kolopunkte <b>${fmt(col.used, 2)}</b> / ${fmt(col.max, 2)}${col.free < 0 ? ' überzogen' : ''}</span>`
-      : '<span class="muted">Kolopunkte: ab Collector 0.4.7</span>'}${ab.length ? ` · <span>Ausbau <b>${ausbauText({ busy: ab.reduce((s, a) => s + a.busy, 0), slots, ...(ab.length === 1 || !abFrom ? { at: ab[0].at, from: ab[0].from } : { at: abFrom.at, from: `${abFrom.from} (gewählter Planet), sonst Snapshot` }) })}</b></span>` : ''}</div>`;
+      : '<span class="muted">Kolopunkte: ab Collector 0.4.7</span>'}</div>`;
     const fromAb = abLive && abLive.liveAt > at.getTime();
     const jobs = fromAb
       ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', name: nm({ type: j.t }, j.k === 'b' ? 'B' : 'R'), level: j.l, end: new Date(j.end) }))
@@ -318,23 +278,15 @@ function overviewCard(sess, d, live, abLive, nm, W, extra = '') {
   return html + extra + '</div>';
 }
 
-/* ---------- Notfallzentrale (Paket F3, 13.10.2026) ----------
+/* ---------- Steuerung (früher Notfallzentrale, Paket F3, 13.10.2026; mit den Lauf-Knöpfen zusammengeführt im Cockpit-Umbau PR 4) ----------
    Immer sichtbar, auch ohne freigegebenen Plan (vorher gab es dann keinen Stopp-Knopf). Kommandos gehen an ein Gerät;
    antwortet dort der Autobuilder nicht, führt der Collector (ab 0.4.3) „Neu laden“, „Lage jetzt lesen“ und „Stopp“ selbst
-   aus. „Faktoren sichern“ und „Faktor von Hand“ braucht den Autobuilder (ab 0.5.9). Nur der Owner sieht die Knöpfe.
+   aus. Faktor-Knöpfe und Kommandoliste stehen seit PR 4 im Atlas (Imperium → Wartung). Nur der Owner sieht die Knöpfe.
+   Lauf-Knöpfe (bis #, Probelauf, Start, Stopp, Pause/Weiter, Plan übernehmen) wirken auf das hier gewählte Gerät (#nfDev) und den
+   freigegebenen Plan (loadActivePlan); sendCmd und abLimits stehen unten bei den Plänen.
    „Notfall verbauen“ (B7, Autobuilder ab 0.5.18, nur auf Tippen): 2 h lang füllt der Autobuilder jede freie Schlange mit dem
    teuersten startbaren Planschritt der nächsten 25 (auch außer der Reihe, nie Abbrechen); auch am Ereignis „anflug“. */
-const NF_CMDS = ['stop', 'reload', 'snapshot', 'factors', 'factor', 'notfall', 'antwort'];
 const HANG_MIN = 10;
-async function loadNotfall() {
-  const acc = `eq.${S.acc}`;
-  const [act, cmds] = await Promise.all([
-    Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
-      select: 'id,status,title,plan_hash' }),
-    Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', cmd: `in.(${NF_CMDS.join(',')})`, order: 'id.desc', limit: 5 }),
-  ]);
-  return { active: act[0] || null, cmds, known: {} };
-}
 // Pläne, mit denen die Geräte arbeiten (Status im Cockpit), für den Hinweis „Gerät nutzt Plan X“
 async function devPlans(sess, nf) {
   const ids = [...new Set(sess.devs.map(x => x.ab?.state?.plan).filter(v => /^[\w-]{4,40}$/.test(v || '')))];
@@ -366,17 +318,15 @@ function nfDevRow(x, nf) {
     ${plan ? `<div class="small err">${esc(plan)}</div>` : ''}</td>
     <td class="num small ${hang ? 'err' : 'muted'}" title="${esc(ver)}">${Number.isFinite(age) ? esc(age < 1.5 ? 'jetzt' : `${Math.round(age)} min`) : '–'}<div class="${old ? 'err' : ''}">${esc(ver)}</div></td></tr>`;
 }
-function notfallCard(sess, nf, snap) {
+function steuerungCard(sess, nf, active) {
   const shown = sess.devs.filter(x => x.holds || hbAge(x.last) < 7 * 24 * 60);
   const reach = shown.filter(x => hbAge(x.last) < HANG_MIN);
   S.verTop = {};
   for (const x of shown) for (const k of ['ab', 'col']) if (x[k] && verCmp(x[k].version, S.verTop[k]) > 0) S.verTop[k] = x[k].version;
   const own = isOwner();
   const sel = reach.find(x => x.device === S.nfDev) || reach.find(x => x.holds) || reach.find(x => x.ab?.state?.page === 'game') || reach[0] || null;
-  const facts = (snap?.buildings?.items || []).filter(i => i.factor && i.factor.set != null);
-  const W = S.wissen;
-  const nm = i => i.name || W?.B?.[i.type]?.n || i.type;
   const anyBad = shown.some(x => hbAge(x.last) >= HANG_MIN || hbAge(x.ab?.at) >= 3);
+  const plan = active?.payload, run = sess.run, holder = sess.devs.find(x => x.holds);
   let html = `<div class="card${anyBad ? ' warn' : ''}" id="notfall"><div class="row between"><h2>Steuerung</h2><span class="muted small">★ hält den Lauf</span></div>`;
   html += shown.length ? `<table>${shown.map(x => nfDevRow(x, nf)).join('')}</table>` : '<p class="muted">Noch keine Lebenszeichen.</p>';
   const nfx = nfActive(sess);
@@ -386,25 +336,41 @@ function notfallCard(sess, nf, snap) {
       · ${esc(n.n || 0)} Schritt(e) vorgezogen${n.why ? ` · <span class="muted">${esc(n.why)}</span>` : ''}</span>${own ? '<button data-nf="notfall-off">Beenden</button>' : ''}</div>`;
   }
   if (own) {
-    html += `<div class="row" style="margin:8px 0;gap:6px"><button class="danger" id="nfStopAll" title="Stopp an alle Geräte">Alles anhalten</button></div>`;
     if (reach.length) {
-      html += `<div class="row" style="margin:8px 0;gap:6px"><select id="nfDev" title="Gerät für die Knöpfe daneben">${reach.map(x => `<option value="${esc(x.device)}"${x === sel ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)}</option>`).join('')}</select>
+      html += `<div class="row" style="margin:8px 0;gap:6px"><select id="nfDev" title="Gerät für die Knöpfe">${reach.map(x => `<option value="${esc(x.device)}"${x === sel ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)}</option>`).join('')}</select>
         <button data-nf="snapshot" title="Live-Stand sofort erfassen und hochladen">Lage lesen</button>
-        <button data-nf="reload" title="Spiel-Tab neu laden (ein laufender Lauf geht danach weiter)">Neu laden</button>
-        <button data-nf="factors" title="Faktor-Regel einmal anwenden (Minen und Lieferanten laufender Aufträge zuerst), ohne Lauf">Faktoren sichern</button>
-        <button class="danger" data-nf="notfall" title="2 h lang freie Baustelle/Forschung sofort mit dem teuersten startbaren Planschritt (nächste 25) füllen – Rohstoffe vor einem Angriff verbauen">Notfall verbauen</button></div>`;
-      if (facts.length) {
-        const curT = facts.find(i => i.type === S.nfType) || facts[0];
-        html += `<details${S.nfType ? ' open' : ''}><summary class="small muted">Faktor von Hand</summary><div class="row small" style="margin:6px 0;gap:6px"><select id="nfType">${facts.map(i => `<option value="${esc(i.type)}"${i === curT ? ' selected' : ''}>${esc(nm(i))} (${esc(i.factor.set)} %)</option>`).join('')}</select>
-          <select id="nfTo">${[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(v => `<option${v === (S.nfTo ?? curT.factor.set) ? ' selected' : ''}>${v}</option>`).join('')}</select> %
-          <button data-nf="factor" title="Risiko-Grenzen gelten (Fusionskraftwerk ≤ 20 %, Waffentestgelände ≥ 10 %); ein laufender Lauf wendet danach wieder die Faktor-Regel an">Setzen</button></div></details>`;
+        <button data-nf="reload" title="Spiel-Tab neu laden (ein laufender Lauf geht danach weiter)">Neu laden</button></div>`;
+      // Lauf: „bis #“ und Start/Stopp für das gewählte Gerät (Autobuilder muss antworten, Plan muss freigegeben sein)
+      const st = sel?.ab && isFresh(sel.ab.at) ? sel.ab.state || {} : null;
+      if (!plan) html += '<p class="muted small">Kein freigegebener Bauplan – Start erst nach Freigabe unter <a href="#/plaene">Pläne</a>.</p>';
+      else if (!st) html += `<p class="muted small">Start/Stopp: Autobuilder auf ${esc(sel?.name || 'dem Gerät')} antwortet nicht.</p>`;
+      else if (st.plan !== plan.id) {
+        html += st.offered === plan.id
+          ? `<p class="warn small">${esc(sel.name)} arbeitet noch mit ${esc(planLabel(st.plan))}, nicht mit dem freigegebenen Plan.</p>
+             <div class="row" style="margin:6px 0"><button class="primary" data-cmd="adopt"${st.running ? ' disabled title="erst stoppen"' : ''}>Plan auf ${esc(sel.name)} übernehmen</button></div>`
+          : '<p class="muted small">Der Collector bietet den Plan beim nächsten Abgleich an (bis 1 min).</p>';
+      } else {
+        // M8: „bis #“ gilt im gewählten Plan-Reiter (eigene Grenze, „wie Alle“ löscht sie), im Reiter Alle für alle übrigen
+        const L = abLimits(plan, st, run), g = abGrp(plan);
+        html += `<div class="row" style="margin:8px 0;gap:6px">bis #${g ? ` <span class="muted">(${esc(grpName(plan, g))})</span>` : ''} <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(g ? L.by[g] ?? L.until : L.until)}" style="width:4.5em">
+          ${g && L.by[g] != null ? '<button id="abAsAll" title="Grenze dieses Reiters löschen, es gilt wieder „bis #“ von Alle">wie Alle</button> ' : ''}<button data-cmd="dry">Probelauf</button> <button class="primary" data-cmd="live">Start</button> <button class="danger" data-cmd="stop">Stopp</button></div>
+          ${Object.keys(L.by).length ? `<div class="small" style="margin:-4px 0 4px">Start bis ${esc(untilTxt(L.until, L.by, plan))}</div>` : ''}
+          <div class="muted small" id="abStep"></div>`;
       }
     } else html += '<p class="err small">Kein Gerät erreichbar – Browser bzw. PC prüfen.</p>';
+    // B13: Pause/Weiter an den Halter des Laufs (Autobuilder ab 0.5.19)
+    let pw = '';
+    if (plan && run && ['laeuft', 'schlaeft'].includes(run.state) && holder) {
+      pw = run.paused_at
+        ? (holder.ab?.state?.hand ? '<button class="primary" data-cmd="weiter_ok">Von Hand übernehmen und weiter</button>' : '<button class="primary" data-cmd="weiter">Weiter</button>')
+        : '<button data-cmd="pause" title="Der Autobuilder startet nichts, loggt nicht aus/ein; der Lauf bleibt angemeldet">Pause</button>';
+    }
+    html += `<div class="row" style="margin:8px 0;gap:6px">${pw}<button class="danger" id="nfStopAll" title="Stopp an alle Geräte">Alles anhalten</button>${reach.length
+      ? '<button class="danger" data-nf="notfall" title="2 h lang freie Baustelle/Forschung sofort mit dem teuersten startbaren Planschritt (nächste 25) füllen – Rohstoffe vor einem Angriff verbauen">Notfall verbauen</button>' : ''}</div>`;
   }
-  html += `<div id="nfCmds">${cmdTable(nf.cmds)}</div></div>`;
-  return html;
+  return html + '</div>';
 }
-function bindNotfall(sess, nf) {
+function bindSteuerung(sess, nf, active) {
   const v = $('#view');
   if (!v.querySelector('#notfall')) return;
   devPlans(sess, nf).then(() => {   // Plan-Hinweise nachladen (kleine Abfrage), ohne die Seite neu aufzubauen
@@ -412,9 +378,7 @@ function bindNotfall(sess, nf) {
     const shown = sess.devs.filter(x => x.holds || hbAge(x.last) < 7 * 24 * 60);
     if (box && Object.keys(nf.known).length) box.innerHTML = shown.map(x => nfDevRow(x, nf)).join('');
   }).catch(() => { });
-  $('#nfDev')?.addEventListener('change', e => { S.nfDev = e.target.value; });
-  $('#nfType')?.addEventListener('change', e => { S.nfType = e.target.value; S.nfTo = null; route(true); });
-  $('#nfTo')?.addEventListener('change', e => { S.nfTo = +e.target.value; });
+  $('#nfDev')?.addEventListener('change', e => { S.nfDev = e.target.value; route(true); });   // „bis #“ und Plan-Hinweis hängen am Gerät
   $('#nfStopAll')?.addEventListener('click', async () => {
     // an jedes Gerät, das in den letzten 24 h ein Lebenszeichen hatte (ältere Kommandos verfallen nach 15 min)
     const all = sess.devs.filter(x => hbAge(x.last) < 24 * 60);
@@ -429,25 +393,32 @@ function bindNotfall(sess, nf) {
     const dev = sess.devs.find(x => x.device === ($('#nfDev')?.value || ''));
     if (!dev) return toast('Kein Gerät gewählt');
     const cmd = b.dataset.nf;
-    let args = {};
     if (cmd === 'notfall-off') {
       const x = nfActive(sess);
       if (!x || !confirm(`Notfall verbauen auf ${x.name} beenden?`)) return;
       return sendNotfall(x, { off: true });
     }
     if (cmd === 'notfall') return confirm(NF_ASK(dev.name)) && sendNotfall(dev, { hours: 2 });
-    if (cmd === 'factor') {
-      args = { type: $('#nfType').value, to: +$('#nfTo').value };
-      if (!confirm(`Faktor ${$('#nfType').selectedOptions[0].textContent} auf ${args.to} % setzen (${dev.name})?`)) return;
-    } else if (!confirm({ factors: `Faktoren auf ${dev.name} jetzt sichern (Regel F1: Minen und Lieferanten laufender Aufträge auf 100 %, andere geben bei Mangel ab)?`,
-      reload: `Spiel-Tab auf ${dev.name} neu laden?`, snapshot: `Live-Stand auf ${dev.name} jetzt lesen?` }[cmd])) return;
+    if (!confirm({ reload: `Spiel-Tab auf ${dev.name} neu laden?`, snapshot: `Live-Stand auf ${dev.name} jetzt lesen?` }[cmd])) return;
     try {
-      await postCmd(dev, cmd, args);
+      await postCmd(dev, cmd, {});
       toast(`Kommando an ${dev.name} gesendet – Ergebnis in 15–60 s`);
       setTimeout(() => route(true), 1500);
     } catch (e) { toast(e.message); }
   }));
-  watchCmds(nf.cmds, Date.now(), '#nfCmds', { cmd: `in.(${NF_CMDS.join(',')})` });
+  // Lauf-Knöpfe (Start, Probelauf, Stopp, Pause, Weiter, Plan übernehmen) und „bis #“ (gemeinsamer Zustand S.abSel)
+  if (!active) return;
+  v.querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
+  const dev = () => $('#nfDev')?.value;
+  const stepTxt = () => { const n = +$('#abUntil').value, st = active.payload.steps?.[n - 1]; return st ? `#${n}: ${st[5]}` : ''; };
+  $('#abAsAll')?.addEventListener('click', () => {
+    const plan = active.payload, by = { ...abLimits(plan, sess.devs.find(x => x.device === dev())?.ab?.state || {}, sess.run).by };
+    delete by[abGrp(plan)]; S.abSel = { ...S.abSel, by }; route(true);
+  });
+  if ($('#abUntil')) {
+    $('#abUntil').addEventListener('input', () => { setBis(active, sess, +$('#abUntil').value, dev()); $('#abStep').textContent = stepTxt(); });
+    $('#abStep').textContent = stepTxt();
+  }
 }
 
 // Notfall verbauen: Gerät mit offenem Fenster (nfTarget, NF_ASK, sendNotfall, anflugNotfall stehen in common.js)
@@ -478,15 +449,17 @@ const bannerLoginDev = sess => {
 };
 const bannerDue = sess => Math.max(0, ...sess.devs.filter(d => d.ab && isFresh(d.ab.at, 24 * 60)).map(d => +d.ab.state?.bannerDue || 0));
 const bannerLoginNow = sess => { const due = bannerDue(sess); return due && due < Date.now() + 15 * 60e3 ? bannerLoginDev(sess) : null; };
+// Nur sichtbar, wenn etwas zu tun ist: offene Votes (Knopf „Banner jetzt öffnen“) oder ein Login-Knopf für fällige Banner (Owner).
+// Reine Info „Nächste erwartet ab …“ ohne Knopf gibt keine Karte mehr (Cockpit-Umbau PR 4, Banner steht oben in der Lage).
 function bannerCard(sess) {
   const x = bannerDev(sess), b = x?.ab.state.banner;
   if (!b) {
     const due = bannerDue(sess), lx = bannerLoginNow(sess), zz = due && due < Date.now() + 15 * 60e3 ? bannerSleep(sess) : null;
-    return due ? `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">${zz ? 'Lauf schläft' : lx ? 'Gerät ausgeloggt' : 'keine offen'}</span></div>
-      <p class="small">Nächste erwartet ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(dt(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).</p>
-      ${zz && !lx ? `<p class="small">Banner nach dem Aufwachen${zz.wake ? ` (<b>${esc(clockT(zz.wake))}</b>, ${new Date(zz.wake) > Date.now() ? `in ${esc(dur((new Date(zz.wake) - Date.now()) / 1000))}` : 'jetzt'})` : ''}: Der Lauf${zz.name ? ` auf ${esc(zz.name)}` : ''} schläft und loggt dann selbst ein; ein Login für die Banner jetzt braucht dort Autobuilder ab ${BANNER_SLEEP_VER}.</p>` : ''}
-      ${lx && isOwner() ? `<p class="small">${esc(lx.name)} ist ausgeloggt. Der Autobuilder loggt dafür einmal ein, ruft die Banner auf und loggt danach wieder aus${zz ? `; der schlafende Lauf schläft danach bis ${zz.wake ? `<b>${esc(clockT(zz.wake))}</b>` : 'zu seiner Weckzeit'} weiter` : ' (läuft dort ein Lauf, macht dieser weiter)'}.</p>
-      <div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Einloggen und Banner öffnen</button></div>` : ''}</div>` : '';
+    if (!due || !lx || !isOwner()) return '';
+    return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">${zz ? 'Lauf schläft' : 'Gerät ausgeloggt'}</span></div>
+      <p class="small">Fällig ${due < Date.now() ? 'seit' : 'ab'} <b>${esc(clockT(due))}</b> (${due > Date.now() ? `in ${esc(dur((due - Date.now()) / 1000))}` : esc(ago(due))}).
+      ${esc(lx.name)} ist ausgeloggt: Der Autobuilder loggt dafür einmal ein, ruft die Banner auf und loggt wieder aus${zz ? `; der schlafende Lauf schläft danach bis ${zz.wake ? `<b>${esc(clockT(zz.wake))}</b>` : 'zu seiner Weckzeit'} weiter` : ''}.</p>
+      <div class="row" style="margin-top:6px"><button class="primary" id="bannerGo">Einloggen und Banner öffnen</button></div></div>`;
   }
   return `<div class="card"><div class="row between"><h2>Werbebanner</h2><span class="muted small">seit ${esc(when(b.since))}</span></div>
     <p>${esc(b.n)} von 3 Votes offen auf <b>${esc(x.name)}</b></p><div class="small">${(b.slots || []).map(s => `Vote ${esc(s.slot)}: ${esc(s.host || 'Ziel unbekannt')}`).join('<br>')}</div>
@@ -547,11 +520,11 @@ async function viewMeldungen() {
   const open = dec.filter(openDecision);
   const canSee = ['owner', 'viewer'].includes(account()?.role);
   const sec = (title, list, empty) => `<div class="card"><h2>${title}${list.length ? ` <span class="muted small">${list.length}</span>` : ''}</h2>${list.length ? list.map(evRow).join('') : `<p class="muted small">${empty}</p>`}</div>`;
-  $('#view').innerHTML = (open.length ? sec('Entscheidungen offen', open, '') : '')
+  $('#view').innerHTML = `<div class="card"><div class="row between"><a href="details/#/ereignisse" target="_blank" rel="noopener">Alle Ereignisse mit Filter im Atlas →</a>
+      ${canSee ? '<button id="seenAll">alle gesehen</button>' : ''}</div>${canSee ? '<p class="muted small">Nach rechts wischen oder ✕ = ausblenden.</p>' : ''}</div>`
+    + (open.length ? sec('Entscheidungen offen', open, '') : '')
     + sec('Stufe „hoch“', high.filter(e => !open.includes(e)), 'Keine.')
-    + sec('Plan und Lauf <span class="muted small">ungesehen</span>', plan.filter(e => !open.includes(e)), 'Nichts Neues.')
-    + `<div class="card"><div class="row between"><a href="details/#/ereignisse" target="_blank" rel="noopener">Alle Ereignisse mit Filter im Atlas →</a>
-      ${canSee ? '<button id="seenAll">alle gesehen</button>' : ''}</div>${canSee ? '<p class="muted small">Nach rechts wischen oder ✕ = ausblenden.</p>' : ''}</div>`;
+    + sec('Plan und Lauf <span class="muted small">ungesehen</span>', plan.filter(e => !open.includes(e)), 'Nichts Neues.');
   swipeEvents($('#view'));
   $('#seenAll')?.addEventListener('click', async () => {
     await Cloud.rest(`events?account_id=eq.${S.acc}&seen_at=is.null`, { method: 'PATCH', body: { seen_at: new Date().toISOString() }, prefer: 'return=minimal' });
@@ -572,42 +545,35 @@ function abLimits(plan, st, run) {
   const gs = planGroups(plan);
   return { until, by: Object.fromEntries(Object.entries(src).filter(([g, n]) => gs.includes(g) && Number.isInteger(n) && (S.abSel?.by || n !== until))) };
 }
-function abCard(active, sess, cmds, own, execs, W, drift) {
-  const plan = active?.payload, run = sess.run;
+// Zielgerät für Plan-Zustand und „bis #“: gewähltes (S.nfDev, Steuerung), sonst Lauf-Halter (wenn erreichbar), sonst eingeloggtes, sonst erstes erreichbares
+function abTarget(sess) {
   const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
   const holder = sess.devs.find(x => x.holds);
-  // Zielgerät: gewähltes, sonst Lauf-Halter (wenn erreichbar), sonst eingeloggtes, sonst erstes erreichbares
-  const target = live.find(x => x.device === S.abSel?.dev) || (holder && live.includes(holder) && holder)
+  return live.find(x => x.device === S.nfDev) || (holder && live.includes(holder) && holder)
     || live.find(x => x.ab.state.page === 'game') || live[0] || null;
+}
+// M8: Reiter-Gruppe, für die „bis #“ gilt (null = Alle bzw. nur ein Planet)
+const abGrp = plan => planMulti(plan) ? tabGrp(planTabCur(planTabs(plan, S.home))) : null;
+// „bis #n“ wählen (gemeinsamer Zustand S.abSel, Lage und Pläne): im Reiter einer Gruppe deren Grenze (alle bisherigen Grenzen werden dabei
+// zur eigenen Auswahl), sonst until. dev = Gerätekennung (Auswahl in der Lage), sonst abTarget. Liefert den Planschritt oder null.
+function setBis(active, sess, n, dev) {
+  const plan = active?.payload, step = plan?.steps?.[n - 1];
+  if (!step) return null;
+  const g = abGrp(plan), st = sess.devs.find(x => x.device === dev)?.ab?.state || abTarget(sess)?.ab?.state || {};
+  const base = abLimits(plan, st, sess.run);
+  S.abSel = g ? { ...S.abSel, by: { ...base.by, [g]: n } } : { ...S.abSel, until: n, by: S.abSel?.by || base.by };
+  return step;
+}
+function abCard(active, sess, own, execs, W, drift) {
+  const plan = active?.payload, run = sess.run;
+  const holder = sess.devs.find(x => x.holds);
+  const target = abTarget(sess);
   const st = target?.ab?.state || {};
   let html = `<div class="card"><div class="row between"><h2>Autobuilder</h2><span class="muted small">${run ? `seit ${esc(dt(run.since))}` : ''}</span></div>`;
   html += runBody(sess, { drift: false });   // driftLine zeigt die Abweichung weiter unten
-  if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Faktoren gehen jederzeit unter <a href="#/lage">Lage → Notfallzentrale</a>.</p>' + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
-  html += `<p class="small">Freigegeben: <b>${esc(planLabel(active.id))}</b> · ${esc(tidy(active.title))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span></p>`;
-  if (!live.length) html += '<p class="err small">Kein Autobuilder erreichbar (Browser zu oder Skripte aus).</p>';
-  else {
-    html += `<div class="row" style="margin:8px 0">Gerät <select id="abDev">${live.map(x => `<option value="${esc(x.device)}"${x === target ? ' selected' : ''}>${x.holds ? '★ ' : ''}${esc(x.name)} – ${x.ab.state.page === 'login' ? 'ausgeloggt' : 'eingeloggt'}</option>`).join('')}</select></div>`;
-    if (st.plan !== plan?.id) {
-      html += st.offered === plan?.id
-        ? `<p class="warn small">${esc(target.name)} hat den freigegebenen Plan angeboten bekommen, arbeitet aber noch mit ${esc(planLabel(st.plan))}.</p>
-           ${own ? `<button class="primary" data-cmd="adopt"${st.running ? ' disabled title="erst stoppen"' : ''}>Plan auf ${esc(target.name)} übernehmen</button>` : ''}`
-        : '<p class="muted small">Der Collector bietet den Plan beim nächsten Abgleich an (bis 1 min).</p>';
-    } else if (own) {
-      // M8: „bis #“ gilt im gewählten Reiter (eigene Grenze, „wie Alle“ löscht sie), im Reiter Alle für alle übrigen
-      const L = abLimits(plan, st, run), g = planMulti(plan) ? tabGrp(planTabCur(planTabs(plan, S.home))) : null;
-      html += `<div class="row" style="margin:8px 0">bis #${g ? ` <span class="muted">(${esc(grpName(plan, g))})</span>` : ''} <input id="abUntil" type="number" min="1" max="${plan.steps.length}" value="${esc(g ? L.by[g] ?? L.until : L.until)}" style="width:5em">
-        ${g && L.by[g] != null ? '<button id="abAsAll" title="Grenze dieses Reiters löschen, es gilt wieder „bis #“ von Alle">wie Alle</button> ' : ''}<button data-cmd="dry">Probelauf</button> <button class="primary" data-cmd="live">Start</button> <button class="danger" data-cmd="stop">Stopp</button></div>
-        ${Object.keys(L.by).length ? `<div class="small" style="margin:-4px 0 4px">Start bis ${esc(untilTxt(L.until, L.by, plan))}</div>` : ''}
-        <div class="muted small" id="abStep"></div>`;
-    }
-  }
-  // B13: Pause/Weiter an den Halter des Laufs (Autobuilder ab 0.5.19)
-  if (own && run && ['laeuft', 'schlaeft'].includes(run.state) && holder) {
-    const hs = holder.ab?.state || {};
-    html += run.paused_at
-      ? `<div class="row" style="margin:4px 0;gap:6px">${hs.hand ? '<button class="primary" data-cmd="weiter_ok">Von Hand übernehmen und weiter</button>' : '<button class="primary" data-cmd="weiter">Weiter</button>'}</div>`
-      : `<div class="row" style="margin:4px 0;gap:6px"><button data-cmd="pause" title="Der Autobuilder startet nichts, loggt nicht aus/ein; der Lauf bleibt angemeldet">Pause</button></div>`;
-  }
+  if (!active) return html + '<p class="muted">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Start gehen unter <a href="#/lage">Lage → Steuerung</a>.</p></div>';
+  html += `<p class="small">Freigegeben: <b>${esc(planLabel(active.id))}</b> · ${esc(tidy(active.title))} <span class="tag ${esc(active.status)}">${esc(active.status)}</span>
+    · <a href="#/lage">Start/Stopp unter Lage</a></p>`;
   html += driftLine(drift, own);
   if (plan) {
     const hst = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
@@ -627,34 +593,12 @@ function abCard(active, sess, cmds, own, execs, W, drift) {
       <div class="small muted" style="margin:4px 0">${PLAN_LIVE_NOTE}</div>
       ${halts.length ? `<div class="small" style="margin:4px 0">⏸ Haltepunkte vor #${halts.map(n => esc(n)).join(', #')}${(plan.halts || []).length || (plan.haltKeys || []).length ? '' : ' <span class="muted">(vom Vorplan übernommen)</span>'}</div>` : ''}
       ${stepsTable(plan, hstTab, execs, W, tab, LT, { all: false })}
-      ${own ? `<div class="row between small" style="margin-top:6px"><span class="muted">Tipp auf einen Schritt = „bis #“</span><a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a></div>` : ''}`;
+      ${own ? `<div class="row between small" style="margin-top:6px"><span class="muted">Tipp auf einen Schritt = „bis #“ (Start unter Lage)</span><a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a></div>` : ''}`;
   }
-  return html + `<div id="abCmds">${cmdTable(cmds)}</div></div>`;
+  return html + '</div>';
 }
 
-// Kommandos als zweizeilige Liste (B16: passt aufs Handy): Was → Gerät, Zeit; darunter Status und Ergebnis
-const CMD_DE = { start: 'Start', stop: 'Stopp', adopt: 'Plan übernehmen', reload: 'Neu laden', snapshot: 'Lage lesen', factors: 'Faktoren sichern',
-  factor: 'Faktor', banner: 'Werbebanner', pause: 'Pause', weiter: 'Weiter' };
-const cmdTable = cmds => !cmds.length ? '' : `<h3>Letzte Kommandos</h3>${cmds.map(c => `<div class="list-item small"><div class="row between">
-    <span><b>${esc(c.cmd === 'start' && c.args?.mode === 'dry' ? 'Probelauf' : CMD_DE[c.cmd] || c.cmd)}</b>${c.args?.accept ? ' (von Hand übernehmen)' : ''}${c.args?.until ? ' bis ' + esc(untilTxt(c.args.until, c.args.untilBy)) : ''}${c.cmd === 'factor' ? ` ${esc(c.args?.type)} ${esc(c.args?.to)} %` : ''}${c.target_name ? ` → ${esc(c.target_name)}` : ''}</span>
-    <span class="muted nowrap">${esc(when(c.created_at))}</span></div>
-    <div><span class="tag">${esc(c.status)}</span> <span class="muted">${esc(tidy(c.result))}${c.taken_name && c.taken_name !== c.target_name ? ` · ${esc(c.taken_name)}` : ''}</span></div></div>`).join('')}`;
-
-// Offene Kommandos (neu/angenommen) alle 5 s nachsehen, ohne die Seite neu aufzubauen; fertig → einmal neu laden
-const OPEN_CMD = c => ['neu', 'angenommen'].includes(c.status);
-function watchCmds(cmds, since = Date.now(), el = '#abCmds', filter = {}) {
-  clearTimeout(watchCmds.t);
-  if (!cmds.some(OPEN_CMD)) return;
-  watchCmds.t = setTimeout(async () => {
-    if (!$(el) || Date.now() - since > 5 * 60e3) return;
-    try {
-      const fresh = await Cloud.q('commands', { account_id: `eq.${S.acc}`, script: 'eq.autobuilder', order: 'id.desc', limit: el === '#abCmds' ? 8 : 5, ...filter });
-      if (!$(el)) return;
-      $(el).innerHTML = cmdTable(fresh);
-      if (fresh.some(OPEN_CMD)) watchCmds(fresh, since, el, filter); else route(true);
-    } catch { watchCmds(cmds, since, el, filter); }
-  }, 5000);
-}
+// „Letzte Kommandos“ (cmdTable, watchCmds) stehen seit PR 4 in common.js und nur noch im Atlas (Imperium → Wartung).
 
 async function sendCmd(active, cmd, sess) {
   const plan = active.payload;
@@ -662,7 +606,7 @@ async function sendCmd(active, cmd, sess) {
   // Stopp geht an den Halter eines laufenden Laufs, sonst an das gewählte Gerät
   const holder = sess.devs.find(x => x.holds && ['laeuft', 'schlaeft', 'verloren'].includes(sess.run?.state));
   const PAUSE = ['pause', 'weiter', 'weiter_ok'];
-  const tgt = (cmd === 'stop' || PAUSE.includes(cmd)) && holder ? holder : PAUSE.includes(cmd) ? null : live.find(x => x.device === $('#abDev')?.value);
+  const tgt = (cmd === 'stop' || PAUSE.includes(cmd)) && holder ? holder : PAUSE.includes(cmd) ? null : live.find(x => x.device === $('#nfDev')?.value);
   if (!tgt) return toast('Kein Gerät erreichbar');
   // M8: eigene Reiter-Grenzen → untilBy mit allen Gruppen (null = alle wie until, löscht alte Reiter-Grenzen). Ein Autobuilder
   // vor 0.5.65 kennt untilBy nicht: Er bekommt als until die kleinste Grenze (hält eher zu früh als zu spät).
@@ -719,7 +663,7 @@ function newPlanCard(o, own) {
     <p><b>${esc(planLabel(o.draft.id))}</b> · ${esc(tidy(o.draft.title || ''))}${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
     ${planTeilHtml(o.teil)}${planDetails(o.draft)}
     ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npNo">Verwerfen</button></div>
-      <p class="muted small">Gestartet wird danach wie gewohnt unter Autobuilder („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
+      <p class="muted small">Gestartet wird danach wie gewohnt unter Lage („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
 }
 async function takeNewPlan(o, sess) {
   const stale = o.teil?.stale ? `
@@ -735,10 +679,10 @@ Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein 
     if (tgt && o.draft.plan_hash && !tgt.ab.state?.running) {
       if (confirm(`Freigegeben. Plan jetzt auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen (neue Schrittnummern).`)) {
         await postCmd(tgt, 'adopt', { plan: o.draft.plan_hash }, o.draft.id);
-        toast(`Übernehmen an ${tgt.name} gesendet – Ergebnis unter Autobuilder`);
-      } else toast('Freigegeben – übernehmen unter Autobuilder');
-    } else toast(tgt ? `Freigegeben – ${tgt.name} läuft noch: erst stoppen, dann unter Autobuilder übernehmen`
-      : 'Freigegeben – kein Autobuilder erreichbar; übernehmen unter Autobuilder, sobald ein Gerät da ist');
+        toast(`Übernehmen an ${tgt.name} gesendet – Ergebnis unter Lage`);
+      } else toast('Freigegeben – übernehmen unter Lage');
+    } else toast(tgt ? `Freigegeben – ${tgt.name} läuft noch: erst stoppen, dann unter Lage übernehmen`
+      : 'Freigegeben – kein Autobuilder erreichbar; übernehmen unter Lage, sobald ein Gerät da ist');
     setTimeout(() => route(true), 1500);
   } catch (e) { toast(e.message); }
 }
@@ -795,13 +739,12 @@ async function viewPlans(rest = []) {
   // Plan-Editor seit C1 nur im Atlas; alte Links (#/plaene/edit/<id>) dorthin umleiten
   if (rest[0] === 'edit' && rest[1]) { location.replace(`details/#/plaene/edit/${encodeURIComponent(rest[1])}`); return; }
   const acc = `eq.${S.acc}`;
-  let [plans, heads, sess, cmds, W, homes, opt] = await Promise.all([
+  let [plans, heads, sess, W, homes, opt] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 30,
       select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
       select: 'id,status,title,plan_hash' }),
     loadSessions(),
-    Cloud.q('commands', { account_id: acc, script: 'eq.autobuilder', order: 'id.desc', limit: 8 }),
     loadWissen().catch(() => null),
     S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
     Cloud.rpc('planlauf_status', { p_account: S.acc }).catch(() => null),
@@ -844,7 +787,7 @@ async function viewPlans(rest = []) {
       ${own && run(p) ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(p.id)}">Abbrechen</button></div>` : ''}
       ${own && p.kind === 'build' && p.plan_hash ? `<div class="small" style="margin-top:6px"><a href="details/#/plaene/edit/${esc(p.id)}" target="_blank" rel="noopener">Plan ändern (Atlas, neuer Entwurf) →</a></div>` : ''}
     </div>`;
-  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, cmds, own, execs, W, drift) + optCard(opt, own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
+  $('#view').innerHTML = newPlanCard(offer, own) + abCard(active, sess, own, execs, W, drift) + optCard(opt, own) + `<div class="card" style="margin-top:12px"><h2>Pläne</h2>
     <p class="muted small">Entwürfe kommen vom Optimierer oder von Claude; gezeigt werden nur Baupläne, die das Ziel früher erreichen als der aktive Plan${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}. Ausgeführt wird nur, was du freigibst; die Skripte melden den Fortschritt.</p>
     ${cur.length ? cur.map(item).join('') : `<p class="muted">${old.length ? 'Kein freigegebener Plan und kein offener Entwurf.' : 'Noch keine Pläne. Der Optimierer legt jeden neuen Bauplan hier als Entwurf ab.'}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
@@ -857,7 +800,6 @@ async function viewPlans(rest = []) {
     try { await Cloud.rpc('plan_status', { p_id: b.dataset.id, p_status: act }); toast('Gespeichert'); route(); }
     catch (e) { toast(e.message); }
   }));
-  $('#view').querySelectorAll('button[data-cmd]').forEach(b => b.addEventListener('click', () => sendCmd(active, b.dataset.cmd, sess)));
   $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
   $('#optGo')?.addEventListener('click', optAsk);
   $('#npNo')?.addEventListener('click', async () => {
@@ -865,21 +807,12 @@ async function viewPlans(rest = []) {
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
   });
   planTabsWire($('#view'));
-  $('#abDev')?.addEventListener('change', e => { S.abSel = { ...S.abSel, dev: e.target.value }; route(true); });
-  watchCmds(cmds);
-  // M8: Eingabe im Reiter einer Gruppe = deren Grenze (alle bisherigen Grenzen werden dabei zur eigenen Auswahl), sonst until
-  const abGrp = () => planMulti(active?.payload) ? tabGrp(planTabCur(planTabs(active.payload, S.home))) : null;
-  const abBase = () => { const tg = sess.devs.find(x => x.device === $('#abDev')?.value)?.ab?.state || {}; return abLimits(active.payload, tg, sess.run); };
-  const showStep = () => {
-    const n = +$('#abUntil').value, s = active?.payload?.steps?.[n - 1], g = abGrp();
-    S.abSel = g ? { ...S.abSel, by: { ...abBase().by, [g]: n } } : { ...S.abSel, until: n, by: S.abSel?.by || abBase().by };
-    $('#abStep').textContent = s ? `#${n}: ${s[5]}` : '';
-  };
-  $('#abAsAll')?.addEventListener('click', () => { const by = { ...abBase().by }; delete by[abGrp()]; S.abSel = { ...S.abSel, by }; route(true); });
-  if ($('#abUntil')) {
-    $('#abUntil').addEventListener('input', showStep);
-    const s = active?.payload?.steps?.[+$('#abUntil').value - 1]; $('#abStep').textContent = s ? `#${$('#abUntil').value}: ${s[5]}` : '';
-    $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => { $('#abUntil').value = r.dataset.i; showStep(); }));
+  // Tipp auf einen Planschritt = „bis #“ (gemeinsamer Zustand S.abSel); gestartet wird unter Lage (Steuerung)
+  if (own && active?.payload?.steps) {
+    $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => {
+      const n = +r.dataset.i, st = setBis(active, sess, n);
+      if (st) toast(`bis #${n} gewählt (${st[5]}) – Start unter Lage`);
+    }));
   }
 }
 
