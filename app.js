@@ -221,6 +221,7 @@ async function viewLage() {
   $('#view').innerHTML = bannerCard(sess) + overviewCard(sess, d, live, abLive, nm, W, gdLine(gds[0]) + effectsLine(effs)) + karten + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
     + '<p class="small muted pad">Planeten, Gebäude, Forschung: <a href="details/#/imperium" target="_blank" rel="noopener">Imperium im Atlas →</a></p>';
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
+  bindAsk($('#view'), c => S.askLage?.[c]);
   bindSteuerung(sess, nf, active);
 }
 
@@ -260,6 +261,7 @@ async function planetenKarten(d, ap, gd, sess, W) {
   let feed = plan ? planFeed(plan, execs, sess, gd) : [];
   if (!feed.length) feed = liveJobRows(gd, home, W);
   const by = feedByPlanet(plan, feed, home, pl), cur = d?.start?.coords;   // Zuordnung gemeinsam mit den Planeten-Karten unter Pläne (common.js)
+  S.askLage = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], ap?.row?.id || null, plan?.steps)]));   // für „Claude fragen“ (bindAsk)
   return pl.map(p => {
     const rows = by[p.coords];
     return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), werte: werte[p.coords] || null, steps: plan?.steps, current: p.coords === cur, plan: null });
@@ -767,7 +769,7 @@ async function viewPlans(rest = []) {
   plans = plans.filter(p => !hidden.includes(p));
   const own = isOwner();
   // Stand des Autobuilders für diesen Plan (Lauf-Halter bevorzugt), Erledigt-Logik und Live-Zeitplan
-  let hst = {}, planCards = '';
+  let hst = {}, planCards = '', askCtx = {};
   if (plan) {
     const holder = sess.devs.find(x => x.holds), st = abTarget(sess)?.ab?.state || {};
     const h0 = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
@@ -776,6 +778,7 @@ async function viewPlans(rest = []) {
     const LT = planLive(plan, planStepDone(plan, hst, execs), execs, hst);
     const gd = gds[0] || null, home = planHomeCoords(plan, gd, pl[0]?.coords), cur = d?.start?.coords;
     const by = feedByPlanet(plan, planFeed(plan, execs, sess, gd), home, pl);
+    askCtx = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], active.id, plan.steps)]));
     planCards = pl.map(p => planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'), werte: werte[p.coords] || null,
       steps: plan.steps, current: p.coords === cur, plan: { plan, st: hst, execs, W, LT, home } })).join('');
   }
@@ -794,6 +797,7 @@ async function viewPlans(rest = []) {
   $('#view').innerHTML = newPlanCard(offer, own) + planKopfCard(active, sess, own, drift, hst) + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
     + `<div class="card"><h2>Entwürfe</h2>${list.length ? list.map(item).join('') : `<p class="muted small">Kein offener Entwurf.${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
+  bindAsk($('#view'), c => askCtx[c]);
   $('#view').querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act, p = plans.find(x => x.id === b.dataset.id);
     if (act === 'freigegeben' && p?.kind === 'build') return takeNewPlan({ draft: p, teil: gains[p.id]?.teil }, sess);   // F4: danach direkt übernehmen
@@ -871,11 +875,11 @@ async function fillPushCard() {
    auf Work am 24.10. abgeschaltet) übernimmt (request_claim) und antwortet (request_answer,
    ggf. mit Planentwurf). Antworten kommen auch als Push. */
 const RQ_ST = { neu: 'neu', in_arbeit: 'in Arbeit', beantwortet: 'beantwortet', abgelehnt: 'abgelehnt', zurueckgezogen: 'zurückgezogen' };
-const RQ_KIND = { optimierer: 'Neuer Plan', plan_rechnen: 'Plan-Lauf Work' };
+const RQ_KIND = { optimierer: 'Neuer Plan', plan_rechnen: 'Plan-Lauf Work', ereignis: 'Ereignis', schritt: 'Planschritt' };
 const RQ_TGT = { sim: 'Simulations-PC', remote: 'Remote-PC' };  // nur noch für alte Aufträge; neue gehen an „any“
 async function viewClaude() {
   const rq = await Cloud.q('requests', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 40,
-    select: 'id,kind,target,text,status,answer,plan_ids,created_at,answered_at' });
+    select: 'id,kind,target,text,context,status,answer,plan_ids,created_at,answered_at' });
   const own = isOwner();
   $('#view').innerHTML = `${own ? `<div class="card"><h2>Auftrag an Claude</h2>
       <form id="rqForm"><textarea name="text" rows="4" maxlength="8000" placeholder="Frage oder Auftrag, z. B. „Rechne den Plan neu ab dem neuesten Snapshot“" style="width:100%"></textarea>
@@ -885,6 +889,7 @@ async function viewClaude() {
       <span><span class="tag ${r.status === 'beantwortet' ? 'ok' : ''}">${esc(RQ_ST[r.status] || r.status)}</span> ${r.kind !== 'frage' ? `<span class="tag">${esc(RQ_KIND[r.kind] || r.kind)}</span> ` : ''}${r.target !== 'any' ? `<span class="muted small">${esc(RQ_TGT[r.target] || r.target)}</span>` : ''}</span>
       <span class="muted small nowrap">${esc(when(r.created_at))}</span></div>
       <div class="wrapall" style="white-space:pre-wrap">${esc(tidy(r.text))}</div>
+      ${r.context && typeof r.context === 'object' && Object.keys(r.context).length ? `<details class="sub"><summary class="small muted">Kontext</summary><pre class="small">${esc(JSON.stringify(r.context, null, 1))}</pre></details>` : ''}
       ${r.answer ? `<div class="msgbody small"><b>Antwort</b>${r.answered_at ? ` <span class="muted">${esc(when(r.answered_at))}</span>` : ''}<br>${esc(tidy(r.answer))}</div>` : ''}
       ${r.plan_ids?.length ? `<div class="small"><a href="#/plaene">${r.plan_ids.length === 1 ? 'Planentwurf' : r.plan_ids.length + ' Planentwürfe'} unter Pläne →</a></div>` : ''}
       ${own && ['neu', 'in_arbeit'].includes(r.status) ? `<div class="row" style="margin-top:4px"><button class="small" data-wd="${esc(r.id)}">Zurückziehen</button></div>` : ''}

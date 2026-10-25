@@ -142,13 +142,66 @@ const CAT = { builder: 'Builder', cockpit: 'Cockpit', spiel: 'Spiel', system: 'S
    über postCmd). Lauf-Steuerung und Planfreigaben bleiben im Cockpit – dorthin führt COCKPIT_LINK. */
 const ATLAS = !!window.HZ_ATLAS;
 const COCKPIT_LINK = (h, txt) => `<a href="${esc(HZ_ROOT + h)}">${esc(txt)} →</a>`;
+/* „Claude fragen“ (25.10.2026): Der Owner stellt aus einer Meldung oder Planeten-Karte einen Auftrag (requests) mit Kontext
+   (requests.context, jsonb). Eine Claude-Sitzung mit Wächter übernimmt ihn (tools/watch.py zeigt ctx=…, auftrag.py show den ganzen
+   Kontext) und antwortet per Push. kind: 'ereignis' (Meldung) | 'schritt' (Planeten-Karte). Gilt im Cockpit und im Atlas. */
+window.HZ_ASK = async (kind, text, context) => {
+  if (!isOwner()) return toast('Nur der Owner kann Claude fragen');
+  try {
+    await Cloud.rest('requests', { method: 'POST', prefer: 'return=minimal',
+      body: { account_id: S.acc, kind, target: 'any', text: String(text).slice(0, 8000), context: context || {} } });
+    if (ATLAS) toast('Auftrag an Claude gestellt', { label: 'Im Cockpit ansehen', run: () => window.open(HZ_ROOT + '#/claude', '_blank', 'noopener') });
+    else { toast('Auftrag an Claude gestellt'); location.hash = '#/claude'; }
+  } catch (e) { toast(e.message); }
+};
+const EV_ASK = new Map();   // Ereignis-id → Zeile (für „Claude fragen“; evRow trägt sie ein)
+// Auftragstext und Kontext zu einer Ereigniszeile
+function askEventPayload(e) {
+  return { kind: 'ereignis', text: `Woran liegt das? ${e.kind}: ${String(e.text ?? '').slice(0, 300)}`,
+    context: { event_id: e.id, kind: e.kind, cat: e.cat, level: e.level, src_name: e.src_name, t: e.t, data: e.data ?? null } };
+}
+/* Planeten-Karte: die „interessanteste“ Feed-Zeile – überfällig (next.due) vor wartend (next) vor laufend (nur run) */
+function askPickRow(rows) {
+  const list = (rows || []).filter(r => r && (r.next || r.run));
+  const rank = r => r.next?.due != null ? 0 : r.next ? 1 : 2;
+  return list.slice().sort((a, b) => rank(a) - rank(b))[0] || null;   // sort ist stabil: bei Gleichstand die frühere Schlange (Bau vor Forschung vor Werft)
+}
+// Auftragstext und Kontext zu einer Planeten-Karte; planId = Datenbank-id des aktiven Plans (oder null), steps = plan.steps
+function askPlanetPayload(p, rows, planId, steps) {
+  const r = askPickRow(rows), name = p.name || p.coords, iso = t => Number.isFinite(t) ? new Date(t).toISOString() : null;
+  const nm = i => (Number.isInteger(i) && steps?.[i]?.[5]) || '';
+  const context = { planet: p.coords };
+  if (!r) return { kind: 'schritt', text: `Lage auf ${name}: Woran liegt das?`, context };
+  const why = r.next && typeof Zeitfeed !== 'undefined' ? Zeitfeed.whyText(r.next.why) : '';
+  if (r.next) {
+    const x = r.next;
+    context.step = { n: Number.isInteger(x.i) ? x.i + 1 : null, text: nm(x.i) };
+    Object.assign(context, { why, at: iso(x.at), due: iso(x.due), src: x.src || null, srcAt: iso(x.srcAt) });
+  } else {
+    context.step = { n: Number.isInteger(r.run.i) ? r.run.i + 1 : null, text: r.run.name || nm(r.run.i) };
+    context.run_end = iso(r.run.end);
+  }
+  if (r.q) context.queue = r.q;
+  if (planId) context.plan = planId;
+  return { kind: 'schritt', text: `Lage auf ${name}: Woran liegt das?${why ? ` ${why}${r.next.due != null ? ', überfällig' : ''}` : ''}`, context };
+}
+/* Verdrahtet die „Claude fragen“-Knöpfe der Planeten-Karten (planetKarte, .askgo); ctxOf(coords) → { kind, text, context } */
+function bindAsk(container, ctxOf) {
+  if (!container || !window.HZ_ASK || !isOwner()) return;
+  container.querySelectorAll('.askgo').forEach(b => b.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const x = ctxOf(b.dataset.ask);
+    if (x) window.HZ_ASK(x.kind, x.text, x.context);
+  }));
+}
 function evRow(e) {
+  EV_ASK.set(String(e.id), e);
   const can = ['owner', 'viewer'].includes(account()?.role);
   return `<div class="list-item ev${e.seen_at ? '' : ' unseen'}${e.dismissed_at ? ' dismissed' : ''}" data-id="${esc(e.id)}"><div class="row between">
     <span><span class="tag ${esc(e.level)}">${esc(e.level)}</span> <span class="tag">${esc(CAT[e.cat] || e.cat || '')}</span> ${esc(e.kind)}${e.dismissed_at ? ' <span class="tag">ausgeblendet</span>' : ''}</span>
     <span class="muted small nowrap">${esc(when(e.t))}${can ? ` <button class="link small evx" title="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden (oder nach rechts wischen)'}" aria-label="${e.dismissed_at ? 'wieder einblenden' : 'ausblenden'}">${e.dismissed_at ? '↺' : '✕'}</button>` : ''}</span></div>
     <div class="wrapall">${esc(tidy(e.text))}</div>${e.kind === 'anflug' && e.level === 'hoch' && isOwner() && Date.now() - new Date(e.t) < 6 * 3600e3
-      ? '<div class="row" style="margin:4px 0"><button class="danger small nfgo">Notfall verbauen</button></div>' : ''}${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? `<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>` : ''}<div class="muted small">${esc(e.src_name || e.origin)}</div></div>`;
+      ? '<div class="row" style="margin:4px 0"><button class="danger small nfgo">Notfall verbauen</button></div>' : ''}${bannerSlots(e)}${msgBody(e)}${e.kind === 'abweichung' && e.data?.offer === 'neu_planen' ? `<div class="small"><a href="#/plaene">Planabweichung ansehen / neu planen →</a></div>` : ''}<div class="row between muted small"><span>${esc(e.src_name || e.origin)}</span>${isOwner() ? '<button class="link small askev">Claude fragen</button>' : ''}</div></div>`;
 }
 /* Nachrichten (B1, Autobuilder ab 0.5.13): Inhalt, Links und Effekt stehen in data des Ereignisses „bericht“.
    Links nur als Text – das Cockpit macht daraus keine klickbaren Verweise (Spiel-Links tragen Einmal-Token, fremde Ziele
@@ -255,6 +308,11 @@ function swipeEvents(root) {
   if (!['owner', 'viewer'].includes(account()?.role)) return;
   root.querySelectorAll('.ev .nfgo').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); anflugNotfall(); }));
   root.querySelectorAll('.ev .ansgo').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); if (isOwner()) sendAnswer(b); }));
+  root.querySelectorAll('.ev .askev').forEach(b => b.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const e = EV_ASK.get(b.closest('.ev').dataset.id);
+    if (e && isOwner()) { const x = askEventPayload(e); window.HZ_ASK(x.kind, x.text, x.context); }
+  }));
   root.querySelectorAll('.ev .evx').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); dismissEvent(b.closest('.ev')); }));
   root.querySelectorAll('.ev:not(.dismissed)').forEach(el => {
     let x0 = null, y0 = 0, dx = 0;
@@ -525,7 +583,7 @@ function planetKarte(p, rows, opts = {}) {
   const abw = planetWerteAbw(opts.werte);
   if (abw.length) body += `<div class="small muted plwerte">${abw.map(esc).join(' · ')}</div>`;
   if (opts.plan?.plan) body += planKarteSchritte(p, opts.plan, !!opts.research);
-  const ask = typeof window !== 'undefined' && window.HZ_ASK ? `<div class="plfoot"><button class="small askgo" data-ask="${esc(p.coords)}">Claude fragen</button></div>` : '';
+  const ask = typeof window !== 'undefined' && window.HZ_ASK && (typeof isOwner !== 'function' || isOwner()) ?`<div class="plfoot"><button class="small askgo" data-ask="${esc(p.coords)}">Claude fragen</button></div>` : '';
   return `<div class="card plcard"><h2>${esc(p.name || p.coords)} <span class="muted small">${esc(p.coords)}</span>${opts.current ? ' <span title="im Spiel gewählt">◉</span>' : ''}</h2>${body}${ask}</div>`;
 }
 const PLAN_LIVE_NOTE ='Zeiten live je Schlange (Heimat, Forschung, je Kolonie): laufende Aufträge bis zu ihrem Ende, sonst Startschätzung des Autobuilders bzw. Abweichung der Schlange; Überfälliges ab jetzt (reine Planzeit als Tooltip)';
