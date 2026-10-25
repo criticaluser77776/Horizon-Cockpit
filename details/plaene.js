@@ -397,12 +397,17 @@ function slField([k, label, type, opt], f) {
 }
 const slSummary = (d, errs) => `<div class="small" style="margin:6px 0">${d.length ? `Abweichend vom Standard: <b>${esc(d.join(' · '))}</b>` : 'Standard-Einstellungen (wie der tägliche Lauf)'}</div>
   ${errs.length ? `<div class="small warn">${errs.map(esc).join('<br>')}</div>` : ''}`;
+// L7 (24.10.2026): Fortschritt eines laufenden Optimierers aus dem Lebenszeichen (tools/sim_work.py fortschritt)
+const simFs = (f, uhr) => !f ? '' : `Fortschritt: ${f.schritt} (von ${f.von}) · ${Number(f.sims).toLocaleString('de-DE')} Simulationen · `
+  + (f.bestes < 0 ? `bester Plan ${Math.round(-f.bestes).toLocaleString('de-DE')}/h gewichtet bei T` : f.bestes >= 1e6 ? 'noch kein zulässiger Plan' : `bester Plan ${f.bestes.toFixed(1)} h`)
+  + (f.spaetestens ? ` · fertig spätestens ${uhr(f.spaetestens)}` : '');
 function simlaufCard(pl, own) {
   const st = slState(), P = HZ_SIMPARAMS.fromForm(st.form), errs = HZ_SIMPARAMS.check(P), d = HZ_SIMPARAMS.diff(P);
   const w = (pl?.work || [])[0], ws = w?.state || {}, age = w ? Date.now() - new Date(w.at) : Infinity;
   const open = (pl?.offen || []).find(q => q.kind !== 'optimierer');
   const lines = [!pl?.now ? 'Stand nicht abrufbar' : !w ? 'Work: kein Lebenszeichen'
     : ws.phase === 'start' && age < 3 * 3600e3 ? `Work: rechnet seit ${dt(w.at)}` : age > 15 * 60e3 ? `Work: aus (zuletzt ${dt(w.at)})` : 'Work: bereit'];
+  if (ws.phase === 'start' && age < 3 * 3600e3 && ws.fortschritt) lines.push(simFs(ws.fortschritt, dt));
   if (ws.sperre && !/^frei/i.test(ws.sperre)) lines.push(`Sim-Sperre: ${ws.sperre}`);
   if (open) lines.push(`Auftrag ${open.status === 'in_arbeit' ? 'in Arbeit' : 'angefordert'} seit ${dt(open.created_at)}`);
   return `<div class="card"><div class="row between"><h2>Neuer Lauf auf Work</h2>${open ? '<span class="tag">angefordert</span>' : ''}</div>
