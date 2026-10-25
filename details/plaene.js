@@ -80,23 +80,26 @@ function reqsOf(W, k, id, l) {
 }
 /* Reihenfolge prüfen. Ausgangsstufe je Objekt: Live-Stufe (laufender Auftrag zählt als fertig), sonst die Stufe vor dem ersten
    Schritt im Ursprungsplan; Objekte, die weder live gelesen noch im Ursprungsplan gebaut werden, gelten als vorhanden (der
-   Plan setzte sie voraus). Ergebnis: [{i, text}] (i = Index im neuen Plan). */
-function checkOrder(steps, orig, live, W) {
+   Plan setzte sie voraus). Gebäude auf Kolonien (pl = Koordinaten je Schritt, plOrig je Ursprungsschritt) zählen je Planet; der
+   Live-Stand gilt nur für die Heimat, HQ-Voraussetzung einer Kolonie = Koloniezentrum. Ergebnis: [{i, text}] (i = Index im neuen Plan). */
+function checkOrder(steps, orig, live, W, pl = [], plOrig = []) {
+  const key = (k, id, c) => k === 'b' && c ? `b:${id}@${c}` : `${k}:${id}`;
   const have = {};
-  for (const s of orig) { const k = `${s[0]}:${s[1]}`; have[k] = Math.min(have[k] ?? Infinity, s[2] - 1); }
+  orig.forEach((s, j) => { const k = key(s[0], s[1], plOrig[j]); have[k] = Math.min(have[k] ?? Infinity, s[2] - 1); });
   if (live) Object.assign(have, live);
   const lvl = k => have[k] ?? Infinity;
   const nm = (k, id) => (k === 'b' ? W?.B : W?.R)?.[id]?.n || id;
   const errs = [];
   steps.forEach((s, i) => {
     if (s[0] === 's') return;
-    const k = `${s[0]}:${s[1]}`;
+    const c = s[0] === 'b' ? pl[i] || null : null, k = key(s[0], s[1], c);
     if (lvl(k) >= s[2]) return;
-    if (lvl(k) < s[2] - 1) errs.push({ i, text: `#${i + 1} ${s[5]}: Stufe ${s[2] - 1} fehlt davor` });
-    for (const [rk, rid, rl] of reqsOf(W, s[0], s[1], s[2])) {
-      if (lvl(`${rk}:${rid}`) >= rl) continue;
-      const j = steps.findIndex((x, n) => n > i && x[0] === rk && x[1] === rid && x[2] >= rl);
-      errs.push({ i, text: `#${i + 1} ${s[5]}: braucht ${nm(rk, rid)} ${rl}${j >= 0 ? ` – kommt erst #${j + 1}` : ' – fehlt im Plan'}` });
+    if (lvl(k) < s[2] - 1) errs.push({ i, text: `#${i + 1} ${s[5]}${c ? ` (${c})` : ''}: Stufe ${s[2] - 1} fehlt davor` });
+    for (const [rk, rid0, rl] of reqsOf(W, s[0], s[1], s[2])) {
+      const rid = c && rk === 'b' && rid0 === 'headquarter' ? 'colonycenter' : rid0, rc = rk === 'b' ? c : null;
+      if (lvl(key(rk, rid, rc)) >= rl) continue;
+      const j = steps.findIndex((x, n) => n > i && x[0] === rk && x[1] === rid && x[2] >= rl && (rk !== 'b' || (pl[n] || null) === rc));
+      errs.push({ i, text: `#${i + 1} ${s[5]}${c ? ` (${c})` : ''}: braucht ${nm(rk, rid)} ${rl}${j >= 0 ? ` – kommt erst #${j + 1}` : ' – fehlt im Plan'}` });
     }
     have[k] = s[2];
   });
@@ -154,7 +157,7 @@ async function viewPlanEdit(id) {
     S.ed = { id, src, orig, W, L, dropDone: false, limits: { ...(orig.limits || {}) }, note: '', ins: { k: 'b', id: '', l: 1, at: 0 },
       rows: orig.steps.map((s, i) => {
         const halt = (orig.halts || []).includes(i + 1);
-        return { s, n0: i + 1, halt, halt0: halt, done: !!lv && s[0] !== 's' && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };
+        return { s, n0: i + 1, halt, halt0: halt, done: !!lv && s[0] !== 's' && !(s[0] === 'b' && planAway(orig, i + 1)) && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };   // Live-Stand: nur Heimat
       }) };
   }
   renderPlanEdit(isOwner());
@@ -163,7 +166,9 @@ function renderPlanEdit(own) {
   const E = S.ed, { W, L, orig } = E;
   const P = editedPlan(E);
   // eingefügte Objekte: Ausgangsstufe = Stufe davor (sonst gälten Objekte ohne Live-Wert als vorhanden)
-  const errs = checkOrder(P.steps, [...orig.steps, ...E.rows.filter(r => r.ins).map(r => r.s)], L?.lv, W);
+  const plOf = r => r.n0 && r.s[0] === 'b' ? planAway(orig, r.n0) : null;   // Kolonie je Zeile (eingefügte Schritte: Heimat)
+  const errs = checkOrder(P.steps, [...orig.steps, ...E.rows.filter(r => r.ins).map(r => r.s)], L?.lv, W,
+    P.keep.map(plOf), [...orig.steps.map((s, j) => s[0] === 'b' ? planAway(orig, j + 1) : null), ...E.rows.filter(r => r.ins).map(() => null)]);
   const bad = new Set(errs.map(e => e.i));
   const nm = t => W?.B?.[t]?.n || t;
   // Gebäude mit Faktor: aus dem Plan und den Grenzen
@@ -176,7 +181,7 @@ function renderPlanEdit(own) {
     return `${r.halt && !out ? `<tr class="halt"><td></td><td colspan="2">⏸ Haltepunkt: Autobuilder hält vor #${no} an</td></tr>` : ''}
       <tr class="step${out ? ' skip' : ''}${!out && bad.has(no - 1) ? ' bad' : ''}" data-i="${i}">
       <td class="num">${out ? '–' : '#' + no}</td>
-      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + (r.n0 ? planResTag(E.orig, r.n0) : '') : ''}<div class="small muted">${r.ins ? '<b>neu eingefügt</b>' : `war #${r.n0}`}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
+      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + (r.n0 ? planResTag(E.orig, r.n0) : '') : ''}${plOf(r) ? ` <span class="tag aktiv">${esc(planTabName(orig, plOf(r)))} (${esc(plOf(r))})</span>` : r.s[0] === 'b' ? ' <span class="tag">Heimat</span>' : ''}<div class="small muted">${r.ins ? '<b>neu eingefügt</b>' : `war #${r.n0}`}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
       <td class="acts">${own ? `<button data-a="up" title="nach oben"${i ? '' : ' disabled'}>↑</button><button data-a="down" title="nach unten"${i < E.rows.length - 1 ? '' : ' disabled'}>↓</button><button data-a="halt" title="Haltepunkt davor"${r.halt ? ' class="on"' : ''}>⏸</button><button data-a="skip" title="${r.ins ? 'wieder entfernen' : 'überspringen'}"${r.skip ? ' class="on"' : ''}>✕</button>` : ''}</td></tr>`;
   }).join('');
   const lim = Object.entries(E.limits).map(([t, [a, b]]) => `<div class="row between small"><span>${esc(nm(t))}: ${a}–${b} %</span>${own ? `<button class="link" data-lim-del="${esc(t)}">entfernen</button>` : ''}</div>`).join('');
