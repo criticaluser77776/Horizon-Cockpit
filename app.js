@@ -1036,16 +1036,26 @@ async function planTransportCard(ap, d) {
       ${own ? `<div class="row" style="margin-top:4px"><button class="small${x.status === 'faellig' ? ' primary' : ''}" data-tr="${x.nr}" data-on="${x.status === 'geflogen' ? '' : 1}">${x.status === 'geflogen' ? 'Haken lösen' : 'Geflogen'}</button></div>` : ''}
     </div>`;
   };
+  // Stationieren laut Plan (Punkt C, 26.10.2026): macht der Autobuilder, hier nur Anzeige
+  const park = Transporte.parkListe(ap.payload, drift).map(x => {
+    const [st, cls] = TR_ST[x.status] || ['', ''];
+    return `<div class="list-item"><div class="row between">
+      <span><b>Stationieren</b> ${esc(x.schiffe.join(' + '))} → ${plName(x.nach)}${st ? ` <span class="tag ${cls}">${st}</span>` : ''}</span>
+      <span class="nowrap" title="${esc(dt(x.ab))}">${esc(clockT(x.ab))}</span></div>
+      <div class="small muted">Ankunft ${esc(clockT(x.an))}${x.vor ? ` · danach #${x.vor} ${esc(x.vorName || '')} (wartet bis dahin auf Hafenplatz)` : ''} · Autobuilder, Option „Flotte stationieren“</div>
+    </div>`;
+  }).join('');
+  const parkCard = park ? `<div class="card"><h2>Umparken im Plan</h2>${park}</div>` : '';
   const open = list.filter(x => x.status !== 'geflogen'), done = list.filter(x => x.status === 'geflogen');
   const soon = open.filter(x => x.status !== 'spaeter' || x.ab < Date.now() + 24 * 3600e3), later = open.slice(soon.length);
-  return !list.length
+  return parkCard + (!list.length
     ? `<div class="card"><h2>Transporte im Plan</h2><p class="muted">Der aktive Plan enthält keine Transportliste. Sie kommt mit dem nächsten Plan aus der Simulation (Takt-Flüge).</p></div>`
     : `<div class="card"><h2>Transporte im Plan</h2>
       <p class="small muted">${esc(ap.row.title || 'Aktiver Plan')} · ${open.length} offen, ${done.length} geflogen${drift?.lag != null ? ` · Zeiten verschoben: ${esc(lagText(drift.lag))}` : ''}</p>
       ${soon.length ? soon.map(item).join('') : '<p class="muted">In den nächsten 24 h kein Transport.</p>'}
       ${later.length ? `<details class="sub"><summary class="small muted">Später (${later.length})</summary>${later.map(item).join('')}</details>` : ''}
       ${done.length ? `<details class="sub"><summary class="small muted">Geflogen (${done.length})</summary>${done.map(item).join('')}</details>` : ''}
-    </div>`;
+    </div>`);
 }
 
 /* ---------- Claude-Kanal (B6, 14.10.) ----------

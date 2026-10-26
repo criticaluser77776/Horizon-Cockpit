@@ -174,6 +174,8 @@
       return { t: !x ? Math.min(atPlan(M, s.t0).getTime(), now - 2) : x.run ? now - 1 : x.a, o: 1, s, x }; });
     let prev = {};
     M.f.forEach(x => { const ch = Object.entries(x[2]).filter(([id, v]) => Math.round((prev[id] ?? 1) * 100) !== Math.round(v * 100)).map(([id, v]) => [id, prev[id] ?? 1, v]); prev = x[2]; if (ch.length) rows.push({ t: Zeitplan.atTau(plan, LT, x[0], 'b', LT.lagB), o: 0, ch }); });
+    // Stationieren laut Plan (Punkt C, 26.10.2026; Autobuilder, Option „Flotte stationieren“) zur Planzeit wie die Faktorwechsel
+    for (const e of Array.isArray(plan.park) ? plan.park : []) if (isFinite(e?.t)) rows.push({ t: Zeitplan.atTau(plan, LT, e.t, 'b', LT.lagB), o: 0, pk: e });
     rows.sort((a, b) => a.t - b.t || a.o - b.o || (a.s?.i ?? 0) - (b.s?.i ?? 0));
     const lastFac = rows.filter(r => r.ch && r.t <= now).pop();
     const past = r => r.s ? !r.x : r.t <= now && r !== lastFac;
@@ -183,13 +185,15 @@
     let curDay = null, hidden = 0, later = 0, nowDone = false, html = '';
     for (const r of rows) {
       if (r.s && f !== 'all' && (f === 'b' ? r.s.k === 'r' || r.s.pl : f === 'r' ? r.s.k !== 'r' : r.s.pl !== f)) continue;
-      if (r.ch && f === 'r') continue;
+      if ((r.ch || r.pk) && f === 'r') continue;
+      if (r.pk && f !== 'all' && f !== 'b' && f !== r.pk.nach) continue;
       if (!K.done && past(r)) { if (r.s) hidden++; continue; }
       if (!K.all && r.t > now + 24 * H) { if (r.s) later++; continue; }
       if (!nowDone && r.t >= now) { nowDone = true; html += `<tr class="know"><td colspan="7">Jetzt · ${esc(hm(now))}</td></tr>`; }
       const d = new Date(r.t).toLocaleDateString('de-DE', { ...TZ, weekday: 'long', day: '2-digit', month: 'long' });
       if (d !== curDay) { curDay = d; html += `<tr class="kday"><td colspan="7">${esc(d)}</td></tr>`; }
       const x = r.x, tm = !x ? esc(hm(r.t)) : x.run ? 'läuft bis ' + esc(hm(x.e)) : x.due != null ? `<span class="warn">fällig seit ${esc(fmtT(new Date(x.due)))}</span>` : esc(hm(x.a));
+      if (r.pk) { html += `<tr class="kfac"><td></td><td class="num">${tm}</td><td colspan="5">⛴ Stationieren ${esc((r.pk.schiffe || []).join(' + '))} → ${esc(M.plName(r.pk.nach))}${r.pk.vor ? ` · danach #${r.pk.vor} Kolonieschiff (wartet bis dahin auf Hafenplatz)` : ''}</td></tr>`; continue; }
       if (r.ch) { html += `<tr class="kfac"><td></td><td class="num">${tm}</td><td colspan="5">⚙ ${r.ch.map(([id, o, v]) => `${esc(bName(id))} ${pct(o)} → <b>${pct(v)}</b>`).join(', ')}</td></tr>`; continue; }
       const s = r.s;
       html += `<tr${!x ? ' class="kdone"' : ''}><td class="num" title="Planzeit ${esc(fmtT(atPlan(M, s.t0)))}">${s.i + 1}</td><td class="num">${tm}</td><td>${s.k === 's' ? '<span class="kind">Schiff</span>' : kindTag(s.k)} ${stepLink(s)}${s.pl ? ` <span class="tag aktiv">${esc(M.plName(s.pl))}</span>` : ''}${s.rp ? ` <span class="tag aktiv" title="Forschung startet auf ${esc(s.rp)}">startet auf ${esc(M.plName(s.rp))}</span>` : ''}

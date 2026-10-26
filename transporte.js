@@ -30,6 +30,23 @@
     });
   }
 
+  /* Stationieren (Punkt C, 26.10.2026): Umparken der Flotte laut Plan (payload.park [{nr, t, nach, schiffe, flugH, vor}] aus
+     analyse/build_autobuilder.js). Der Autobuilder stationiert selbst (Option „Flotte stationieren“); das Kolonieschiff #vor wartet
+     so lange auf Hafenplatz. Realzeit wie die Takt-Flüge; Status nur nach der Uhr (faellig/naechster/spaeter). */
+  function parkListe(payload, drift, now = Date.now()) {
+    const list = Array.isArray(payload?.park) ? payload.park : [];
+    const t0 = Date.parse(drift?.start || payload?.startTime);
+    if (!list.length || !isFinite(t0)) return [];
+    const lag = drift?.lag != null && isFinite(drift.lag) ? +drift.lag : 0;
+    let next = false;
+    return list.filter(x => x && isFinite(x.t)).sort((a, b) => a.t - b.t).map(x => {
+      const ab = t0 + (+x.t + lag) * H;
+      const status = ab <= now ? 'faellig' : next ? 'spaeter' : (next = true, 'naechster');
+      return { nr: +x.nr, nach: x.nach || '', schiffe: Array.isArray(x.schiffe) ? x.schiffe : [], ab, an: ab + (+x.flugH || 0) * H,
+        vor: x.vor ?? null, vorName: x.vor && payload.steps?.[x.vor - 1] ? payload.steps[x.vor - 1][5] : null, status };
+    });
+  }
+
   /* Transportaufträge (Nutzer 25.10.2026, doku/stand/transporte.md): Kapazität je Planet und Vorschau der Flüge für das Formular
      „Neuer Transport“. Der Autobuilder fliegt (PR 4); die Vorschau ist nur eine Schätzung. */
   // Laderaum je Schiffstyp, echte Account-Werte (analyse/live/einheiten-2026-10-20.json, hilfe.cargo; live PFLS 1 + PTRN 1 = 12 000 t)
@@ -91,7 +108,7 @@
     }
     return x;
   }
-  const api = { transportListe, ladungText, kapazitaet, vorschau, maxMenge, sameSystem, LADERAUM, FUEL_SYSTEM };
+  const api = { transportListe, parkListe, ladungText, kapazitaet, vorschau, maxMenge, sameSystem, LADERAUM, FUEL_SYSTEM };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.Transporte = api;
 })(typeof window !== 'undefined' ? window : globalThis);
