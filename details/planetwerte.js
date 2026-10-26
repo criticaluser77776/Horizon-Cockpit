@@ -46,9 +46,12 @@
   // Collector, der messen kann: frisches Lebenszeichen, im Spiel eingeloggt, Version ab 0.4.12; Gerät mit dem Lauf zuerst.
   // Ab Collector 0.4.44 (Mess-Warteschlange des Autobuilders 0.5.86) auch das Gerät mit laufendem oder schlafendem Lauf,
   // wenn es ausgeloggt ist: Der Autobuilder loggt dafür ein und misst, sobald 5 min nichts ansteht.
+  // Lebenszeichen wie galaxielesen.js: Collector bis 6 min (bei lebendem Autobuilder meldet er sich nur alle 5 min) oder frisches
+  // Lebenszeichen des Autobuilders auf demselben Gerät; im Spiel laut Collector oder (frischer) Autobuilder
   const queued = (sess, x) => x.holds && ['laeuft', 'schlaeft'].includes(sess.run?.state) && verCmp(x.col.version, QUEUE_VER) >= 0;
-  const target = sess => sess.devs.filter(x => x.col && isFresh(x.col.at) && verCmp(x.col.version, MIN_VER) >= 0
-      && (x.col.state?.page === 'game' || queued(sess, x)))
+  const abFresh = x => x.ab && isFresh(x.ab.at);
+  const target = sess => sess.devs.filter(x => x.col && (isFresh(x.col.at, 6) || abFresh(x)) && verCmp(x.col.version, MIN_VER) >= 0
+      && (x.col.state?.page === 'game' || (abFresh(x) && x.ab.state?.page === 'game') || queued(sess, x)))
     .sort((a, b) => b.holds - a.holds || String(b.col.at).localeCompare(String(a.col.at)))[0] || null;
 
   // Prospektionswerte (planet_prospect.vals) je Planetenwert; Bauplanet-Faktor = Baugeschwindigkeit ÷ Gebäudekosten.
