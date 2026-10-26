@@ -7,7 +7,7 @@
 
 const SM_TABS = [['verlauf', 'Verlauf'], ['prod', 'Produktion & Co.'], ['check', 'Voraussetzungen'], ['wanted', 'Fahndungsliste'],
   ['overview', 'Übersicht'], ['aggregate', 'Aggregate'], ['status', 'Gebäudestatus'], ['emp_prod', 'Rohstoffübersicht'],
-  ['hitlist', 'Highscore!'], ['orden', 'Mein Imperium'], ['stan', 'STAN']];   // STAN: öffentliche Rundenstatistik (oeffentlich.js)
+  ['hitlist', 'Highscore!'], ['orden', 'Mein Imperium'], ['stan', 'STAN'], ['foerder', 'Förderung Top 10']];   // STAN: öffentliche Rundenstatistik (oeffentlich.js); Förderung Top 10: statistik-foerder.js
 // Gebäude in der Reihenfolge des Spiels (Auswahl „Voraussetzungen“, Gebäudestatus)
 const SM_BUILD = ['metalmine', 'crystalmine', 'fuelrefinery', 'metalstorage', 'crystalstorage', 'fuelstorage', 'metalsafe', 'crystalsafe',
   'fuelsafe', 'solarcollector', 'fissionreactor', 'tidalpowerplant', 'habitation', 'robotfactory', 'biotechcenter', 'infrastructure',
@@ -74,6 +74,7 @@ async function viewStatMonitor(head) {
   const stand = s ? `<p class="small muted">Stand ${esc(dt(s.collected_at))} · Collector ${esc(s.version || '?')}${s.mon?.at ? ` · Monitor-Tabs ${esc(dt(s.mon.at))}` : ''}</p>` : '';
   let body;
   if (tab === 'stan') body = await smStan(s);
+  else if (tab === 'foerder') body = await smFoerder(s);
   else if (!s) body = '<p class="small muted">Kein Live-Stand vorhanden.</p>';
   else body = ({ prod: smProd, check: smCheck, wanted: smWanted, overview: smOverview, aggregate: smAggregate, status: smStatus,
     emp_prod: smEmp, hitlist: smHitlist, orden: smOrden }[tab] || (() => ''))(s, d);

@@ -28,7 +28,7 @@ function stChart(series, opt = {}) {
       <text x="${L - 4}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${esc(stShort(v, opt.dec))}</text>`);
   }
   // x-Achse: Mitternacht (Ortszeit) je Tag bzw. je Woche, unter 2 Tagen alle 6 h
-  const span = x1 - x0, dayStep = span > 20 * 864e5 ? 7 : 1, xs = [];
+  const span = x1 - x0, dayStep = span > 20 * 864e5 ? 7 : span > 8 * 864e5 ? 3 : 1, xs = [];
   if (span > 2 * 864e5) {
     for (let t = new Date(x0).setHours(24, 0, 0, 0), i = 0; t <= x1; t += 864e5, i++) {
       if (i % dayStep) continue;
