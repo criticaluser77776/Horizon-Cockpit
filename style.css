@@ -115,6 +115,16 @@ label.f input, label.f select { width: 100%; }
 .ev.dismissed { opacity: .55; }
 .evx { padding: 0 4px; }
 tr.step td { padding-top: 2px; padding-bottom: 2px; }
+/* Planschritte nach Art (stepsTable, Nutzer 26.10.2026): Forschung, Schiffe, Transporte farbig abgesetzt, Bau ohne Farbe */
+:root { --kr: #7c3aed; --kr-bg: #f3edff; --ks: #0e7490; --ks-bg: #e3f6fa; --kt: #b45309; --kt-bg: #fdf1e3; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --kr: #b896ff; --kr-bg: #241a3d; --ks: #4fd3df; --ks-bg: #102d33; --kt: #ffb46b; --kt-bg: #33240f; }
+}
+:root[data-theme="dark"] { --kr: #b896ff; --kr-bg: #241a3d; --ks: #4fd3df; --ks-bg: #102d33; --kt: #ffb46b; --kt-bg: #33240f; }
+tr.kr td { background: var(--kr-bg); } tr.kr td:first-child { box-shadow: inset 3px 0 var(--kr); }
+tr.ks td { background: var(--ks-bg); } tr.ks td:first-child { box-shadow: inset 3px 0 var(--ks); }
+tr.kt td { background: var(--kt-bg); } tr.kt td:first-child { box-shadow: inset 3px 0 var(--kt); }
+.tag.kr { background: var(--kr-bg); color: var(--kr); } .tag.ks { background: var(--ks-bg); color: var(--ks); } .tag.kt { background: var(--kt-bg); color: var(--kt); }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabs-h) + 16px + env(safe-area-inset-bottom));
   background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; z-index: 9; max-width: calc(100vw - 32px); }
 .search { width: 100%; margin-bottom: 8px; }

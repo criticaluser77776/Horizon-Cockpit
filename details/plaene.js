@@ -494,7 +494,7 @@ async function viewPlans(rest = []) {
       ${multi ? `<h3>Imperium</h3>${planEmpire(plan, tabs, planStepDone(plan, hst, ex), LT, Date.now(), !!hst?.colony)}${planTabsHtml(tabs, tab)}`
         : `<div class="small muted" style="margin:4px 0">Planet ${esc((plan.planet || S.home)?.name || 'Heimat')} ${esc((plan.planet || S.home)?.coords || '')} · Forschung gilt für alle Planeten („global“)</div>`}
       <div class="small muted" style="margin:4px 0">${PLAN_LIVE_NOTE}</div>
-      <h3>${multi && tab !== 'alle' ? `${esc(tabs.find(t => t.k === tab).t)}: ${plan.steps.filter((s, i) => s[0] !== 's' && planInTab(plan, tab, s, i + 1)).length} von` : 'Alle'} ${plan.steps.length} Planschritte mit Ausführungen</h3>${stepsTable(plan, hst, ex, W, tab, LT, { all: true, marks: 'farben', home: S.home })}</div>
+      <h3>${multi && tab !== 'alle' ? `${esc(tabs.find(t => t.k === tab).t)}: ${plan.steps.filter((s, i) => planInTab(plan, tab, s, i + 1)).length} von` : 'Alle'} ${plan.steps.length} Planschritte mit Ausführungen${plan.transporte?.length ? `, dazu ${plan.transporte.length} Transporte` : ''}</h3>${stepsTable(plan, hst, ex, W, tab, LT, { all: true, marks: 'farben', home: S.home })}</div>
       <div class="stack">${driftCard(drift, false)}</div></div>`;
   } else html += `<div class="card"><h2>Bauplan</h2><p class="muted">Kein freigegebener Bauplan. Freigeben im Cockpit: ${COCKPIT_LINK('#/plaene', 'Pläne')}</p></div>`;
   const item = p => `<div class="list-item"><div class="row between">

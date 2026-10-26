@@ -579,7 +579,7 @@ function planLiveCell(x, e) {
 // Kopfzeile Imperium: je Reiter der nächste offene Schritt mit Live-Zeit (LT = planLive), Überfälliges markiert
 function planEmpire(plan, tabs, isDone, LT, now = Date.now(), col = false) {
   const rows = tabs.filter(t => t.k !== 'alle').map(t => {
-    const i = plan.steps.findIndex((s, j) => s[0] !== 's' && planInTab(plan, t.k, s, j + 1) && LT.t[j] && !LT.t[j].run);
+    const i = plan.steps.findIndex((s, j) => planInTab(plan, t.k, s, j + 1) && LT.t[j] && !LT.t[j].run);
     const s = plan.steps[i];
     const nx = !s ? '<span class="muted">keine offenen Schritte</span>' : `nächster #${i + 1} ${esc(s[5])} · ${planLiveCell(LT.t[i])}`;
     return `<div><b>${esc(t.t)}</b>${t.kol && !col ? ' <span class="muted">(von Hand)</span>' : ''}: ${nx}</div>`;
@@ -662,6 +662,12 @@ const planStepDone = (plan, st, execs) => {
    details.css), laufender Schritt ▶ und erster offener ⏵ in Schlangenfarbe, darüber eine Legende (Namen wie die Reiter, opt.home = Heimatplanet).
    opt.horizonH = h (Cockpit, Planeten-Karten unter Pläne, Nutzer 25.10.2026): alle laufenden und offenen Schritte des Reiters mit Live-Start
    bis jetzt + h (mindestens der nächste), oben der zuletzt abgeschlossene, darüber aufklappbar die 10 davor; kein Fenster um „bis #“. */
+// Zeilenfarbe je Art (Nutzer 26.10.2026): Forschung, Schiffe und Transporte farblich vom Bau abgesetzt (style.css tr.kr/ks/kt)
+const KIND_ROW = { r: ' kr', s: ' ks' };
+// Transporte im Reiter tab: alle/ohne Reiter und Heimat alle, Kolonie die eigenen, Forschung keine
+const planTransports = (plan, tab) => (Array.isArray(plan?.transporte) ? plan.transporte : [])
+  .filter(x => x && isFinite(x.t) && (!tab || tab === 'alle' || tab === 'heim' || (tab !== 'r' && (x.nach === tab || x.von === tab))));
+const planLadung = l => { const p = (Array.isArray(l) ? l : []).map((v, i) => +v > 0 ? `${['Erz', 'Min', 'Treib'][i]} ${fmt(+v)}` : '').filter(Boolean); return p.length ? p.join(' · ') : 'leer'; };
 function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
   const { all = false, fcRows = true, nearLimit = 12, marks = null, home = null, horizonH = null, now = Date.now() } = opt;
   const t0 = Date.parse(plan.startTime);
@@ -676,11 +682,11 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
   const fcs = fcRows && (!tab || tab === 'alle' || tab === 'heim') ? factorChanges(plan) : [];   // Faktoren gelten für die Heimat
   const fcKey = fc => Zeitplan.atTau(plan, LT, fc.tau, 'b', LT.lagB);
   const stepRow = (s, i) => ({ tau: s[3], n: i + 1, s, k: Zeitplan.sortKey(plan, LT, i, Date.parse(done.get(i + 1)?.t)) });
-  const cmp = (a, b) => a.k - b.k || (a.fc ? -1 : b.fc ? 1 : a.n - b.n);   // nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026)
+  const cmp = (a, b) => a.k - b.k || (a.fc ? -1 : b.fc ? 1 : a.tr ? 1 : b.tr ? -1 : a.n - b.n);   // nach Live-Zeit, bei Gleichstand #Nr (Nutzer 24.10.2026)
   // Farbmarken je Schlange (opt.marks = 'farben'): Farbindex nach erstem Vorkommen im Plan, ab der 7. Schlange wieder von vorn
   const qcols = marks === 'farben' ? (() => {
     const m = new Map();
-    plan.steps.forEach((s, i) => { if (s[0] === 's') return; const q = Zeitplan.queueOf(plan, i); if (!m.has(q)) m.set(q, `qc${m.size % 6}`); });
+    plan.steps.forEach((s, i) => { const q = Zeitplan.queueOf(plan, i); if (!m.has(q)) m.set(q, `qc${m.size % 6}`); });
     return m;
   })() : null;
   const qmark = (ch, q) => `<span class="qmark ${qcols.get(q) || ''}">${ch}</span>`;
@@ -698,20 +704,27 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     const mark = run ? '⏵' : isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : !all && (st.halts || []).includes(r.n) ? '⏸' : '';
     const q = qcols ? Zeitplan.queueOf(plan, r.n - 1) : null;
     const qm = !qcols ? '' : run ? qmark('▶', q) + ' ' : LT.first?.[q]?.i === r.n - 1 ? qmark('⏵', q) + ' ' : '';
-    return `<tr class="step${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
+    return `<tr class="step${KIND_ROW[r.s[0]] || ''}${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${planLiveCell(LT.t[r.n - 1], e)}</td></tr>`;
   };
+  // Transporte des Plans (payload.transporte, Takt-Flüge) als eigene Zeilen; Zeit wie Faktorwechsel an der Heimat-Bauschlange ausgerichtet
+  const trAt = h => Zeitplan.atTau(plan, LT, h, 'b', LT.lagB);
+  const hc = plan.planet?.coords || home?.coords, plName = c => c && c === hc ? plan.planet?.name || home?.name || 'Heimat' : planTabName(plan, c);
+  const trRow = (x, at) => `<tr class="step kt"><td class="num">T${esc(x.nr)}</td><td>Transport ${esc(plName(x.von))} → ${esc(plName(x.nach))}`
+    + `<div class="small muted">hin ${esc(planLadung(x.hin))} · zurück ${esc(planLadung(x.zurueck))} · abhaken im Cockpit (Transporte)</div></td><td class="num"${tip(x.t)}>${esc(dt(at))}</td></tr>`;
+  const kindLegend = '<div class="small qlegend"><span class="tag kr">Forschung</span> <span class="tag ks">Schiffe</span> <span class="tag kt">Transporte</span> <span class="tag">Gebäude</span></div>';
   const fcRow = fc => `<tr class="muted"><td></td><td>⚙ Faktor ${fc.ch.map(([k, a, b]) => `${esc(nameOf(k))} ${FMT_PCT(a)} → ${FMT_PCT(b)}`).join(', ')}</td><td class="num"${tip(fc.tau)}>${fcAt(fc.tau)}</td></tr>`;
   if (all) {   // alle Schritte, erledigte nach ihrem Start; tau bleibt Planzeit (Tooltip)
     const rows = [];
-    plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) rows.push(stepRow(s, i)); });
+    plan.steps.forEach((s, i) => { if (planInTab(plan, tab, s, i + 1)) rows.push(stepRow(s, i)); });
     for (const fc of fcs) rows.push({ tau: fc.tau, fc, k: fcKey(fc) });
+    for (const x of planTransports(plan, tab)) { const k = trAt(x.t); rows.push({ tau: x.t, tr: x, k }); }
     rows.sort(cmp);
-    return `${qLegend(rows.filter(r => !r.fc).map(r => r.n - 1))}<table class="small">${rows.map(r => r.fc ? fcRow(r.fc) : row(r)).join('')}</table>`;
+    return `${qLegend(rows.filter(r => !r.fc && !r.tr).map(r => r.n - 1))}${kindLegend}<table class="small">${rows.map(r => r.fc ? fcRow(r.fc) : r.tr ? trRow(r.tr, r.k) : row(r)).join('')}</table>`;
   }
   if (horizonH != null) {
     const mine = [];
-    plan.steps.forEach((s, i) => { if (s[0] !== 's' && planInTab(plan, tab, s, i + 1)) mine.push(i + 1); });
+    plan.steps.forEach((s, i) => { if (planInTab(plan, tab, s, i + 1)) mine.push(i + 1); });
     const isRun = n => !!LT.t[n - 1]?.run;
     const startOf = n => { const x = LT.t[n - 1]; return !x ? Infinity : x.run ? -Infinity : x.due != null ? now : x.a ?? Infinity; };
     const open = mine.filter(n => isRun(n) || !isDone(n)).map(n => stepRow(plan.steps[n - 1], n - 1)).sort(cmp);
@@ -729,7 +742,7 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
   const near = n => tab && tab !== 'alle' ? own.indexOf(n) >= 0 && own.indexOf(n) < nearLimit : n >= from && n < from + nearLimit;
   const show = n => near(n) || (until && Math.abs(n - until) <= 3);
   const steps = [];
-  plan.steps.forEach((s, i) => { if (s[0] !== 's' && show(i + 1) && planInTab(plan, tab, s, i + 1)) steps.push(stepRow(s, i)); });
+  plan.steps.forEach((s, i) => { if (show(i + 1) && planInTab(plan, tab, s, i + 1)) steps.push(stepRow(s, i)); });
   if (!steps.length) return `<p class="muted small">Kein offener Schritt${until ? ` bis #${esc(until)}` : ''}${first ? ` (als Nächstes #${first})` : ''}.</p>`;
   // zusammenhängende Gruppen (Lücke = „…“); Faktorwechsel nur innerhalb einer Gruppe
   const groups = [];
