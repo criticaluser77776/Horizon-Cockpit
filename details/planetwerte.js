@@ -28,13 +28,15 @@
     'bauplatz-gesamt': 'Bauplatz gesamt', 'hilfe-basis': 'Hilfe ÷ Forschung gegen STPL-Grundwert',
     'hilfe-basis-bahn': 'Hilfe ÷ Forschung gegen STPL-Grundwert, ÷ Bahnfaktor', 'hilfe-basis-solar': 'Hilfe Solar ÷ Forschung gegen STPL, ÷ Bahnfaktor',
     'hilfe-tonnage': 'Hilfe: Tonnage gegen STPL', 'hilfe-tonnage-wohnbezirke': 'Hilfe: Tonnage Wohnbezirke gegen STPL',
-    'hilfe-bauplatz-kz': 'Hilfe: Grundbauplatz Koloniezentrum', 'hilfe-arbeiter-wohnbezirke': 'Hilfe: Arbeiter Wohnbezirke ÷ Biotech', prospektion: 'erst mit Prospektion', 'prospektion-wert': 'Prospektionsbericht', stpl: 'Standardplanet = Bezug' };
+    'hilfe-bauplatz-kz': 'Hilfe: Grundbauplatz Koloniezentrum', 'hilfe-arbeiter-wohnbezirke': 'Hilfe: Arbeiter Wohnbezirke ÷ Biotech', 'statistik-arbeiter': 'Statistik: Arbeiter Wohnbezirke ÷ Biotech, Zuwachs Stufen 1/2/7/10/13', prospektion: 'erst mit Prospektion', 'prospektion-wert': 'Prospektionsbericht', stpl: 'Standardplanet = Bezug' };
   // Grundwerte eines STPL ohne Messung: überall 100 % (nur MAIN, siehe Kopf)
   const STPL = Object.fromEntries(Object.keys(MAIN).map(k => [k, { pct: 100, status: 'stpl', method: 'stpl' }]));
 
   const coords = (g, s, b) => `${g}:${s}:${b}`;
+  // Umlaufbahn, Mond, Artefakte schätzt der Collector ab 0.4.41 nie (Nutzer 26.10.2026): offen mit Messweg „prospektion“
+  const OPEN = v => v.method === 'prospektion' ? 'nicht ermittelt' : 'offen';
   const val = v => !v ? '<span class="muted">–</span>'
-    : v.status === 'offen' ? '<span class="tag">offen</span>'
+    : v.status === 'offen' ? `<span class="tag">${OPEN(v)}</span>`
     : `<b>${esc(fmt(v.pct, 1))} %</b>${v.status === 'stpl' ? ' <span class="tag">STPL</span>' : ''}`;
   // Spalte „Messung“: gemessen → Methode, Stufe, Notiz; offen → nur der Grund
   const info = v => !v ? '' : v.status === 'offen' ? v.note || METHOD[v.method] || ''
@@ -74,7 +76,7 @@
   const TAGS = { prospektion: 'Prosp.' };   // STPL: nur im Spaltenkopf (Bezug), Messweg im Tooltip
   const cell = (k, v) => {
     if (!v) return '<td class="num muted">–</td>';
-    if (v.status === 'offen') return `<td class="num" title="${esc(info(v))}"><span class="tag">offen</span></td>`;
+    if (v.status === 'offen') return `<td class="num" title="${esc(info(v))}"><span class="tag">${OPEN(v)}</span></td>`;
     const n = k === 'artefacts' ? esc(fmt(v.pct, 0)) : `${esc(fmt(v.pct, 1))} %`;
     const tag = TAGS[v.status] ? ` <span class="tag">${k === 'atmosphere' && v.status === 'prospektion' ? 'Dichte' : TAGS[v.status]}</span>` : '';
     return `<td class="num nowrap" title="${esc(info(v))}"><b>${n}</b>${tag}</td>`;
