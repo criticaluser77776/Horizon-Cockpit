@@ -15,7 +15,7 @@
    Läuft vor app.js; nutzt zur Laufzeit dessen Helfer ($, esc, fmt, dt, ago, Cloud, S, account, isOwner, isFresh, verCmp,
    loadSessions, toast, route). */
 (function () {
-  const MIN_VER = '0.4.12';
+  const MIN_VER = '0.4.12', QUEUE_VER = '0.4.44';
   const MAIN = { metal: 'Erz', mineral: 'Mineral', fuel: 'T-Stoff (ohne Bahn)', buildCost: 'Gebäudekosten', buildSpeed: 'Baugeschwindigkeit',
     buildPlanet: 'Bauplanet-Faktor', researchCost: 'Forschungskosten', ground: 'Bodenfläche (Grundbauplatz)',
     housingCost: 'Wohnraumkosten (Wohnbezirke)', colonizable: 'Besiedelbarkeit (Arbeiter)', atmosphere: 'Atmosphäre: Wirkung auf Solar' };
@@ -43,8 +43,12 @@
     : [METHOD[v.method] || v.method, v.level != null ? `Stufe ${v.level}` : '', v.note].filter(Boolean).join(' · ');
   const row = (k, n, v) => `<tr><td>${esc(n)}</td><td class="num nowrap">${val(v)}</td><td class="small muted">${esc(info(v))}</td></tr>`;
 
-  // Collector, der messen kann: frisches Lebenszeichen, im Spiel eingeloggt, Version ab 0.4.12; Gerät mit dem Lauf zuerst
-  const target = sess => sess.devs.filter(x => x.col && isFresh(x.col.at) && x.col.state?.page === 'game' && verCmp(x.col.version, MIN_VER) >= 0)
+  // Collector, der messen kann: frisches Lebenszeichen, im Spiel eingeloggt, Version ab 0.4.12; Gerät mit dem Lauf zuerst.
+  // Ab Collector 0.4.44 (Mess-Warteschlange des Autobuilders 0.5.86) auch das Gerät mit laufendem oder schlafendem Lauf,
+  // wenn es ausgeloggt ist: Der Autobuilder loggt dafür ein und misst, sobald 5 min nichts ansteht.
+  const queued = (sess, x) => x.holds && ['laeuft', 'schlaeft'].includes(sess.run?.state) && verCmp(x.col.version, QUEUE_VER) >= 0;
+  const target = sess => sess.devs.filter(x => x.col && isFresh(x.col.at) && verCmp(x.col.version, MIN_VER) >= 0
+      && (x.col.state?.page === 'game' || queued(sess, x)))
     .sort((a, b) => b.holds - a.holds || String(b.col.at).localeCompare(String(a.col.at)))[0] || null;
 
   // Prospektionswerte (planet_prospect.vals) je Planetenwert; Bauplanet-Faktor = Baugeschwindigkeit ÷ Gebäudekosten.
@@ -185,8 +189,11 @@
     const planet = form.planet.value;
     const sess = await loadSessions().catch(() => null);
     const dev = sess && target(sess);
-    if (!dev) return toast(`Kein Collector ab ${MIN_VER} im Spiel eingeloggt – erst im Spiel einloggen`);
-    if (!confirm(`Planetenwerte von ${planet} auf ${dev.name} messen?\n\nDer Autobuilder wechselt dafür auf ${planet} und danach zurück (ohne Autobuilder muss ${planet} im Spiel gewählt sein). `
+    if (!dev) return toast(`Kein Collector ab ${MIN_VER} im Spiel eingeloggt und kein Lauf mit Collector ab ${QUEUE_VER} – erst im Spiel einloggen`);
+    const how = queued(sess, dev)
+      ? `Der Autobuilder merkt die Messung vor (bis 6 h), loggt bei Bedarf ein und misst, sobald 5 min nichts ansteht – mehrere Kolonien in einem Durchgang.`
+      : `Der Autobuilder wechselt dafür auf ${planet} und danach zurück (ohne Autobuilder muss ${planet} im Spiel gewählt sein).`;
+    if (!confirm(`Planetenwerte von ${planet} auf ${dev.name} messen?\n\n${how} `
       + `Der Collector liest nur (Gebäude, Forschung, Statistik, Hilfeseiten), gebaut wird nichts.`)) return;
     try {
       await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
