@@ -893,13 +893,29 @@ async function viewTransporte() {
   const [ap, d, heads, auf] = await Promise.all([loadActivePlan(), loadDrift(true),
     Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live', select: 'kind,collected_at,version' }).catch(() => []),
     Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 30,
-      select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at' }).catch(() => null)]);
+      select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at,plan_nr' }).catch(() => null)]);
   await ensureSnap(heads[0]).catch(() => {});
   const snap = heads[0] ? S.snap?.data : null;
   $('#view').innerHTML = `<div class="stack">${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap)}${await planTransportCard(ap, d)}</div>`;
   if (isOwner()) bindAuftragForm(snap);
   $('#view').querySelectorAll('button[data-tr]').forEach(b => b.addEventListener('click', async () => {
     try { await Cloud.rpc('transport_haken_setzen', { p_plan: ap.row.id, p_nr: +b.dataset.tr, p_on: !!b.dataset.on }); route(true); } catch (e) { toast(e.message); }
+  }));
+  $('#view').querySelectorAll('button[data-tauf]').forEach(b => b.addEventListener('click', async () => {
+    const x = (ap.payload?.transporte || []).find(t => +t.nr === +b.dataset.tauf);
+    if (!x) return toast('Plan-Transport nicht gefunden');
+    const pa = await Cloud.q('transport_auftraege', { plan_id: `eq.${ap.row.id}`, plan_nr: `eq.${x.nr}`, select: 'id,plan_nr,von,nach,status' }).catch(() => []);
+    const legs = trPlanLegs(x, pa), nm = c => trName(S.snap?.data, c);
+    if (!legs.length) return toast('Schon angelegt');
+    if (!confirm(`Plan-Transport #${x.nr} als Auftrag an den Autobuilder?
+${legs.map(l => `${nm(l.von)} → ${nm(l.nach)}: ${Transporte.ladungText(l.menge, n => fmt(n))}`).join('\n')}
+
+Der Autobuilder fliegt, sobald er Zeit hat (Bau hat Vorrang, Option „Transporte fliegen“ muss an sein). Sind alle Aufträge erledigt, wird der Transport abgehakt.`)) return;
+    try {
+      const ids = [];
+      for (const l of legs) ids.push(await Cloud.rpc('transport_anlegen', { p_account: S.acc, p_von: l.von, p_nach: l.nach, p_menge: l.menge, p_flotte: null, p_plan: ap.row.id, p_nr: +x.nr }));
+      toast(`Auftrag ${ids.map(i => '#' + i).join(', ')} angelegt`); route(true);
+    } catch (e) { toast(e.message); route(true); }
   }));
   $('#view').querySelectorAll('button[data-ta]').forEach(b => b.addEventListener('click', async () => {
     if (!confirm(`Transport #${b.dataset.ta} abbrechen? Ein Flug in der Luft landet trotzdem, weitere startet der Autobuilder nicht.`)) return;
@@ -1002,7 +1018,7 @@ function auftragListCard(auf, snap) {
     const [st, cls] = TA_ST[a.status] || [a.status, ''];
     const fl = Array.isArray(a.fluege) ? a.fluege : [];
     return `<div class="list-item"><div class="row between">
-      <span><b>#${esc(a.id)}</b> ${esc(trName(snap, a.von))} → ${esc(trName(snap, a.nach))} <span class="tag ${cls}">${esc(st)}</span></span>
+      <span><b>#${esc(a.id)}</b> ${esc(trName(snap, a.von))} → ${esc(trName(snap, a.nach))} <span class="tag ${cls}">${esc(st)}</span>${a.plan_nr ? ` <span class="tag kt">Plan-Transport #${esc(a.plan_nr)}</span>` : ''}</span>
       <span class="muted small nowrap">${esc(when(a.created_at))}</span></div>
       <div class="small">Menge: ${trLad(a.menge)}${(a.geliefert || []).some(x => +x > 0) ? ` · geliefert: ${trLad(a.geliefert)}` : ''}</div>
       <div class="small muted">Flotte: ${a.flotte ? esc(a.flotte) : 'Autobuilder entscheidet'}${fl.length ? ` · ${fl.length} ${fl.length === 1 ? 'Flug' : 'Flüge'}` : ''}${a.done_at ? ` · fertig ${esc(when(a.done_at))}` : ''}</div>
@@ -1014,13 +1030,27 @@ function auftragListCard(auf, snap) {
   return `<div class="card"><h2>Transportaufträge</h2>
     ${offen.length ? offen.map(item).join('') : '<p class="muted">Kein offener Auftrag.</p>'}
     ${alt.length ? `<details class="sub"><summary class="small muted">Abgeschlossen (${alt.length})</summary>${alt.map(item).join('')}</details>` : ''}
-    <p class="small muted">Ausführung durch den Autobuilder folgt (PR 4); bis dahin bleiben Aufträge „offen“.</p></div>`;
+    <p class="small muted">Der Autobuilder fliegt offene Aufträge, wenn im Autobuilder-Panel „Transporte fliegen“ an ist und ein Lauf läuft.</p></div>`;
 }
 
-// Takt-Flüge des aktiven Plans als Karte (HTML); Knöpfe „Geflogen“ bindet viewTransporte
+// Plan-Transport als Transportaufträge (Nutzer 26.10.2026): hin = Heimat → Kolonie, zurück = Kolonie → Heimat (Abholen); je Strecke mit
+// Menge > 0 ein Auftrag, ohne die schon angelegten (offen/läuft/erledigt, pa = Aufträge dieses Plans). Der Autobuilder fliegt sie wie jeden
+// Auftrag, sobald er Zeit hat (Bau hat Vorrang); sind alle erledigt, setzt transport_melden den Haken selbst.
+const trSum = l => (Array.isArray(l) ? l : []).reduce((a, v) => a + (+v > 0 ? +v : 0), 0);
+function trPlanLegs(x, pa) {
+  const legs = [];
+  if (trSum(x.hin) > 0) legs.push({ von: x.von, nach: x.nach, menge: x.hin.map(v => Math.max(0, Math.round(+v || 0))) });
+  if (trSum(x.zurueck) > 0) legs.push({ von: x.nach, nach: x.von, menge: x.zurueck.map(v => Math.max(0, Math.round(+v || 0))) });
+  return legs.filter(l => trSum(l.menge) > 0 && !pa.some(a => a.plan_nr === x.nr && a.von === l.von && a.nach === l.nach
+    && ['offen', 'laeuft', 'erledigt'].includes(a.status)));
+}
+const trAufHtml = (list, plName) => list.length ? `<div class="small">${list.map(a => { const [st, cls] = TA_ST[a.status] || [a.status, ''];
+  return `Auftrag #${a.id} ${plName(a.von)} → ${plName(a.nach)} <span class="tag ${cls}">${esc(st)}</span>`; }).join(' · ')}</div>` : '';
+// Takt-Flüge des aktiven Plans als Karte (HTML); Knöpfe „Geflogen“ und „Auftrag an Autobuilder“ bindet viewTransporte
 async function planTransportCard(ap, d) {
   if (!ap) return '<div class="card"><h2>Transporte im Plan</h2><p class="muted">Kein Bauplan freigegeben.</p></div>';
-  const hk = await Cloud.q('transport_haken', { plan_id: `eq.${ap.row.id}`, select: 'nr,geflogen_at' });
+  const [hk, pa] = await Promise.all([Cloud.q('transport_haken', { plan_id: `eq.${ap.row.id}`, select: 'nr,geflogen_at' }),
+    Cloud.q('transport_auftraege', { plan_id: `eq.${ap.row.id}`, select: 'id,plan_nr,von,nach,status', order: 'id.asc' }).catch(() => [])]);
   const drift = d?.plan === ap.row.id ? d : null;
   const list = Transporte.transportListe(ap.payload, drift, hk.map(h => h.nr));
   const home = ap.payload?.planet;   // Heimat steht nicht in plan.planets, sondern als planet {name, coords}
@@ -1033,7 +1063,8 @@ async function planTransportCard(ap, d) {
       <span class="nowrap"${x.ab ? ` title="${esc(dt(x.ab))}"` : ''}>${esc(clockT(x.ab))}</span></div>
       <div class="small">hin: ${lad(x.hin)} · zurück: ${lad(x.zurueck)}</div>
       <div class="small muted">Ankunft ${esc(clockT(x.an))} · zurück ${esc(clockT(x.rueck))}${x.fuel != null ? ` · Treibstoff ${esc(fmt(x.fuel))}` : ''}</div>
-      ${own ? `<div class="row" style="margin-top:4px"><button class="small${x.status === 'faellig' ? ' primary' : ''}" data-tr="${x.nr}" data-on="${x.status === 'geflogen' ? '' : 1}">${x.status === 'geflogen' ? 'Haken lösen' : 'Geflogen'}</button></div>` : ''}
+      ${trAufHtml(pa.filter(a => a.plan_nr === x.nr), plName)}
+      ${own ? `<div class="row" style="margin-top:4px">${x.status !== 'geflogen' && trPlanLegs(x, pa).length ? `<button class="small primary" data-tauf="${x.nr}">Auftrag an Autobuilder</button>` : ''}<button class="small${x.status === 'faellig' ? ' primary' : ''}" data-tr="${x.nr}" data-on="${x.status === 'geflogen' ? '' : 1}">${x.status === 'geflogen' ? 'Haken lösen' : 'Geflogen'}</button></div>` : ''}
     </div>`;
   };
   // Stationieren laut Plan (Punkt C, 26.10.2026): macht der Autobuilder, hier nur Anzeige
