@@ -793,15 +793,54 @@ const activeEnd = (active, drift) => {
   const end = planEnd(active?.payload);
   return end ? end + planShift(drift) * 3600e3 : null;
 };
-// Förderung bei T (Schritt 2, B8): { pctF, massNeu, massAkt } oder null. Aktiver Wert: vergleich des Entwurfs (Optimierer --gegen), wenn
-// vergleich.planId = Plan-id des aktiven Plans und zulässig; sonst bis.mass des aktiven Plans bei gleichem bis.t; sonst kein Vergleich (Stunden-Rückfall)
-function foerderVergleich(d, active) {
+// Ausführungsrelevanter Inhalt eines Bauplans wie INHALT in tools/push_plan.py: Felder der Plan-ID (analyse/build_autobuilder.js
+// planHash) plus Haltepunkte und Faktor-Grenzen, ohne Metadaten (id, created, parent, lauf, bis, vergleich …)
+const PLAN_INHALT = ['startTime', 'steps', 'factors', 'stepPlanet', 'researchPlanet', 'planetFactors', 'park', 'halts', 'limits'];
+const PLAN_INHALT_SELECT = PLAN_INHALT.map(k => `${k}:payload->${k}`).join(',');
+const leerWert = x => x == null || x === '' || (Array.isArray(x) ? !x.length : typeof x === 'object' && !Object.keys(x).length);
+// Tiefer Vergleich unabhängig von der Schlüsselreihenfolge (jsonb ordnet Schlüssel um), Zahlen per Wert
+function gleichJson(a, b) {
+  if (a === b) return true;
+  if (typeof a === 'number' || typeof b === 'number') return typeof a === 'number' && typeof b === 'number' && a === b;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) return a.length === b.length && a.every((x, i) => gleichJson(x, b[i]));
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length === kb.length && ka.every(k => Object.prototype.hasOwnProperty.call(b, k) && gleichJson(a[k], b[k]));
+}
+// true, wenn beide Pläne denselben Inhalt haben (Atlas „Plan neu starten“ ohne Änderung: neue Plan-id, gleicher Inhalt); fehlende,
+// null und leere Felder gelten gleich (der Plan-Editor löscht leere halts/limits). Ohne Schritte nie gleich.
+function gleicherPlanInhalt(a, b) {
+  if (!Array.isArray(a?.steps) || !a.steps.length) return false;
+  return PLAN_INHALT.every(k => leerWert(a[k]) && leerWert(b?.[k]) || gleichJson(a[k], b?.[k]));
+}
+// Förderung bei T (Schritt 2, B8): { pctF, massNeu, massAkt, kopieVon? } bzw. { fehlt: Grund } ohne Vergleichswert; null ohne bis.mass.
+// Aktiver Wert: vergleich des Entwurfs (Optimierer --gegen), wenn vergleich.planId oder planIdOhnePark = Plan-id des aktiven Plans
+// oder der aktive Plan eine unveränderte Kopie eines dieser Pläne ist (refs: {plan_hash, …PLAN_INHALT}, 27.10.2026) und zulässig;
+// sonst bis.mass des aktiven Plans bei gleichem bis.t; sonst kein Vergleich (Stunden-Rückfall, „Vergleich fehlt“)
+function foerderVergleich(d, active, refs = []) {
   const neu = d.bisMass != null && d.bisMass !== '' ? +d.bisMass : NaN;
   if (!(neu >= 0)) return null;
-  let akt = NaN;
-  if (d.vPlan && active?.plan_hash && d.vPlan === active.plan_hash && d.vOk === 'true' && d.vMass != null) akt = +d.vMass;
+  const ids = [d.vPlan, d.vPlanOP].filter(Boolean), ah = active?.plan_hash;
+  const kopie = ah && !ids.includes(ah) ? refs.find(r => ids.includes(r.plan_hash) && gleicherPlanInhalt(active.payload, r))?.plan_hash : null;
+  let akt = NaN, kopieVon = null;
+  if (ah && (ids.includes(ah) || kopie) && d.vOk === 'true' && d.vMass != null) { akt = +d.vMass; kopieVon = kopie || null; }
   else if (active?.payload?.bis?.mass != null && active.payload.bis.t && active.payload.bis.t === d.bisT) akt = +active.payload.bis.mass;
-  return akt > 0 ? { pctF: (neu - akt) / akt * 100, massNeu: neu, massAkt: akt } : null;
+  if (akt > 0) return { pctF: (neu - akt) / akt * 100, massNeu: neu, massAkt: akt, kopieVon };
+  const fehlt = !ids.length ? 'Lauf ohne Vergleich' : !ids.includes(ah) && !kopie
+    ? `Lauf verglich gegen ${ids.join('/')}, aktiver Plan ${ah || '–'} ist ein anderer` : 'aktiver Plan im Lauf unzulässig';
+  return { fehlt };
+}
+// Pläne mit den verglichenen Plan-ids (Inhalt) für die Kopie-Erkennung; nur nötig, wenn ein Entwurf gegen eine andere id verglich.
+// Je aktivem Plan und Id-Menge gecacht (die Pläne-Ansicht lädt alle 30 s neu).
+async function vergleichRefs(rows, active) {
+  const ids = [...new Set(rows.flatMap(d => [d.vPlan, d.vPlanOP]).filter(x => x && /^[0-9a-f]{6,64}$/.test(x) && x !== active?.plan_hash))].sort();
+  if (!ids.length || !active?.payload) return [];
+  const key = `${S.acc}|${active.id}|${ids.join(',')}`;
+  if (S.vRefs?.key === key) return S.vRefs.rows || [];
+  const refs = await Cloud.q('plans', { account_id: `eq.${S.acc}`, kind: 'eq.build',
+    plan_hash: `in.(${ids.join(',')})`, select: `plan_hash,${PLAN_INHALT_SELECT}` }).catch(() => null);
+  if (refs) S.vRefs = { key, rows: refs };   // Fehler nicht cachen: beim nächsten Laden neu versuchen
+  return refs || [];
 }
 // Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), pctF/massNeu/massAkt (Förderung bei T), agreed, better }
 async function draftGains(plans, active, drift) {
@@ -809,8 +848,10 @@ async function draftGains(plans, active, drift) {
   if (!drafts.length) return {};
   const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
     select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil,'
-      + 'bisT:payload->bis->>t,bisMass:payload->bis->>mass,vPlan:payload->vergleich->>planId,vMass:payload->vergleich->>mass,vOk:payload->vergleich->>ok' });
+      + 'bisT:payload->bis->>t,bisMass:payload->bis->>mass,vPlan:payload->vergleich->>planId,vPlanOP:payload->vergleich->>planIdOhnePark,'
+      + 'vMass:payload->vergleich->>mass,vOk:payload->vergleich->>ok' });
   const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
+  const refs = active ? await vergleichRefs(rows.filter(d => drafts.find(x => x.id === d.id)?.source !== 'user'), active) : [];
   // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan
   const teile = rows.filter(d => d.teil).map(d => d.id), teilOf = {};
   if (teile.length) for (const t of await Cloud.q('plans', { id: `in.(${teile.join(',')})`, select: 'id,payload' })) teilOf[t.id] = planTeilDiff(t.payload, active);
@@ -819,14 +860,16 @@ async function draftGains(plans, active, drift) {
     const p = drafts.find(x => x.id === d.id), end = planEnd(d);
     // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
     const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
-    const f = p.source !== 'user' ? foerderVergleich(d, active) : null;
+    const f = p.source !== 'user' && active ? foerderVergleich(d, active, refs) : null;
     out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, ...(f || {}), agreed, teil: teilOf[d.id] || null,
-      better: agreed || !!teilOf[d.id] || !active || (f ? f.pctF >= PLAN_GAIN_MIN_PCT : gain == null || gain > PLAN_GAIN_MIN) };
+      better: agreed || !!teilOf[d.id] || !active || (f?.pctF != null ? f.pctF >= PLAN_GAIN_MIN_PCT : gain == null || gain > PLAN_GAIN_MIN) };
   }
   return out;
 }
-const gainText = g => g?.pctF != null ? `Förderung bei T: ${g.pctF >= 0 ? '+' : '−'}${fmt(Math.abs(g.pctF), 1)} % (aktiv ${fmt(g.massAkt, 0)} → neu ${fmt(g.massNeu, 0)} /h gewichtet)`
-  : g?.gain == null ? '' : `SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`;
+// ohne Förder-Vergleich (g.fehlt): klar als „Vergleich fehlt“ kennzeichnen, Stundenmaß nur als grober Rückfall (27.10.2026)
+const gainText = g => g?.pctF != null ? `Förderung bei T: ${g.pctF >= 0 ? '+' : '−'}${fmt(Math.abs(g.pctF), 1)} % (aktiv ${fmt(g.massAkt, 0)} → neu ${fmt(g.massNeu, 0)} /h gewichtet${g.kopieVon ? `; aktiver Plan = unveränderte Kopie von ${g.kopieVon}` : ''})`
+  : [g?.fehlt ? `Vergleich der Förderung fehlt (${g.fehlt})` : '',
+     g?.gain == null ? '' : `${g?.fehlt ? 'Rückfall, nur grob: ' : ''}SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`].filter(Boolean).join(' · ');
 const gainOk = g => g?.pctF != null ? g.pctF >= PLAN_GAIN_MIN_PCT : g?.gain > PLAN_GAIN_MIN;
 
 // Herkunft und Klapper „Details“ eines Plans (B16): Notiz in Anzeigeform, darunter die technischen Kennungen.
