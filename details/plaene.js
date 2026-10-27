@@ -324,12 +324,12 @@ async function createEdited(E, P, errs) {
     P.halts.length ? `Haltepunkte vor #${P.halts.join(', #')}` : '',
     Object.keys(E.limits).length ? `Faktor-Grenzen ${Object.entries(E.limits).map(([t, [a, b]]) => `${t} ${a}–${b} %`).join(', ')}` : '',
     errs.length ? `${errs.length} Voraussetzungs-Hinweise` : '', E.note.trim()].filter(Boolean).join(' · ');
-  if (!confirm(`Neuen Entwurf anlegen?\n${tidy(note)}\nFreigeben danach im Cockpit unter Pläne.`)) return;
+  if (!confirm(`Neuen Entwurf anlegen?\n${tidy(note)}\nFreigeben danach unter Pläne (Atlas: Alle Baupläne, oder Cockpit).`)) return;
   try {
     await Cloud.rest('plans', { method: 'POST', prefer: 'return=minimal', body: { account_id: S.acc, kind: 'build', source: 'user',
       title: `Bauplan ${payload.created}`.slice(0, 200), note: note.slice(0, 4000), payload, plan_hash: payload.id, parent_id: E.src.id } });
     S.ed = null;
-    toast('Entwurf angelegt – freigeben im Cockpit unter Pläne');
+    toast('Entwurf angelegt – freigeben unter „Alle Baupläne“');
     location.hash = '#/plaene';
   } catch (e) { toast(e.message); }
 }
@@ -338,7 +338,8 @@ async function createEdited(E, P, errs) {
 
 /* ---------- Atlas: Pläne (Archiv) ----------
    Aktiver Bauplan mit ganzer Schrittliste samt Ausführungen und Abweichungsgrafik; alle Baupläne (auch ältere) mit Details,
-   Plan-Editor-Link und Löschen (nur Owner, nie freigegebene/aktive). Freigeben & Co. nur im Cockpit. */
+   Plan-Editor-Link, Freigeben (Entwürfe, seit 27.10.2026) und Löschen (nur Owner, nie freigegebene/aktive). Verwerfen, Abbrechen,
+   „bis #“ und Start/Stopp nur im Cockpit. */
 /* Neuer Lauf auf Work mit Einstellungen (Teil A, 20.10.2026): „Mit aktuellen Einstellungen rechnen“ stellt den Auftrag über
    public.plan_rechnen(p_params) (nur Owner, höchstens einer offen). Darunter eingeklappt alle Einstellungen, vorbelegt mit dem
    Standard (simparams.js = tools/sim_params.py). Ergebnis nur als Entwurf (sim/auf-….json); result.json, täglicher Lauf und
@@ -496,7 +497,7 @@ async function viewPlans(rest = []) {
       <div class="small muted" style="margin:4px 0">${PLAN_LIVE_NOTE}</div>
       <h3>${multi && tab !== 'alle' ? `${esc(tabs.find(t => t.k === tab).t)}: ${plan.steps.filter((s, i) => planInTab(plan, tab, s, i + 1)).length} von` : 'Alle'} ${plan.steps.length} Planschritte mit Ausführungen${plan.transporte?.length ? `, dazu ${plan.transporte.length} Transporte` : ''}</h3>${stepsTable(plan, hst, ex, W, tab, LT, { all: true, marks: 'farben', home: S.home })}</div>
       <div class="stack">${driftCard(drift, false)}</div></div>`;
-  } else html += `<div class="card"><h2>Bauplan</h2><p class="muted">Kein freigegebener Bauplan. Freigeben im Cockpit: ${COCKPIT_LINK('#/plaene', 'Pläne')}</p></div>`;
+  } else html += `<div class="card"><h2>Bauplan</h2><p class="muted">Kein freigegebener Bauplan. Freigeben unten unter „Alle Baupläne“ oder im Cockpit: ${COCKPIT_LINK('#/plaene', 'Pläne')}</p></div>`;
   const item = p => `<div class="list-item"><div class="row between">
       <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span><span class="tag ${esc(p.status)}">${esc(p.status)}</span></div>
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
@@ -505,14 +506,17 @@ async function viewPlans(rest = []) {
       <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${p.status !== 'entwurf' && p.status_at ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
       ${planDetails(p)}
       ${own ? `<div class="row between" style="margin-top:6px">${p.plan_hash ? `<a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a>` : '<span></span>'}
-        ${ATLAS_RUN(p) ? '' : `<button class="danger small" data-del="${esc(p.id)}">Löschen</button>`}</div>` : ''}</div>`;
+        <span class="row" style="gap:6px">${p.status === 'entwurf' ? `<button class="primary small" data-go="${esc(p.id)}">Freigeben</button>` : ''}
+        ${ATLAS_RUN(p) ? '' : `<button class="danger small" data-del="${esc(p.id)}">Löschen</button>`}</span></div>` : ''}</div>`;
   html += simlaufCard(pl, own);
   html += `<div class="card"><h2>Alle Baupläne <span class="muted small">${plans.length}, neueste zuerst</span></h2>
-    <p class="muted small">Freigeben, Verwerfen und Abbrechen im Cockpit. Hier: ansehen, als neuen Entwurf ändern, nicht laufende löschen (Owner).</p>
+    <p class="muted small">Hier (Owner): Entwürfe freigeben (danach Übernehmen anbieten, „bis #“ und Start im Cockpit), als neuen Entwurf ändern, nicht laufende löschen. Verwerfen und Abbrechen im Cockpit.</p>
     ${plans.length ? plans.map(item).join('') : '<p class="muted">Noch keine Pläne.</p>'}</div>`;
   $('#view').innerHTML = html;
   planTabsWire($('#view'));
   simlaufWire($('#view'), pl);
+  $('#view').querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () =>
+    takeNewPlan({ draft: plans.find(x => x.id === b.dataset.go), teil: gains[b.dataset.go]?.teil }, sess)));
   $('#view').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => deletePlan(plans.find(x => x.id === b.dataset.del))));
 }
 

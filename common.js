@@ -139,7 +139,8 @@ function isOwner() { return account()?.role === 'owner'; }
 const CAT = { builder: 'Builder', cockpit: 'Cockpit', spiel: 'Spiel', system: 'System' };
 /* Horizon Atlas (details/, D1): setzt window.HZ_ATLAS vor common.js. Seit Entscheidung 7.3 (17.10. abends) zeigt der Atlas
    dieselben Owner-Knöpfe an Ereignissen wie das Cockpit (Entscheidung beantworten, Notfall verbauen; je mit Rückfrage, Kommando
-   über postCmd). Lauf-Steuerung und Planfreigaben bleiben im Cockpit – dorthin führt COCKPIT_LINK. */
+   über postCmd). Seit 27.10.2026 auch „Freigeben“ an jedem Bauplan-Entwurf (takeNewPlan). Lauf-Steuerung („bis #“, Start/Stopp)
+   bleibt im Cockpit – dorthin führt COCKPIT_LINK. */
 const ATLAS = !!window.HZ_ATLAS;
 const COCKPIT_LINK = (h, txt) => `<a href="${esc(HZ_ROOT + h)}">${esc(txt)} →</a>`;
 /* „Claude fragen“ (25.10.2026): Der Owner stellt aus einer Meldung oder Planeten-Karte einen Auftrag (requests) mit Kontext
@@ -259,6 +260,29 @@ async function sendAnswer(b) {
 async function postCmd(dev, cmd, args = {}, planId = null) {
   await Cloud.rest('commands', { method: 'POST', prefer: 'return=minimal',
     body: { account_id: S.acc, script: 'autobuilder', cmd, args, plan_id: planId, target_device: dev.device } });
+}
+/* Bauplan freigeben (Cockpit: Angebot und Entwürfe; Atlas seit 27.10.2026: jeder Entwurf unter „Alle Baupläne“).
+   o = { draft: Plan-Zeile, teil: Teilplan-Info aus draftGains }. */
+async function takeNewPlan(o, sess) {
+  const stale = o.teil?.stale ? `
+Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein anderer.` : '';
+  if (!confirm(`${planLabel(o.draft.id)} („${tidy(o.draft.title)}“) freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.${stale}`)) return;
+  try {
+    await Cloud.rpc('plan_status', { p_id: o.draft.id, p_status: 'freigegeben' });
+    S.planCache = null;
+    // F2 (13.10.): direkt „Übernehmen auf <Gerät>“ anbieten. Der Collector legt den Plan im selben Abgleich als Angebot ab,
+    // in dem er das Kommando abholt; der Autobuilder übernimmt auch ausgeloggt (ab 0.5.8), aber nicht während eines Laufs.
+    const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
+    const tgt = live.find(x => x.holds) || live.find(x => x.ab.state?.page === 'game') || live[0];
+    if (tgt && o.draft.plan_hash && !tgt.ab.state?.running) {
+      if (confirm(`Freigegeben. Plan jetzt auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen (neue Schrittnummern).`)) {
+        await postCmd(tgt, 'adopt', { plan: o.draft.plan_hash }, o.draft.id);
+        toast(`Übernehmen an ${tgt.name} gesendet – Ergebnis im Cockpit unter Lage`);
+      } else toast('Freigegeben – übernehmen im Cockpit unter Lage');
+    } else toast(tgt ? `Freigegeben – ${tgt.name} läuft noch: erst stoppen, dann im Cockpit unter Lage übernehmen`
+      : 'Freigegeben – kein Autobuilder erreichbar; übernehmen im Cockpit unter Lage, sobald ein Gerät da ist');
+    setTimeout(() => route(true), 1500);
+  } catch (e) { toast(e.message); }
 }
 const nfTarget = sess => sess.devs.filter(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game').sort((a, b) => b.holds - a.holds)[0] || null;
 const NF_ASK = name => `Notfall verbauen auf ${name}? 2 Stunden lang startet der Autobuilder in jeder freien Schlange sofort den teuersten startbaren Planschritt der nächsten 25 – auch außer der Reihe, nichts außerhalb des Plans, kein Abbrechen. Das kann den Plan etwas verschieben.`;

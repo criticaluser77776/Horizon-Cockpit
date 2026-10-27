@@ -707,27 +707,7 @@ function newPlanCard(o, own) {
     ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npNo">Verwerfen</button></div>
       <p class="muted small">Gestartet wird danach wie gewohnt unter Lage („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
 }
-async function takeNewPlan(o, sess) {
-  const stale = o.teil?.stale ? `
-Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein anderer.` : '';
-  if (!confirm(`${planLabel(o.draft.id)} („${tidy(o.draft.title)}“) freigeben? Der bisher freigegebene Bauplan wird damit abgelöst.${stale}`)) return;
-  try {
-    await Cloud.rpc('plan_status', { p_id: o.draft.id, p_status: 'freigegeben' });
-    S.planCache = null;
-    // F2 (13.10.): direkt „Übernehmen auf <Gerät>“ anbieten. Der Collector legt den Plan im selben Abgleich als Angebot ab,
-    // in dem er das Kommando abholt; der Autobuilder übernimmt auch ausgeloggt (ab 0.5.8), aber nicht während eines Laufs.
-    const live = sess.devs.filter(x => x.ab && isFresh(x.ab.at));
-    const tgt = live.find(x => x.holds) || live.find(x => x.ab.state?.page === 'game') || live[0];
-    if (tgt && o.draft.plan_hash && !tgt.ab.state?.running) {
-      if (confirm(`Freigegeben. Plan jetzt auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen (neue Schrittnummern).`)) {
-        await postCmd(tgt, 'adopt', { plan: o.draft.plan_hash }, o.draft.id);
-        toast(`Übernehmen an ${tgt.name} gesendet – Ergebnis unter Lage`);
-      } else toast('Freigegeben – übernehmen unter Lage');
-    } else toast(tgt ? `Freigegeben – ${tgt.name} läuft noch: erst stoppen, dann unter Lage übernehmen`
-      : 'Freigegeben – kein Autobuilder erreichbar; übernehmen unter Lage, sobald ein Gerät da ist');
-    setTimeout(() => route(true), 1500);
-  } catch (e) { toast(e.message); }
-}
+// takeNewPlan (Freigeben + Übernehmen anbieten) steht seit 27.10.2026 in common.js, der Atlas nutzt es auch
 
 /* ---------- Planabweichung (B4, 14.10.) ----------
    public.plan_abweichung rechnet je Schritt Plan-Start gegen echten Start (executions) und überfällige offene Schritte;
