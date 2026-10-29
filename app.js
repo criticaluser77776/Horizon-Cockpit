@@ -870,14 +870,21 @@ async function fillPushCard() {
 const TR_ST = { faellig: ['fällig', 'warn'], naechster: ['als Nächstes', 'ok'], spaeter: ['', ''], geflogen: ['geflogen', 'muted'] };
 // Reiter Transport: oben Transportaufträge (Formular + Liste), darunter die Takt-Flüge des aktiven Plans
 async function viewTransporte() {
-  const [ap, d, heads, auf] = await Promise.all([loadActivePlan(), loadDrift(true),
+  const [ap, d, heads, auf, sperre] = await Promise.all([loadActivePlan(), loadDrift(true),
     Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live', select: 'kind,collected_at,version' }).catch(() => []),
     Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 30,
-      select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at,plan_nr,plan_nrs,einmal' }).catch(() => null)]);
+      select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at,plan_nr,plan_nrs,einmal' }).catch(() => null),
+    Cloud.q('flotten_sperre', { account_id: `eq.${S.acc}`, select: 'name' }).catch(() => null)]);
   await ensureSnap(heads[0]).catch(() => {});
   const snap = heads[0] ? S.snap?.data : null;
-  $('#view').innerHTML = `<div class="stack">${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap)}${await planTransportCard(ap, d)}</div>`;
+  $('#view').innerHTML = `<div class="stack">${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap)}${flottenCard(snap, sperre)}${await planTransportCard(ap, d)}</div>`;
   if (isOwner()) bindAuftragForm(snap);
+  $('#view').querySelectorAll('button[data-fsperre]').forEach(b => b.addEventListener('click', async () => {
+    const name = b.dataset.fsperre, on = !!b.dataset.on;
+    if (!confirm(on ? `Flotte „${name}“ für Transporte sperren? Der Autobuilder nimmt sie ab dem nächsten Abgleich (≈ 1 min) nicht mehr.`
+      : `Flotte „${name}“ für Transporte freigeben?`)) return;
+    try { await Cloud.rpc('flotte_sperren', { p_account: S.acc, p_name: name, p_on: on }); toast(on ? 'Gesperrt' : 'Freigegeben'); route(true); } catch (e) { toast(e.message); }
+  }));
   $('#view').querySelectorAll('button[data-tr]').forEach(b => b.addEventListener('click', async () => {
     try { await Cloud.rpc('transport_haken_setzen', { p_plan: ap.row.id, p_nr: +b.dataset.tr, p_on: !!b.dataset.on }); route(true); } catch (e) { toast(e.message); }
   }));
@@ -901,6 +908,30 @@ Der Autobuilder fliegt, sobald er Zeit hat (Bau hat Vorrang, Option „Transport
     if (!confirm(`Transport #${b.dataset.ta} abbrechen? Ein Flug in der Luft landet trotzdem, weitere startet der Autobuilder nicht.`)) return;
     try { await Cloud.rpc('transport_abbrechen', { p_id: +b.dataset.ta }); toast('Abgebrochen'); route(true); } catch (e) { toast(e.message); }
   }));
+}
+
+/* Flotten (Punkt 6.2, Nutzer 29.10.2026): was der Autobuilder beim Fliegen gesehen hat (snapshot.flotten, AB ab 0.7.9: Transportformular
+   je Planet und Flottenstatus der Startseite, kein eigener Abruf) und je Flottenname „Für Transporte sperren/freigeben“ (Tabelle
+   flotten_sperre, RPC flotte_sperren, nur Owner). Wirkt sofort; nicht eingetragen = frei, Flotten ohne Laderaum fliegen ohnehin nie. */
+function flottenCard(snap, sperre) {
+  const own = isOwner(), M = snap?.flotten, list = Array.isArray(M?.list) ? M.list : [];
+  const ops = Array.isArray(M?.ops?.list) ? M.ops.list : [], gesperrt = new Set((sperre || []).map(x => x.name));
+  const names = [...new Set([...list.map(f => f.name), ...gesperrt])].sort((a, b) => a.localeCompare(b, 'de'));
+  const typen = t => Object.entries(t || {}).map(([k, n]) => `${n} ${k}`).join(', ');
+  const item = name => {
+    const at = list.filter(f => f.name === name), op = ops.filter(o => o.name === name), zu = gesperrt.has(name);
+    const cargo = Math.max(0, ...at.map(f => +f.cargo || 0));
+    return `<div class="list-item"><div class="row between">
+      <span><b>${esc(name)}</b> ${zu ? '<span class="tag hoch">gesperrt</span>' : cargo ? '<span class="tag ok">frei</span>' : '<span class="tag">ohne Laderaum</span>'}</span>
+      ${own ? `<button class="small" data-fsperre="${esc(name)}"${zu ? '' : ' data-on="1"'}>${zu ? 'Freigeben' : 'Sperren'}</button>` : ''}</div>
+      ${at.map(f => `<div class="small">im Orbit von ${esc(trName(snap, f.at))} <span class="muted">${esc(f.at)}</span>: ${esc(typen(f.types)) || '–'}${f.cargo ? ` · Laderaum ${esc(fmt(f.cargo))} t` : ''} <span class="muted">· gesehen ${esc(when(new Date(f.seen).toISOString()))}</span></div>`).join('')}
+      ${op.map(o => `<div class="small">unterwegs: ${esc(o.cmd)} ${esc(o.phase)} ${esc(trName(snap, o.home))} → ${esc(trName(snap, o.target))}, bis ${esc(clockT(o.end))}</div>`).join('')}
+      ${!at.length && !op.length ? '<div class="small muted">zurzeit nicht gesehen</div>' : ''}
+    </div>`;
+  };
+  return `<div class="card"><h2>Flotten</h2>
+    ${names.length ? names.map(item).join('') : '<p class="muted">Noch keine Flotten gesehen. Der Autobuilder merkt sie sich beim Fliegen (ab Version 0.7.9).</p>'}
+    <p class="small muted">Gesperrte Flotten nimmt der Autobuilder nie für Transporte, auch wenn ein Auftrag sie nennt; die Sperre gilt sofort (≈ 1 min) für alle gleichnamigen Flotten. Gesehen = Transportformular des Planeten${M?.ops?.at ? ` · Flottenstatus ${esc(when(new Date(M.ops.at).toISOString()))}` : ''}.</p></div>`;
 }
 
 /* Transportaufträge (Nutzer 25.10.2026, doku/stand/transporte.md): Der Owner legt Quelle, Ziel, Menge [E,M,T] und Flotte (Name oder
