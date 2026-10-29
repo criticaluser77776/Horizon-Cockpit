@@ -10,7 +10,7 @@
     gruendlich: { iter: 100, rounds: 2, patience: 30, kicks: 10 },
   };
   const DEFAULTS = {
-    v: 1, kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', 'K:STPL:rohstoff'], platzbahn: 6,
+    v: 1, kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', '11:RKPL:rohstoff'], platzbahn: 6,
     kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:1'], werft: 1,
     pflicht: ['kolo:4'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
     rabatt: 0,             // Boden für den STAN-Rabatt je Stufe; 0 = STAN allein (Nutzer 27.10.2026, bis dahin 0.1)
