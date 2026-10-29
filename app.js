@@ -687,7 +687,7 @@ ${tgt.ab?.state?.hand || ''}`
 
 // „Neuer Plan verfügbar – starten?“ (B14, 15.10.): Im Cockpit erscheinen nur bessere Pläne. Ein Optimierer-Entwurf zählt,
 // wenn er mit Claude im Chat abgestimmt ist (payload.agreed, push_plan.py --abgestimmt), kein Plan aktiv ist oder er das SCOL
-// mehr als PLAN_GAIN_MIN_PCT % gewichtete Förderung bei T mehr fördert als der aktive Plan (Schritt 2; Rückfall ohne Förderung-Maß:
+// das Ziel mindestens PLAN_GAIN_MIN_PCT % früher erreicht als der aktive Plan (B1 29.10.2026, Zeit bis zum Ziel; Rückfall ohne Zielzeit:
 // SCOL mehr als PLAN_GAIN_MIN h früher) – verglichen mit dessen erwartetem Ende laut Live-Stand
 // (Planstart + hours + Startverzug + Rückstand bzw. − Vorlauf aus plan_abweichung, B4). Schlechtere Entwürfe sind ausgeblendet
 // (push_plan.py legt solche seit B14 gar nicht mehr an); eigene Entwürfe (source user, „Planschritte ändern“) bleiben sichtbar.

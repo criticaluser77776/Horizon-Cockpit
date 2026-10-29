@@ -781,8 +781,8 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
 }
 
 /* ---------- Entwürfe: Gewinn gegenüber dem aktiven Plan (B14) ---------- */
-const PLAN_GAIN_MIN = 0.5;   // h, Rückfall ohne Förderung-Maß, wie SCHWELLE in tools/push_plan.py
-const PLAN_GAIN_MIN_PCT = 1;   // % gewichtete Förderung bei T (Schritt 2, Nutzer 24.10.2026), wie SCHWELLE_PCT in tools/push_plan.py
+const PLAN_GAIN_MIN = 0.5;   // h, Rückfall ohne Zielzeit-Vergleich, wie SCHWELLE in tools/push_plan.py
+const PLAN_GAIN_MIN_PCT = 1;   // % früher am Ziel (B1 29.10.2026; Schwelle 1 % seit 24.10.), wie SCHWELLE_PCT in tools/push_plan.py
 const planEnd = p => {
   const h = +p?.hours || +(String(p?.created || '').match(/([\d.]+) h$/) || [])[1];
   return p?.startTime && h ? Date.parse(p.startTime) + h * 3600e3 : null;
@@ -813,19 +813,22 @@ function gleicherPlanInhalt(a, b) {
   if (!Array.isArray(a?.steps) || !a.steps.length) return false;
   return PLAN_INHALT.every(k => leerWert(a[k]) && leerWert(b?.[k]) || gleichJson(a[k], b?.[k]));
 }
-// Förderung bei T (Schritt 2, B8): { pctF, massNeu, massAkt, kopieVon? } bzw. { fehlt: Grund } ohne Vergleichswert; null ohne bis.mass.
-// Aktiver Wert: vergleich des Entwurfs (Optimierer --gegen), wenn vergleich.planId oder planIdOhnePark = Plan-id des aktiven Plans
-// oder der aktive Plan eine unveränderte Kopie eines dieser Pläne ist (refs: {plan_hash, …PLAN_INHALT}, 27.10.2026) und zulässig;
-// sonst bis.mass des aktiven Plans bei gleichem bis.t; sonst kein Vergleich (Stunden-Rückfall, „Vergleich fehlt“)
-function foerderVergleich(d, active, refs = []) {
-  const neu = d.bisMass != null && d.bisMass !== '' ? +d.bisMass : NaN;
+// Zeit bis zum Ziel (B1, 29.10.2026; vorher Förderung bei T): { pctZ (% früher), zielNeu, zielAkt (h, null = nie), kopieVon? } bzw.
+// { fehlt: Grund } ohne Vergleichswert; null ohne bis.ziel. Aktiver Wert: vergleich.goalAt des Entwurfs (Optimierer --gegen, selber
+// Lauf), wenn vergleich.planId oder planIdOhnePark = Plan-id des aktiven Plans oder der aktive Plan eine unveränderte Kopie eines
+// dieser Pläne ist (refs: {plan_hash, …PLAN_INHALT}, 27.10.2026) und zulässig – erreicht er das Ziel dort nie, gilt 100 %; sonst
+// bis.zielUhr des aktiven Plans (eigener Lauf, grob); sonst kein Vergleich (Stunden-Rückfall, „Vergleich fehlt“). Wie tools/push_plan.py.
+function zielVergleich(d, active, refs = []) {
+  const neu = d.zielH != null && d.zielH !== '' ? +d.zielH : NaN;
   if (!(neu >= 0)) return null;
   const ids = [d.vPlan, d.vPlanOP].filter(Boolean), ah = active?.plan_hash;
   const kopie = ah && !ids.includes(ah) ? refs.find(r => ids.includes(r.plan_hash) && gleicherPlanInhalt(active.payload, r))?.plan_hash : null;
   let akt = NaN, kopieVon = null;
-  if (ah && (ids.includes(ah) || kopie) && d.vOk === 'true' && d.vMass != null) { akt = +d.vMass; kopieVon = kopie || null; }
-  else if (active?.payload?.bis?.mass != null && active.payload.bis.t && active.payload.bis.t === d.bisT) akt = +active.payload.bis.mass;
-  if (akt > 0) return { pctF: (neu - akt) / akt * 100, massNeu: neu, massAkt: akt, kopieVon };
+  if (ah && (ids.includes(ah) || kopie) && d.vOk === 'true') {
+    if (d.vZiel == null || d.vZiel === '') return { pctZ: 100, zielNeu: neu, zielAkt: null, kopieVon: kopie || null };
+    akt = +d.vZiel; kopieVon = kopie || null;
+  } else if (active?.payload?.bis?.zielUhr && d.zielUhr) akt = neu + (Date.parse(active.payload.bis.zielUhr) - Date.parse(d.zielUhr)) / 3600e3;
+  if (akt > 0) return { pctZ: (akt - neu) / akt * 100, zielNeu: neu, zielAkt: akt, kopieVon };
   const fehlt = !ids.length ? 'Lauf ohne Vergleich' : !ids.includes(ah) && !kopie
     ? `Lauf verglich gegen ${ids.join('/')}, aktiver Plan ${ah || '–'} ist ein anderer` : 'aktiver Plan im Lauf unzulässig';
   return { fehlt };
@@ -842,14 +845,14 @@ async function vergleichRefs(rows, active) {
   if (refs) S.vRefs = { key, rows: refs };   // Fehler nicht cachen: beim nächsten Laden neu versuchen
   return refs || [];
 }
-// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), pctF/massNeu/massAkt (Förderung bei T), agreed, better }
+// Gewinn je Bauplan-Entwurf: { end, gain (h), pct (% der Restzeit des aktiven Plans bis zum Ziel), pctZ/zielNeu/zielAkt (Zeit bis zum Ziel), agreed, better }
 async function draftGains(plans, active, drift) {
   const drafts = plans.filter(p => p.kind === 'build' && p.status === 'entwurf');
   if (!drafts.length) return {};
   const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
     select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil,'
-      + 'bisT:payload->bis->>t,bisMass:payload->bis->>mass,vPlan:payload->vergleich->>planId,vPlanOP:payload->vergleich->>planIdOhnePark,'
-      + 'vMass:payload->vergleich->>mass,vOk:payload->vergleich->>ok' });
+      + 'zielH:payload->bis->>ziel,zielUhr:payload->bis->>zielUhr,vPlan:payload->vergleich->>planId,vPlanOP:payload->vergleich->>planIdOhnePark,'
+      + 'vZiel:payload->vergleich->>goalAt,vOk:payload->vergleich->>ok' });
   const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
   const refs = active ? await vergleichRefs(rows.filter(d => drafts.find(x => x.id === d.id)?.source !== 'user'), active) : [];
   // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan
@@ -860,17 +863,17 @@ async function draftGains(plans, active, drift) {
     const p = drafts.find(x => x.id === d.id), end = planEnd(d);
     // eigene Entwürfe tragen Planstart und Stunden des Ausgangsplans → kein Vergleich
     const gain = end && aEnd && p.source !== 'user' ? (aEnd - end) / 3600e3 : null, agreed = d.agreed === 'true';
-    const f = p.source !== 'user' && active ? foerderVergleich(d, active, refs) : null;
+    const f = p.source !== 'user' && active ? zielVergleich(d, active, refs) : null;
     out[d.id] = { end, gain, pct: gain != null ? gain / rest * 100 : null, ...(f || {}), agreed, teil: teilOf[d.id] || null,
-      better: agreed || !!teilOf[d.id] || !active || (f?.pctF != null ? f.pctF >= PLAN_GAIN_MIN_PCT : gain == null || gain > PLAN_GAIN_MIN) };
+      better: agreed || !!teilOf[d.id] || !active || (f?.pctZ != null ? f.pctZ >= PLAN_GAIN_MIN_PCT : gain == null || gain > PLAN_GAIN_MIN) };
   }
   return out;
 }
-// ohne Förder-Vergleich (g.fehlt): klar als „Vergleich fehlt“ kennzeichnen, Stundenmaß nur als grober Rückfall (27.10.2026)
-const gainText = g => g?.pctF != null ? `Förderung bei T: ${g.pctF >= 0 ? '+' : '−'}${fmt(Math.abs(g.pctF), 1)} % (aktiv ${fmt(g.massAkt, 0)} → neu ${fmt(g.massNeu, 0)} /h gewichtet${g.kopieVon ? `; aktiver Plan = unveränderte Kopie von ${g.kopieVon}` : ''})`
-  : [g?.fehlt ? `Vergleich der Förderung fehlt (${g.fehlt})` : '',
+// ohne Zielzeit-Vergleich (g.fehlt): klar als „Vergleich fehlt“ kennzeichnen, Stundenmaß nur als grober Rückfall (27.10.2026)
+const gainText = g => g?.pctZ != null ? `Ziel ${fmt(Math.abs(g.pctZ), 1)} % ${g.pctZ >= 0 ? 'früher' : 'später'} (aktiv ${g.zielAkt != null ? fmt(g.zielAkt, 1) + ' h' : 'nie'} → neu ${fmt(g.zielNeu, 1)} h${g.kopieVon ? `; aktiver Plan = unveränderte Kopie von ${g.kopieVon}` : ''})`
+  : [g?.fehlt ? `Vergleich der Zielzeit fehlt (${g.fehlt})` : '',
      g?.gain == null ? '' : `${g?.fehlt ? 'Rückfall, nur grob: ' : ''}SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`].filter(Boolean).join(' · ');
-const gainOk = g => g?.pctF != null ? g.pctF >= PLAN_GAIN_MIN_PCT : g?.gain > PLAN_GAIN_MIN;
+const gainOk = g => g?.pctZ != null ? g.pctZ >= PLAN_GAIN_MIN_PCT : g?.gain > PLAN_GAIN_MIN;
 
 // Herkunft und Klapper „Details“ eines Plans (B16): Notiz in Anzeigeform, darunter die technischen Kennungen.
 // Werft-/Def-Pläne: im Atlas die Vorschau aus details/werft.js, im Cockpit ein Link dorthin (Vorschau seit C1 im Atlas)

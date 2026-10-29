@@ -381,8 +381,7 @@ const SL_FIELDS = [
     ['kolohilfe', 'Hilfsgebäude Kolonien', 'txt', 'leer = aus · ja = Bauhof bis 5 · constructionfacility:6, infrastructure:2'],
     ['forschort', 'Forschungsort Typ:Faktor', 'txt', 'z. B. JUPL:0.69, heimat:1 (günstigster Planet; Heimat-Labor nur als Voraussetzung) · leer = Heimat'],
     ['versorgung', 'Versorgung', 'sel', [['', 'Standard (voll)'], ['voll', 'voll (100 %)'], ['aus', 'aus (nur Vergleich)']]],
-    ['bis', 'Stichtag T der Förderung', 'txt', '+14d = 14 Tage ab Snapshot (rollend) · +36h · Planstunde · ISO-Zeit'],
-    ['gewicht', 'Gewicht Förderung E, M, T', 'txt', 'z. B. 1, 2, 4 (Händlerkurs) · leer = jede Einheit gleich'],
+    ['bis', 'Stichtag T der Förderung (nur Gleichstand)', 'txt', '+14d = 14 Tage ab Snapshot (rollend) · +36h · Planstunde · ISO-Zeit'],
     ['kololive', 'Gelandete Kolonien aus dem Snapshot', 'sel', [['ja', 'übernehmen'], ['nein', 'nicht übernehmen']]],
     ['flugfaktor', 'Flugfaktor SCOL', 'num', 'z. B. 0,043 (geeicht, ≈ 14 min) · leer = Modellwert'],
     ['takt', 'Transport: Flüge je Tag', 'num', 'z. B. 2 (wie Plan 21) · leer = kein Transport · wirkt nur mit getrennten Lagern und Flotte'],
@@ -405,7 +404,7 @@ const slSummary = (d, errs) => `<div class="small" style="margin:6px 0">${d.leng
   ${errs.length ? `<div class="small warn">${errs.map(esc).join('<br>')}</div>` : ''}`;
 // L7 (24.10.2026): Fortschritt eines laufenden Optimierers aus dem Lebenszeichen (tools/sim_work.py fortschritt)
 const simFs = (f, uhr) => !f ? '' : `Fortschritt: ${f.schritt} (von ${f.von}) · ${Number(f.sims).toLocaleString('de-DE')} Simulationen · `
-  + (f.bestes < 0 ? `bester Plan ${Math.round(-f.bestes).toLocaleString('de-DE')}/h gewichtet bei T` : f.bestes >= 1e6 ? 'noch kein zulässiger Plan' : `bester Plan ${f.bestes.toFixed(1)} h`)
+  + (f.bestes < 0 ? `bester Plan ${Math.round(-f.bestes).toLocaleString('de-DE')}/h bei T (alter Lauf)` : f.bestes >= 1e6 ? 'noch kein zulässiger Plan' : `bester Plan: Ziel nach ${f.bestes.toFixed(1)} h`)
   + (f.spaetestens ? ` · fertig spätestens ${uhr(f.spaetestens)}` : '');
 function simlaufCard(pl, own) {
   const st = slState(), P = HZ_SIMPARAMS.fromForm(st.form), errs = HZ_SIMPARAMS.check(P), d = HZ_SIMPARAMS.diff(P);
