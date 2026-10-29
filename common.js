@@ -818,11 +818,24 @@ function gleicherPlanInhalt(a, b) {
 // Lauf), wenn vergleich.planId oder planIdOhnePark = Plan-id des aktiven Plans oder der aktive Plan eine unveränderte Kopie eines
 // dieser Pläne ist (refs: {plan_hash, …PLAN_INHALT}, 27.10.2026) und zulässig – erreicht er das Ziel dort nie, gilt 100 %; sonst
 // bis.zielUhr des aktiven Plans (eigener Lauf, grob); sonst kein Vergleich (Stunden-Rückfall, „Vergleich fehlt“). Wie tools/push_plan.py.
+// Läufe mit --bedarf (Nachtlauf seit 29.10.2026 abends): Maß Deckungstage bei T (d.deck gegen d.vDeck desselben Laufs, weniger = besser;
+// { deckung: true, pctZ, zielNeu, zielAkt in d }); kein Rückfall auf den eigenen Lauf des aktiven Plans. Wie tools/push_plan.py.
 function zielVergleich(d, active, refs = []) {
-  const neu = d.zielH != null && d.zielH !== '' ? +d.zielH : NaN;
-  if (!(neu >= 0)) return null;
+  const num = x => x != null && x !== '' ? +x : NaN;
   const ids = [d.vPlan, d.vPlanOP].filter(Boolean), ah = active?.plan_hash;
   const kopie = ah && !ids.includes(ah) ? refs.find(r => ids.includes(r.plan_hash) && gleicherPlanInhalt(active.payload, r))?.plan_hash : null;
+  const deck = num(d.deck);
+  if (deck >= 0) {
+    const gleich = ah && (ids.includes(ah) || kopie), akt = num(d.vDeck), ga = num(d.vZiel), t = num(d.bisH);
+    if (gleich && d.vOk === 'true' && akt > 0) {
+      if (!(ga >= 0) || ga > t + 1e-6) return { deckung: true, pctZ: 100, zielNeu: deck, zielAkt: null, kopieVon: kopie || null };
+      return { deckung: true, pctZ: (akt - deck) / akt * 100, zielNeu: deck, zielAkt: akt, kopieVon: kopie || null };
+    }
+    return { fehlt: !ids.length ? 'Lauf ohne Vergleich' : !gleich ? `Lauf verglich gegen ${ids.join('/')}, aktiver Plan ${ah || '–'} ist ein anderer`
+      : d.vOk !== 'true' ? 'aktiver Plan im Lauf unzulässig' : 'Lauf ohne Deckungstage des aktiven Plans' };
+  }
+  const neu = num(d.zielH);
+  if (!(neu >= 0)) return null;
   let akt = NaN, kopieVon = null;
   if (ah && (ids.includes(ah) || kopie) && d.vOk === 'true') {
     if (d.vZiel == null || d.vZiel === '') return { pctZ: 100, zielNeu: neu, zielAkt: null, kopieVon: kopie || null };
@@ -852,7 +865,7 @@ async function draftGains(plans, active, drift) {
   const rows = await Cloud.q('plans', { id: `in.(${drafts.map(p => p.id).join(',')})`,
     select: 'id,startTime:payload->>startTime,hours:payload->>hours,created:payload->>created,agreed:payload->>agreed,teil:payload->meta->>teil,'
       + 'zielH:payload->bis->>ziel,zielUhr:payload->bis->>zielUhr,vPlan:payload->vergleich->>planId,vPlanOP:payload->vergleich->>planIdOhnePark,'
-      + 'vZiel:payload->vergleich->>goalAt,vOk:payload->vergleich->>ok' });
+      + 'vZiel:payload->vergleich->>goalAt,vOk:payload->vergleich->>ok,deck:payload->bis->>deckung,bisH:payload->bis->>h,vDeck:payload->vergleich->>deckung' });
   const aEnd = activeEnd(active, drift), rest = aEnd ? Math.max((aEnd - Date.now()) / 3600e3, 0.01) : null;
   const refs = active ? await vergleichRefs(rows.filter(d => drafts.find(x => x.id === d.id)?.source !== 'user'), active) : [];
   // Teilentwürfe (M9): Inhalt nachladen, Unterschiede für den Planeten gegen den aktiven Plan
@@ -870,7 +883,8 @@ async function draftGains(plans, active, drift) {
   return out;
 }
 // ohne Zielzeit-Vergleich (g.fehlt): klar als „Vergleich fehlt“ kennzeichnen, Stundenmaß nur als grober Rückfall (27.10.2026)
-const gainText = g => g?.pctZ != null ? `Ziel ${fmt(Math.abs(g.pctZ), 1)} % ${g.pctZ >= 0 ? 'früher' : 'später'} (aktiv ${g.zielAkt != null ? fmt(g.zielAkt, 1) + ' h' : 'nie'} → neu ${fmt(g.zielNeu, 1)} h${g.kopieVon ? `; aktiver Plan = unveränderte Kopie von ${g.kopieVon}` : ''})`
+const gainText = g => g?.deckung ? `Deckungstage bei T ${fmt(Math.abs(g.pctZ), 1)} % ${g.pctZ >= 0 ? 'weniger' : 'mehr'} (aktiv ${g.zielAkt != null ? fmt(g.zielAkt, 1) + ' d' : 'Ziel nicht bis T'} → neu ${fmt(g.zielNeu, 1)} d${g.kopieVon ? `; aktiver Plan = unveränderte Kopie von ${g.kopieVon}` : ''})`
+  : g?.pctZ != null ? `Ziel ${fmt(Math.abs(g.pctZ), 1)} % ${g.pctZ >= 0 ? 'früher' : 'später'} (aktiv ${g.zielAkt != null ? fmt(g.zielAkt, 1) + ' h' : 'nie'} → neu ${fmt(g.zielNeu, 1)} h${g.kopieVon ? `; aktiver Plan = unveränderte Kopie von ${g.kopieVon}` : ''})`
   : [g?.fehlt ? `Vergleich der Zielzeit fehlt (${g.fehlt})` : '',
      g?.gain == null ? '' : `${g?.fehlt ? 'Rückfall, nur grob: ' : ''}SCOL ${fmt(Math.abs(g.gain), 1)} h ${g.gain >= 0 ? 'früher' : 'später'} (${fmt(Math.abs(g.pct), 1)} % der Restzeit)`].filter(Boolean).join(' · ');
 const gainOk = g => g?.pctZ != null ? g.pctZ >= PLAN_GAIN_MIN_PCT : g?.gain > PLAN_GAIN_MIN;
