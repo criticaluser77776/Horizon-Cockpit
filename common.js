@@ -709,13 +709,15 @@ const planStepDone = (plan, st, execs) => {
    opt.fcRows = false lässt die Faktorwechsel-Zeilen weg. opt.marks = 'farben' (Atlas, Gesamtplan): je Schlange eine Farbe (qc0…qc5 in
    details.css), laufender Schritt ▶ und erster offener ⏵ in Schlangenfarbe, darüber eine Legende (Namen wie die Reiter, opt.home = Heimatplanet).
    opt.horizonH = h (Cockpit, Planeten-Karten unter Pläne, Nutzer 25.10.2026): alle laufenden und offenen Schritte des Reiters mit Live-Start
-   bis jetzt + h (mindestens der nächste), oben der zuletzt abgeschlossene, darüber aufklappbar die 10 davor; kein Fenster um „bis #“. */
+   bis jetzt + h (mindestens die nächsten 5), oben der zuletzt abgeschlossene, darüber aufklappbar die 10 davor; kein Fenster um „bis #“. */
 // Zeilenfarbe je Art (Nutzer 26.10.2026): Forschung, Schiffe und Transporte farblich vom Bau abgesetzt (style.css tr.kr/ks/kt)
 const KIND_ROW = { r: ' kr', s: ' ks' };
 // Transporte im Reiter tab: alle/ohne Reiter und Heimat alle, Kolonie die eigenen, Forschung keine
 const planTransports = (plan, tab) => (Array.isArray(plan?.transporte) ? plan.transporte : [])
   .filter(x => x && isFinite(x.t) && (!tab || tab === 'alle' || tab === 'heim' || (tab !== 'r' && (x.nach === tab || x.von === tab))));
 const planLadung = l => { const p = (Array.isArray(l) ? l : []).map((v, i) => +v > 0 ? `${['Erz', 'Min', 'Treib'][i]} ${fmt(+v)}` : '').filter(Boolean); return p.length ? p.join(' · ') : 'leer'; };
+// Kosten eines Planschritts (steps[i][6] = [Eisenerz, Mineral, Treibstoff]) als kleine Zeile unter dem Namen (Nutzer 30.10.2026)
+const stepKosten = c => { const p = (Array.isArray(c) ? c : []).map((v, i) => +v > 0 ? `${['E', 'M', 'T'][i]} ${fmt(+v)}` : '').filter(Boolean); return p.length ? `<div class="small muted">${esc(p.join(' · '))}</div>` : ''; };
 function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
   const { all = false, fcRows = true, nearLimit = 12, marks = null, home = null, horizonH = null, now = Date.now() } = opt;
   const t0 = Date.parse(plan.startTime);
@@ -752,7 +754,7 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     const mark = run ? '⏵' : isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : !all && (st.halts || []).includes(r.n) ? '⏸' : '';
     const q = qcols ? Zeitplan.queueOf(plan, r.n - 1) : null;
     const qm = !qcols ? '' : run ? qmark('▶', q) + ' ' : LT.first?.[q]?.i === r.n - 1 ? qmark('⏵', q) + ' ' : '';
-    return `<tr class="step${KIND_ROW[r.s[0]] || ''}${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
+    return `<tr class="step${KIND_ROW[r.s[0]] || ''}${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${stepKosten(r.s[6])}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${planLiveCell(LT.t[r.n - 1], e)}</td></tr>`;
   };
   // Transporte des Plans (payload.transporte, Takt-Flüge) als eigene Zeilen; Zeit wie Faktorwechsel an der Heimat-Bauschlange ausgerichtet
@@ -777,7 +779,7 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     const startOf = n => { const x = LT.t[n - 1]; return !x ? Infinity : x.run ? -Infinity : x.due != null ? now : x.a ?? Infinity; };
     const open = mine.filter(n => isRun(n) || !isDone(n)).map(n => stepRow(plan.steps[n - 1], n - 1)).sort(cmp);
     let next = open.filter(r => startOf(r.n) <= now + horizonH * 3600e3);
-    if (!next.length && open.length) next = [open[0]];
+    if (next.length < 5) next = open.slice(0, Math.max(5, next.length));   // mindestens die nächsten 5, sonst alle der nächsten h Stunden (Nutzer 30.10.2026)
     const past = mine.filter(n => isDone(n) && !isRun(n)).map(n => stepRow(plan.steps[n - 1], n - 1)).sort(cmp).slice(-11);
     const lastOne = past.pop();
     if (!next.length && !lastOne) return '<p class="muted small">Keine Planschritte.</p>';

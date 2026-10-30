@@ -323,7 +323,7 @@ async function planetenKarten(d, ap, gd, sess, W, liveAt) {
 
 /* ---------- Ausbau und Flotten je Planet (Umbau 2 U2, Nutzer 30.10.2026) ----------
    Je Planet aufklappbar: Gebäude, Forschung, Schiffbau, Def-Bau mit Kosten, Start, Dauer und Ende. Planschritte mit Live-Zeiten (planLive
-   wie im Reiter Pläne): laufende und offene mit Start in den nächsten 24 h, mindestens die nächsten 3, höchstens 8 je Art. Laufende Aufträge
+   wie im Reiter Pläne): laufende und offene mit Start in den nächsten 24 h, mindestens die nächsten 5 je Art (Nutzer 30.10.2026). Laufende Aufträge
    ohne Planschritt aus getData (gd.jobs), die Werft des gewählten Planeten aus dem Live-Stand (snapshot.shipyard). Werft-/Def-Pläne
    (Paket E, payload.steps [Kürzel, Menge, ab_h]) kennen keine Kosten und Dauer, nur „frühestens“. Darunter die Schiffe am Planeten
    (Schiffsstatistik empire.ships: Flotte, Hafen, Bunker, im Bau) und die Flotten, die der Autobuilder gesehen hat (snapshot.flotten wie
@@ -346,8 +346,7 @@ function lageAusbau(p, ctx) {
         .map(i => { const t = LT.t[i], s = plan.steps[i]; return { n: i + 1, name: s[5], cost: s[6], start: t.run ? t.s : t.a, end: t.e, run: !!t.run, due: t.due }; })
         .sort((a, b) => a.start - b.start || a.n - b.n);
       rows = mine.filter(r => r.run || r.start <= now + 24 * H);
-      if (rows.length < 3) rows = mine.slice(0, 3);
-      rows = rows.slice(0, 8);
+      if (rows.length < 5) rows = mine.slice(0, 5);
     }
     art[k] = rows;
   }
