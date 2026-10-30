@@ -873,11 +873,11 @@ async function viewTransporte() {
   const [ap, d, heads, auf, sperre] = await Promise.all([loadActivePlan(), loadDrift(true),
     Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live', select: 'kind,collected_at,version' }).catch(() => []),
     Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 30,
-      select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at,plan_nr,plan_nrs,einmal' }).catch(() => null),
+      select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at,plan_id,plan_nr,plan_nrs,einmal' }).catch(() => null),
     Cloud.q('flotten_sperre', { account_id: `eq.${S.acc}`, select: 'name' }).catch(() => null)]);
   await ensureSnap(heads[0]).catch(() => {});
   const snap = heads[0] ? S.snap?.data : null;
-  $('#view').innerHTML = `<div class="stack">${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap)}${flottenCard(snap, sperre)}${await planTransportCard(ap, d)}</div>`;
+  $('#view').innerHTML = `<div class="stack">${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap, ap?.row?.id)}${flottenCard(snap, sperre)}${await planTransportCard(ap, d)}</div>`;
   if (isOwner()) bindAuftragForm(snap);
   $('#view').querySelectorAll('button[data-fsperre]').forEach(b => b.addEventListener('click', async () => {
     const name = b.dataset.fsperre, on = !!b.dataset.on;
@@ -1022,9 +1022,12 @@ function bindAuftragForm(snap) {
     } catch (err) { toast(err.message); }
   });
 }
-function auftragListCard(auf, snap) {
+// Abgeschlossene Aufträge früherer Pläne (plan_id gesetzt, nicht der aktive Plan) stehen zugeklappt in „Aus früheren Plänen“
+// (Nutzer 30.10.2026: nur ausblenden, nichts löschen); von Hand angelegte (ohne Plan) bleiben unter „Abgeschlossen“
+function auftragListCard(auf, snap, planId = null) {
   if (auf == null) return '<div class="card"><h2>Transportaufträge</h2><p class="err small">Liste nicht ladbar.</p></div>';
-  const own = isOwner(), offen = auf.filter(a => ['offen', 'laeuft'].includes(a.status)), alt = auf.filter(a => !offen.includes(a));
+  const own = isOwner(), offen = auf.filter(a => ['offen', 'laeuft'].includes(a.status));
+  const frueher = auf.filter(a => !offen.includes(a) && a.plan_id && a.plan_id !== planId), alt = auf.filter(a => !offen.includes(a) && !frueher.includes(a));
   const item = a => {
     const [st, cls] = TA_ST[a.status] || [a.status, ''];
     const fl = Array.isArray(a.fluege) ? a.fluege : [];
@@ -1041,6 +1044,7 @@ function auftragListCard(auf, snap) {
   return `<div class="card"><h2>Transportaufträge</h2>
     ${offen.length ? offen.map(item).join('') : '<p class="muted">Kein offener Auftrag.</p>'}
     ${alt.length ? `<details class="sub"><summary class="small muted">Abgeschlossen (${alt.length})</summary>${alt.map(item).join('')}</details>` : ''}
+    ${frueher.length ? `<details class="sub"><summary class="small muted">Aus früheren Plänen (${frueher.length})</summary>${frueher.map(item).join('')}</details>` : ''}
     <p class="small muted">Der Autobuilder fliegt offene Aufträge, wenn im Autobuilder-Panel „Transporte fliegen“ an ist und ein Lauf läuft.</p></div>`;
 }
 
