@@ -221,13 +221,30 @@ async function viewLage() {
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const active = ap ? { ...ap.row, payload: ap.payload } : null, nf = { active: ap?.row || null, known: {} };
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  const karten = await planetenKarten(d, ap, gds[0], sess, W).catch(() => '');   // Fehler hier dürfen die Lage nie blockieren
+  const karten = await planetenKarten(d, ap, gds[0], sess, W, live?.collected_at).catch(() => '');   // Fehler hier dürfen die Lage nie blockieren
+  const trLine = await naechsterTransport(ap, d).catch(() => '');
   // Umbau 2 U1 (30.10.2026): Werbebanner, Steuerung und Motivationsvideo stehen im Reiter Steuerung; hier nur ein Hinweis
   const todo = [bannerCard(sess) ? 'Werbebanner' : '', movis.length ? 'Motivationsvideo' : ''].filter(Boolean);
   $('#view').innerHTML = (todo.length ? `<div class="card warn small"><a href="#/steuerung">${esc(todo.join(' · '))} wartet – zur Steuerung →</a></div>` : '')
-    + overviewCard(sess, d, live, abLive, nm, W, effectsLine(effs, effEnds), gds[0]) + karten
+    + overviewCard(sess, d, live, abLive, nm, W, trLine + effectsLine(effs, effEnds), gds[0]) + karten
     + '<p class="small muted pad">Planeten, Gebäude, Forschung: <a href="details/#/imperium" target="_blank" rel="noopener">Imperium im Atlas →</a></p>';
   bindAsk($('#view'), c => S.askLage?.[c]);
+  $('#view').querySelectorAll('details[data-lage]').forEach(x => x.addEventListener('toggle', () => lageOpenSet(x.dataset.lage, x.open)));
+}
+
+/* Nächster Transport als Zeile im Überblick (Idee aus cockpit-umbau.md, Umbau 2 U2): laufende/offene Transportaufträge an den Autobuilder,
+   sonst der nächste noch nicht geflogene Takt-Flug des aktiven Plans (Zeiten wie im Reiter Transport, Transporte.transportListe). */
+async function naechsterTransport(ap, d) {
+  const nm = c => esc(trName(d, c));
+  const [auf, hk, drift] = await Promise.all([
+    Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, status: 'in.(offen,laeuft)', order: 'id.asc', limit: 5, select: 'id,von,nach,menge,status' }).catch(() => []),
+    ap ? Cloud.q('transport_haken', { plan_id: `eq.${ap.row.id}`, select: 'nr' }).catch(() => []) : [],
+    loadDrift().catch(() => null)]);
+  const parts = (auf || []).map(a => `Auftrag #${esc(a.id)} ${nm(a.von)} → ${nm(a.nach)} <span class="tag ${a.status === 'laeuft' ? 'aktiv' : ''}">${a.status === 'laeuft' ? 'läuft' : 'offen'}</span>`);
+  const x = ap ? Transporte.transportListe(ap.payload, drift?.plan === ap.row.id ? drift : null, (hk || []).map(h => h.nr)).find(t => t.status !== 'geflogen') : null;
+  if (x) parts.push(`Plan #${x.nr} ${nm(x.von)} → ${nm(x.nach)} <span class="${x.status === 'faellig' ? 'warn' : 'muted'}">${x.status === 'faellig' ? 'fällig seit' : 'ab'} ${esc(clockT(x.ab))}</span>`
+    + ` <span class="muted">· hin ${trLad(x.hin)} · zurück ${trLad(x.zurueck)}</span>`);
+  return parts.length ? `<p class="small">Nächster Transport: ${parts.join(' · ')} <a href="#/transporte">→</a></p>` : '';
 }
 
 /* ---------- Steuerung (Umbau 2 U1, Nutzer 30.10.2026) ----------
@@ -278,20 +295,117 @@ function liveJobRows(gd, home, W, now = Date.now()) {
       run: { i: null, end: Date.parse(j.end), name: j.k === 's' ? nm : `${nm}${j.level != null ? ` ${j.level}` : ''}` }, next: null };
   });
 }
-async function planetenKarten(d, ap, gd, sess, W) {
+async function planetenKarten(d, ap, gd, sess, W, liveAt) {
   const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
   if (!pl.length) return '';
   const plan = ap?.payload && Array.isArray(ap.payload.steps) ? ap.payload : null;
-  const execs = plan ? await loadPlanExecs(`eq.${S.acc}`, ap.row.id, plan).catch(() => []) : [];
+  const [execs, wplans] = await Promise.all([plan ? loadPlanExecs(`eq.${S.acc}`, ap.row.id, plan).catch(() => []) : [],
+    Cloud.q('plans', { account_id: `eq.${S.acc}`, kind: 'in.(ship,defense)', status: 'in.(freigegeben,aktiv)', select: 'id,kind,created_at,payload', limit: 4 }).catch(() => [])]);
   const home = planHomeCoords(plan, gd, pl[0].coords);
   let feed = plan ? planFeed(plan, execs, sess, gd) : [];
   if (!feed.length) feed = liveJobRows(gd, home, W);
   const by = feedByPlanet(plan, feed, home, pl), cur = d?.start?.coords;   // Zuordnung gemeinsam mit den Planeten-Karten unter Pläne (common.js)
   S.askLage = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], ap?.row?.id || null, plan?.steps)]));   // für „Claude fragen“ (bindAsk)
+  // Live-Zeitplan wie planFeed (Lebenszeichen des Laufhalters bzw. eines Geräts mit diesem Plan)
+  let LT = null, isDone = null;
+  if (plan) {
+    const dev = sess?.devs?.find(x => x.holds && x.ab) || sess?.devs?.find(x => x.ab?.state?.plan === plan.id) || null;
+    const st = dev?.ab?.state || {}, hst = st.plan === plan.id ? st : {};
+    isDone = planStepDone(plan, hst, execs);
+    LT = planLive(plan, isDone, execs, hst);
+  }
+  const ctx = { plan, LT, home, gd, d, W, liveAt, wplans: wplans || [], open: lageOpen() };
   return pl.map(p => {
     const rows = by[p.coords];
-    return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), steps: plan?.steps, current: p.coords === cur, plan: null });
+    return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), steps: plan?.steps, current: p.coords === cur, plan: null, extra: lageAusbau(p, ctx) });
   }).join('');
+}
+
+/* ---------- Ausbau und Flotten je Planet (Umbau 2 U2, Nutzer 30.10.2026) ----------
+   Je Planet aufklappbar: Gebäude, Forschung, Schiffbau, Def-Bau mit Kosten, Start, Dauer und Ende. Planschritte mit Live-Zeiten (planLive
+   wie im Reiter Pläne): laufende und offene mit Start in den nächsten 24 h, mindestens die nächsten 3, höchstens 8 je Art. Laufende Aufträge
+   ohne Planschritt aus getData (gd.jobs), die Werft des gewählten Planeten aus dem Live-Stand (snapshot.shipyard). Werft-/Def-Pläne
+   (Paket E, payload.steps [Kürzel, Menge, ab_h]) kennen keine Kosten und Dauer, nur „frühestens“. Darunter die Schiffe am Planeten
+   (Schiffsstatistik empire.ships: Flotte, Hafen, Bunker, im Bau) und die Flotten, die der Autobuilder gesehen hat (snapshot.flotten wie
+   Karte „Flotten“ im Reiter Transport). Auf/zu je Planet in localStorage (hz.lageOpen), damit die 30-s-Aktualisierung es nicht zuklappt. */
+const lageOpen = () => { try { return JSON.parse(localStorage.getItem('hz.lageOpen') || '{}') || {}; } catch { return {}; } };
+function lageOpenSet(c, on) {
+  const o = lageOpen();
+  if (on) o[c] = 1; else delete o[c];
+  try { localStorage.setItem('hz.lageOpen', JSON.stringify(o)); } catch { /* egal */ }
+}
+const lageKosten = c => { const p = (Array.isArray(c) ? c : []).map((v, i) => +v > 0 ? `${['E', 'M', 'T'][i]} ${fmt(+v)}` : '').filter(Boolean); return p.length ? p.join(' · ') : ''; };
+function lageAusbau(p, ctx) {
+  const { plan, LT, home, gd, d, W, liveAt, wplans, open } = ctx, now = Date.now(), H = 3600e3;
+  const owner = i => plan.steps[i][0] === 'r' ? planResPlanet(plan, i + 1) || home : planAway(plan, i + 1) || home;
+  const art = {};
+  for (const k of ['b', 'r', 's', 'd']) {
+    let rows = [];
+    if (plan && LT) {
+      const mine = plan.steps.map((s, i) => i).filter(i => plan.steps[i][0] === k && LT.t[i] && owner(i) === p.coords)
+        .map(i => { const t = LT.t[i], s = plan.steps[i]; return { n: i + 1, name: s[5], cost: s[6], start: t.run ? t.s : t.a, end: t.e, run: !!t.run, due: t.due }; })
+        .sort((a, b) => a.start - b.start || a.n - b.n);
+      rows = mine.filter(r => r.run || r.start <= now + 24 * H);
+      if (rows.length < 3) rows = mine.slice(0, 3);
+      rows = rows.slice(0, 8);
+    }
+    art[k] = rows;
+  }
+  // laufende Aufträge ohne laufenden Planschritt: getData (Bau, Forschung, Werft), Werft des gewählten Planeten aus dem Live-Stand
+  const gdHome = typeof gd?.colony?.coords === 'string' ? gd.colony.coords : home;
+  for (const j of Array.isArray(gd?.jobs) ? gd.jobs : []) {
+    if (!j || !['b', 'r', 's'].includes(j.k) || !(Date.parse(j.end) > now) || (j.coords || gdHome) !== p.coords || art[j.k].some(r => r.run)) continue;
+    const cls = String(j.cls || ''), n = W?.[j.k === 'r' ? 'R' : 'B']?.[cls]?.n || cls;
+    art[j.k].unshift({ name: j.k === 's' ? n : `${n}${j.level != null ? ` ${j.level}` : ''}`, end: Date.parse(j.end), run: true, live: true });
+  }
+  const sy = d?.shipyard && !d.shipyard.error ? d.shipyard : null, snapAt = Date.parse(liveAt);
+  if (sy && p.coords === d?.start?.coords && isFinite(snapAt) && !art.s.some(r => r.run)) {
+    const q = Array.isArray(sy.queue) ? sy.queue : [], end1 = sy.remaining != null ? snapAt + sy.remaining * 1000 : null;
+    const rest = q[0]?.id === sy.id ? q.slice(1) : q;
+    const live = [];
+    if (sy.id && end1 > now) live.push({ name: `${q[0]?.id === sy.id && q[0].qty > 1 ? `${fmt(q[0].qty)}× ` : ''}${sy.id}`, end: end1, run: true, live: true });
+    for (const x of rest) live.push({ name: `${fmt(x.qty)}× ${x.id}`, end: sy.total != null ? snapAt + sy.total * 1000 : null, wait: true, live: true });
+    if (live.length && (sy.total == null || snapAt + sy.total * 1000 > now)) art.s.unshift(...live);
+  }
+  // Werft- und Def-Pläne (Paket E) gehören zur Heimat
+  if (p.coords === home) for (const w of wplans) {
+    const k = w.kind === 'defense' ? 'd' : 's', t0 = Date.parse(w.payload?.startTime || w.created_at);
+    const st = (Array.isArray(w.payload?.steps) ? w.payload.steps : []).filter(x => Array.isArray(x) && x.length === 3).slice(0, 5);
+    art[k].push(...st.map(([kz, n, h]) => ({ name: `${fmt(n)}× ${kz}`, start: isFinite(t0) ? Math.max(now, t0 + (+h || 0) * H) : null, plan: true })));
+  }
+  const row = r => {
+    const dauer = r.start != null && r.end != null ? durDHM((r.end - r.start) / 1000) : '–';
+    const tag = r.wait ? ' <span class="tag">wartet</span>' : r.due != null ? ` <span class="tag mittel" title="fällig seit ${esc(dt(r.due))}">fällig</span>` : '';
+    const sub = [lageKosten(r.cost), r.live ? 'laut Spiel' : '', r.plan ? 'Werft-/Def-Plan, frühestens' : ''].filter(Boolean).join(' · ');
+    const zeit = [r.run ? '<span class="tag aktiv">läuft</span>' : r.start != null ? `Start <b title="${esc(dt(r.start))}">${esc(clockT(r.start))}</b>` : '',
+      r.start != null && r.end != null ? `Dauer ${dauer}` : '', r.end != null ? `Ende <b title="${esc(dt(r.end))}">${esc(clockT(r.end))}</b>` : ''].filter(Boolean).join(' · ');
+    return `<div class="lgrow"><div>${r.n ? `<span class="muted">#${r.n}</span> ` : ''}${esc(r.name)}${tag}</div>`
+      + `${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}${zeit ? `<div class="small">${zeit}</div>` : ''}</div>`;
+  };
+  const leer = { b: 'Nichts geplant.', r: 'Keine Forschung auf diesem Planeten.', s: 'Kein Schiffbau.', d: 'Kein Def-Auftrag (Live-Liste folgt mit Paket F).' };
+  const kinds = [['b', 'Gebäude'], ['r', 'Forschung'], ['s', 'Schiffbau'], ['d', 'Def-Bau']].filter(([k]) => k !== 'r' || art.r.length);
+  const tabs = kinds.map(([k, t]) => `<div class="small lgart"><b>${t}</b></div>` + (art[k].length
+    ? art[k].map(row).join('')
+    : `<div class="small muted">${leer[k]}</div>`)).join('');
+  return `<details class="sub" data-lage="${esc(p.coords)}"${open[p.coords] ? ' open' : ''}><summary class="small muted">Ausbau und Flotten</summary>${tabs}${lageFlotten(p, d)}</details>`;
+}
+// Schiffe am Planeten (Schiffsstatistik, Aufteilung ab Collector 0.4.36) und Flotten, die der Autobuilder gesehen hat (im Orbit, unterwegs)
+function lageFlotten(p, d) {
+  const sh = d?.empire?.ships, k = Array.isArray(sh?.planets) ? sh.planets.findIndex(x => x.coords === p.coords) : -1;
+  const ORT = [['flotte', 'in Flotte'], ['hafen', 'im Hafen'], ['bunker', 'im Bunker'], ['flug', 'unterwegs'], ['bau', 'im Bau']];
+  const schiffe = k < 0 ? [] : (sh.items || []).map(i => {
+    const s = i.split?.[k];
+    const wo = s ? ORT.filter(([x]) => +s[x] > 0).map(([x, t]) => `${fmt(+s[x])} ${t}`) : [];
+    return (i.values?.[k] || 0) > 0 || wo.length ? `${esc(i.type)} ${wo.length ? esc(wo.join(', ')) : fmt(i.values[k])}` : '';
+  }).filter(Boolean);
+  const M = d?.flotten, list = (Array.isArray(M?.list) ? M.list : []).filter(f => f.at === p.coords);
+  const ops = (Array.isArray(M?.ops?.list) ? M.ops.list : []).filter(o => o.home === p.coords || o.target === p.coords);
+  const typen = t => Object.entries(t || {}).map(([x, n]) => `${n} ${x}`).join(', ');
+  const fl = [...list.map(f => `<div class="small"><b>${esc(f.name)}</b> <span class="tag ok">im Orbit</span> ${esc(typen(f.types)) || '–'}${f.cargo ? ` · Laderaum ${esc(fmt(f.cargo))} t` : ''} <span class="muted">· gesehen ${esc(when(new Date(f.seen).toISOString()))}</span></div>`),
+    ...ops.map(o => `<div class="small"><b>${esc(o.name)}</b> <span class="tag aktiv">unterwegs</span> ${esc(o.cmd || '')} ${esc(o.phase || '')} ${esc(trName(d, o.home))} → ${esc(trName(d, o.target))}, bis ${esc(clockT(o.end))}</div>`)];
+  return `<div class="small lgart"><b>Schiffe und Flotten</b></div>`
+    + (schiffe.length ? `<div class="small">${schiffe.join(' · ')}</div>` : '<div class="small muted">Keine Schiffe laut Schiffsstatistik.</div>')
+    + (fl.length ? fl.join('') : '<div class="small muted">Keine Flotte gesehen (der Autobuilder merkt sie sich beim Fliegen).</div>');
 }
 
 // getData-Zeile im Überblick entfällt seit den Nacharbeiten (25.10.2026, Nutzer); Stand, Weckzeit und Gastzugang im Atlas unter Imperium,
@@ -329,18 +443,22 @@ function ausbauTable(d, gd, liveAt, now = Date.now()) {
   const jobs = useGd ? gd.jobs.filter(j => j && Date.parse(j.end) > now) : [];
   const cnt = (k, c) => jobs.filter(j => j.k === k && (j.coords || gdHome) === c).length;
   const sy = d?.shipyard && !d.shipyard.error ? d.shipyard : null;
+  // Umbau 2 U2 (30.10.2026): Die Warteschlange (sy.queue, „Wartender Bauauftrag“) enthält den laufenden Auftrag schon (Collector
+  // parseShipyard: „nicht addieren“); vorher +1 für den laufenden → bei einem SCOL in Arbeit stand 2 statt 1.
   const werft = p => {
-    if (sy && p.coords === home) return isFinite(snapAt) && sy.total != null && snapAt + sy.total * 1000 <= now ? 0 : (sy.remaining > 0 ? 1 : 0) + (sy.queue || []).length;
+    if (sy && p.coords === home) return isFinite(snapAt) && sy.total != null && snapAt + sy.total * 1000 <= now ? 0 : Math.max((sy.queue || []).length, sy.remaining > 0 ? 1 : 0);
     return Array.isArray(p.Ausbau) ? p.Ausbau[2] ?? null : null;
   };
   const cell = v => v == null ? '<td class="num muted">–</td>' : `<td class="num${v ? '' : ' muted'}">${v ? `<b>${esc(v)}</b>` : '0'}</td>`;
   const src = useGd ? `Bau/Forschung aus getData ${ago(gdAt)}` : `Bau/Forschung aus Live-Stand ${ago(snapAt)}`;
+  const rows = pl.map(p => {
+    const a = Array.isArray(p.Ausbau) ? p.Ausbau : [];
+    return { p, v: [useGd ? cnt('b', p.coords) : a[0] ?? null, useGd ? cnt('r', p.coords) : a[1] ?? null, werft(p), null] };
+  });
+  const sum = [0, 1, 2, 3].map(k => rows.some(r => r.v[k] != null) ? rows.reduce((s, r) => s + (+r.v[k] || 0), 0) : null);
   return `<table class="small ausbau" title="${esc(`${src}; Werft aus Live-Stand; Def noch ohne Quelle`)}"><tr class="muted"><td>Planet</td><td class="num">Bau</td><td class="num">Forschung</td><td class="num">Werft</td><td class="num">Def</td></tr>
-    ${pl.map(p => {
-      const a = Array.isArray(p.Ausbau) ? p.Ausbau : [];
-      const b = useGd ? cnt('b', p.coords) : a[0] ?? null, r = useGd ? cnt('r', p.coords) : a[1] ?? null;
-      return `<tr><td>${esc(p.name || p.coords)}</td>${cell(b)}${cell(r)}${cell(werft(p))}${cell(null)}</tr>`;
-    }).join('')}</table>`;
+    ${rows.map(({ p, v }) => `<tr><td>${esc(p.name || p.coords)}</td>${v.map(cell).join('')}</tr>`).join('')}
+    ${pl.length > 1 ? `<tr class="sum"><td><b>Summe</b></td>${sum.map(cell).join('')}</tr>` : ''}</table>`;
 }
 function overviewCard(sess, d, live, abLive, nm, W, extra = '', gd = null) {
   const r = sess.run, h = r && sess.devs.find(x => x.holds), s = h?.ab?.state || {};
@@ -360,7 +478,7 @@ function overviewCard(sess, d, live, abLive, nm, W, extra = '', gd = null) {
       const net = (rate[x] || 0) - (use[x] || 0), now = Math.min((stock[x] || 0) + net * hrs, cap[x] || Infinity);
       return { x, now, net, full: net > 0 && cap[x] ? (cap[x] - now) / net * 3600 : null };
     });
-    html += `<table class="small"><tr class="muted"><td>${pl.length > 1 ? `Imperium (${pl.length} Planeten)` : 'Rohstoffe'}</td><td class="num">Bestand</td><td class="num">Förderung</td></tr>${rows.map(({ x, now, net, full }) =>
+    html += `<table class="small"><tr class="muted"><td>${pl.length > 1 ? `Summe aller ${pl.length} Planeten` : 'Rohstoffe'}</td><td class="num">Bestand</td><td class="num">Förderung</td></tr>${rows.map(({ x, now, net, full }) =>
       `<tr><td>${x}${full == null ? '' : `<div class="muted">voll in ${dur(full)}</div>`}</td><td class="num">${fmt(now)}</td><td class="num muted">${net >= 0 ? '+' : ''}${fmt(net)}/h</td></tr>`).join('')}</table>`;
     const col = d.empire?.colony;
     html += `<div class="row small" style="margin:4px 0">${col?.max != null

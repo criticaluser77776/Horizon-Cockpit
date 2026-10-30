@@ -613,6 +613,7 @@ function planetKarte(p, rows, opts = {}) {
   let body = line('Bau', find('b')) + (opts.research ? line('Forschung', find('r')) : '') + line('Werft', find('s'));
   if (!body) body = '<div class="small muted">Nichts in der Schlange.</div>';
   if (opts.plan?.plan) body += planKarteSchritte(p, opts.plan, !!opts.research);
+  if (opts.extra) body += opts.extra;   // Lage (Umbau 2 U2): aufklappbar Ausbau je Art und Flotten (lageAusbau in app.js)
   const ask = typeof window !== 'undefined' && window.HZ_ASK && (typeof isOwner !== 'function' || isOwner()) ?`<div class="plfoot"><button class="small askgo" data-ask="${esc(p.coords)}">Claude fragen</button></div>` : '';
   return `<div class="card plcard"><h2>${esc(p.name || p.coords)} <span class="muted small">${esc(p.coords)}</span>${opts.current ? ' <span title="im Spiel gewählt">◉</span>' : ''}</h2>${body}${ask}</div>`;
 }

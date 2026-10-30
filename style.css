@@ -236,6 +236,11 @@ details.sub summary { cursor: pointer; padding: 4px 0; }
 .plfoot { margin-top: 4px; text-align: right; }
 /* Belegung je Planet unter den Kolopunkten (Lage) */
 table.ausbau { margin: 2px 0 6px; }
+table.ausbau tr.sum td { border-top: 1px solid var(--line); }
+/* Ausbau je Art und Flotten je Planet (Umbau 2 U2): je Schritt Name, Kosten, darunter Start · Dauer · Ende */
+.lgart { margin: 8px 0 2px; }
+.lgrow { padding: 3px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.lgart + .lgrow { border-top: 0; }
 /* Reiter Claude: Aufträge nach rechts wegwischen */
 .list-item.swipe { touch-action: pan-y; will-change: transform; }
 
