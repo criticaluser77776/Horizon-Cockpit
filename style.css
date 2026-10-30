@@ -55,13 +55,17 @@ nav.tabs a {
   flex: 1 1 0; min-width: 0; padding: 0 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; position: relative;
   color: var(--muted); text-decoration: none; font-size: .72rem; white-space: nowrap;
 }
+/* Umbau 2 U1 (30.10.2026): sieben Reiter → Leiste waagerecht scrollbar, jeder Reiter mindestens 64 px breit */
+nav.tabs { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+nav.tabs::-webkit-scrollbar { display: none; }
+nav.tabs a { flex: 1 0 64px; }
 nav.tabs a .ic { font-size: 1.15rem; line-height: 1; }
 nav.tabs a.on { color: var(--accent); font-weight: 600; }
 .badge { position: absolute; top: 6px; left: calc(50% + 8px); background: var(--hoch); color: #fff; border-radius: 9px;
   font-size: .65rem; padding: 0 5px; min-width: 16px; text-align: center; }
 @media (min-width: 900px) {
   body { padding-bottom: 16px; }
-  nav.tabs { position: sticky; top: 51px; bottom: auto; height: 44px; justify-content: center; border-top: 0; border-bottom: 1px solid var(--line); }
+  nav.tabs { position: sticky; top: 51px; bottom: auto; height: 44px; justify-content: safe center; border-top: 0; border-bottom: 1px solid var(--line); }
   nav.tabs a { flex: 0 0 auto; min-width: 0; flex-direction: row; padding: 0 18px; font-size: .9rem; gap: 6px; }
   .badge { position: static; }
 }

@@ -141,7 +141,7 @@ function renderNoAccount() {
 /* ---------- Navigation ---------- */
 
 // ereignisse = alter Name von Meldungen (ältere Push-Nachrichten mit „#/ereignisse“, Links in common.js)
-const VIEWS = { lage: viewLage, meldungen: viewMeldungen, ereignisse: viewMeldungen, plaene: viewPlans, transporte: viewTransporte, claude: viewClaude, mehr: viewMore };
+const VIEWS = { steuerung: viewSteuerung, lage: viewLage, meldungen: viewMeldungen, ereignisse: viewMeldungen, plaene: viewPlans, transporte: viewTransporte, claude: viewClaude, mehr: viewMore };
 const TAB_OF = { ereignisse: 'meldungen' };
 
 // soft = automatische Aktualisierung: ohne „Lädt …“, die Ansicht bleibt bis zum Neuaufbau stehen
@@ -151,6 +151,7 @@ async function route(soft) {
   const fn = VIEWS[tab] || viewLage;
   const on = VIEWS[tab] ? TAB_OF[tab] || tab : 'lage';
   document.querySelectorAll('nav.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === on));
+  document.querySelector('nav.tabs a.on')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   if (soft !== true) $('#view').innerHTML = '<p class="muted pad">Lädt …</p>';
   try { await loadNums(); await fn(rest); } catch (e) {
     if (e instanceof LoginNeeded) return renderLogin(e.message);
@@ -163,20 +164,21 @@ async function route(soft) {
 // Der große Live-Stand kommt dabei nur bei neuem Zeitstempel (S.snap), sonst nur Lauf, Lebenszeichen, Ereignisse.
 setInterval(() => {
   const tab = location.hash.replace(/^#\/?/, '').split('/')[0] || 'lage';
-  if (document.visibilityState !== 'visible' || !['lage', 'plaene', 'transporte', 'meldungen', 'ereignisse'].includes(tab)) return;
+  if (document.visibilityState !== 'visible' || !['steuerung', 'lage', 'plaene', 'transporte', 'meldungen', 'ereignisse'].includes(tab)) return;
   if (document.activeElement?.matches?.('input,select,textarea')) return;
   route(true);
 }, 30000);
 
-// Badge „Meldungen“ (C1): ungesehene Ereignisse „hoch“ + offene Entscheidungen
+// Badges (C1, Umbau 2 U1): Nachrichten = ungesehene Ereignisse „hoch“, Steuerung = offene Entscheidungen
 async function updateBadge() {
   try {
     const [r, dec] = await Promise.all([
       Cloud.q('events', { select: 'id', account_id: `eq.${S.acc}`, level: 'eq.hoch', seen_at: 'is.null', dismissed_at: 'is.null', limit: 99 }),
       loadDecisions('id,data:data->decision,answer:data->answer').then(l => l.map(e => ({ id: e.id, data: { decision: e.data, answer: e.answer } }))).catch(() => []),
     ]);
-    const ids = new Set([...r.map(e => e.id), ...dec.filter(openDecision).map(e => e.id)]);
-    $('#evBadge').hidden = !ids.size; $('#evBadge').textContent = ids.size;
+    const nd = dec.filter(openDecision).length;
+    $('#evBadge').hidden = !r.length; $('#evBadge').textContent = r.length;
+    $('#stBadge').hidden = !nd; $('#stBadge').textContent = nd;
   } catch { /* egal */ }
 }
 
@@ -220,10 +222,46 @@ async function viewLage() {
   const active = ap ? { ...ap.row, payload: ap.payload } : null, nf = { active: ap?.row || null, known: {} };
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
   const karten = await planetenKarten(d, ap, gds[0], sess, W).catch(() => '');   // Fehler hier dürfen die Lage nie blockieren
-  $('#view').innerHTML = bannerCard(sess) + overviewCard(sess, d, live, abLive, nm, W, effectsLine(effs, effEnds), gds[0]) + karten + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
+  // Umbau 2 U1 (30.10.2026): Werbebanner, Steuerung und Motivationsvideo stehen im Reiter Steuerung; hier nur ein Hinweis
+  const todo = [bannerCard(sess) ? 'Werbebanner' : '', movis.length ? 'Motivationsvideo' : ''].filter(Boolean);
+  $('#view').innerHTML = (todo.length ? `<div class="card warn small"><a href="#/steuerung">${esc(todo.join(' · '))} wartet – zur Steuerung →</a></div>` : '')
+    + overviewCard(sess, d, live, abLive, nm, W, effectsLine(effs, effEnds), gds[0]) + karten
     + '<p class="small muted pad">Planeten, Gebäude, Forschung: <a href="details/#/imperium" target="_blank" rel="noopener">Imperium im Atlas →</a></p>';
-  $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
   bindAsk($('#view'), c => S.askLage?.[c]);
+}
+
+/* ---------- Steuerung (Umbau 2 U1, Nutzer 30.10.2026) ----------
+   Alles, was etwas auslöst, an einem Ort: Werbebanner, neuer Plan (Freigabe), Steuerung/Notfall (Geräte, Lauf, „bis #“),
+   Motivationsvideo, offene Entscheidungen aus Nachrichten. Die Karten und ihre Knöpfe sind dieselben wie vorher in Lage,
+   Pläne und Meldungen. */
+async function viewSteuerung() {
+  const acc = `eq.${S.acc}`;
+  const [sess, ap, dec, plans] = await Promise.all([
+    loadSessions(),
+    loadActivePlan(),
+    loadDecisions().catch(() => []),
+    Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 30,
+      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }).catch(() => []),
+  ]);
+  if (plans.some(p => !planNo(p.id))) await loadNums(true);
+  const active = ap ? { ...ap.row, payload: ap.payload } : null, nf = { active: ap?.row || null, known: {} };
+  const drift0 = await loadDrift(true).catch(() => null);
+  const drift = drift0?.plan === active?.id ? drift0 : null;
+  const offer = newPlanOffer(plans, active, await draftGains(plans, active, drift).catch(() => ({})));
+  const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
+  const open = dec.filter(openDecision);
+  const movis = open.filter(e => /Motivationsvideo/i.test(e.text || ''));
+  const others = open.filter(e => !movis.includes(e));
+  $('#view').innerHTML = bannerCard(sess) + newPlanCard(offer, isOwner()) + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
+    + `<div class="card"><h2>Entscheidungen aus Nachrichten${others.length ? ` <span class="muted small">${others.length}</span>` : ''}</h2>${others.length
+      ? others.map(evRow).join('') : '<p class="muted small">Keine offene Entscheidung.</p>'}</div>`;
+  $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
+  $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
+  $('#npNo')?.addEventListener('click', async () => {
+    if (!confirm('Entwurf verwerfen?')) return;
+    try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
+  });
+  swipeEvents($('#view'));
   bindSteuerung(sess, nf, active);
 }
 
@@ -586,7 +624,7 @@ async function viewMeldungen() {
   const sec = (title, list, empty) => `<div class="card"><h2>${title}${list.length ? ` <span class="muted small">${list.length}</span>` : ''}</h2>${list.length ? list.map(evRow).join('') : `<p class="muted small">${empty}</p>`}</div>`;
   $('#view').innerHTML = `<div class="card"><div class="row between"><a href="details/#/ereignisse" target="_blank" rel="noopener">Alle Ereignisse mit Filter im Atlas →</a>
       ${canSee ? '<button id="seenAll">alle gesehen</button>' : ''}</div>${canSee ? '<p class="muted small">Nach rechts wischen oder ✕ = ausblenden.</p>' : ''}</div>`
-    + (open.length ? sec('Entscheidungen offen', open, '') : '')
+    + (open.length ? `<div class="card warn small"><a href="#/steuerung">${open.length} offene Entscheidung${open.length > 1 ? 'en' : ''} – zur Steuerung →</a></div>` : '')
     + sec('Stufe „hoch“', high.filter(e => !open.includes(e)), 'Keine.')
     + sec('Plan und Lauf <span class="muted small">ungesehen</span>', plan.filter(e => !open.includes(e)), 'Nichts Neues.');
   swipeEvents($('#view'));
@@ -631,12 +669,12 @@ function setBis(active, sess, n, dev) {
 // Plan-Kopf (PR 6, 25.10.2026): ein Plan, Status, „bis #“, Lauf, eine Abweichungszeile. Die Schrittlisten stehen in den Planeten-Karten (planetKarte, common.js).
 function planKopfCard(active, sess, own, drift, hst) {
   if (!active) return `<div class="card"><h2>Plan</h2>${runBody(sess, { drift: false })}
-    <p class="muted small">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Start gehen unter <a href="#/lage">Lage → Steuerung</a>.</p></div>`;
+    <p class="muted small">Kein freigegebener Bauplan. Erst einen Entwurf freigeben. Anhalten, Neu laden und Start gehen unter <a href="#/steuerung">Steuerung</a>.</p></div>`;
   const plan = active.payload;
   return `<div class="card"><div class="row between"><h2>${esc(planLabel(active.id))}</h2><span class="tag ${esc(active.status)}">${esc(active.status)}</span></div>
     <p class="small">${esc(tidy(active.title))}${plan ? ` · bis <b>${esc(hst.until ? untilTxt(hst.until, hst.untilBy, plan) : '#–')}</b>` : ''}</p>
     ${runBody(sess, { drift: false })}${driftLine(drift)}
-    <div class="row between small"><a href="#/lage">Start/Stopp unter Lage</a>${own && active.plan_hash ? `<a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a>` : ''}</div>
+    <div class="row between small"><a href="#/steuerung">Start/Stopp unter Steuerung</a>${own && active.plan_hash ? `<a href="details/#/plaene/edit/${esc(active.id)}" target="_blank" rel="noopener">Plan ändern (Atlas) →</a>` : ''}</div>
     ${own ? `<div class="row" style="margin-top:6px"><button class="danger" data-act="abgebrochen" data-id="${esc(active.id)}">Plan abbrechen</button></div>` : ''}</div>`;
 }
 
@@ -705,7 +743,7 @@ function newPlanCard(o, own) {
     <p><b>${esc(planLabel(o.draft.id))}</b> · ${esc(tidy(o.draft.title || ''))}${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
     ${planTeilHtml(o.teil)}${planDetails(o.draft)}
     ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npNo">Verwerfen</button></div>
-      <p class="muted small">Gestartet wird danach wie gewohnt unter Lage („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
+      <p class="muted small">Gestartet wird danach wie gewohnt in der Steuerung („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
 }
 // takeNewPlan (Freigeben + Übernehmen anbieten) steht seit 27.10.2026 in common.js, der Atlas nutzt es auch
 
@@ -725,7 +763,7 @@ function driftLine(d) {
 /* ---------- Pläne (PR 6, 25.10.2026) ----------
    Aufbau: Angebot „Neuer Plan“ (nur wenn besser) · Plan-Kopf (Status, „bis #“, Lauf, Abweichung) · je Planet eine Karte
    (Bau/Forschung/Werft in Realzeit, nächste Planschritte, letzte Schritte; planetKarte mit opts.plan) · Entwürfe (der neueste je Art).
-   „bis #“ ist hier global (Tipp auf einen Schritt, Start unter Lage); Reiter je Planet gibt es im Cockpit nicht mehr. */
+   „bis #“ ist hier global (Tipp auf einen Schritt, Start unter Steuerung); Reiter je Planet gibt es im Cockpit nicht mehr. */
 async function viewPlans(rest = []) {
   // Plan-Editor seit C1 nur im Atlas; alte Links (#/plaene/edit/<id>) dorthin umleiten
   if (rest[0] === 'edit' && rest[1]) { location.replace(`details/#/plaene/edit/${encodeURIComponent(rest[1])}`); return; }
@@ -788,7 +826,7 @@ async function viewPlans(rest = []) {
       ${own ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
     </div>`;
-  $('#view').innerHTML = newPlanCard(offer, own) + planKopfCard(active, sess, own, drift, hst) + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
+  $('#view').innerHTML = (offer ? `<div class="card warn small"><a href="#/steuerung">Neuer Plan verfügbar: ${esc(planLabel(offer.draft.id))} – Freigabe in der Steuerung →</a></div>` : '') + planKopfCard(active, sess, own, drift, hst) + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
     + `<div class="card"><h2>Entwürfe</h2>${list.length ? list.map(item).join('') : `<p class="muted small">Kein offener Entwurf.${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
   bindAsk($('#view'), c => askCtx[c]);
@@ -801,16 +839,11 @@ async function viewPlans(rest = []) {
     try { await Cloud.rpc('plan_status', { p_id: b.dataset.id, p_status: act }); toast('Gespeichert'); route(); }
     catch (e) { toast(e.message); }
   }));
-  $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
-  $('#npNo')?.addEventListener('click', async () => {
-    if (!confirm('Entwurf verwerfen?')) return;
-    try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
-  });
-  // Tipp auf einen Planschritt = „bis #“ (gemeinsamer Zustand S.abSel); gestartet wird unter Lage (Steuerung)
+  // Tipp auf einen Planschritt = „bis #“ (gemeinsamer Zustand S.abSel); gestartet wird im Reiter Steuerung
   if (own && plan) {
     $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => {
       const n = +r.dataset.i, st = setBis(active, sess, n);
-      if (st) toast(`bis #${n} gewählt (${st[5]}) – Start unter Lage`);
+      if (st) toast(`bis #${n} gewählt (${st[5]}) – Start unter Steuerung`);
     }));
   }
 }

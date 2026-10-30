@@ -300,10 +300,10 @@ Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein 
     if (tgt && o.draft.plan_hash && !tgt.ab.state?.running) {
       if (confirm(`Freigegeben. Plan jetzt auf ${tgt.name} übernehmen? Danach „bis #“ neu wählen (neue Schrittnummern).`)) {
         await postCmd(tgt, 'adopt', { plan: o.draft.plan_hash }, o.draft.id);
-        toast(`Übernehmen an ${tgt.name} gesendet – Ergebnis im Cockpit unter Lage`);
-      } else toast('Freigegeben – übernehmen im Cockpit unter Lage');
-    } else toast(tgt ? `Freigegeben – ${tgt.name} läuft noch: erst stoppen, dann im Cockpit unter Lage übernehmen`
-      : 'Freigegeben – kein Autobuilder erreichbar; übernehmen im Cockpit unter Lage, sobald ein Gerät da ist');
+        toast(`Übernehmen an ${tgt.name} gesendet – Ergebnis im Cockpit unter Steuerung`);
+      } else toast('Freigegeben – übernehmen im Cockpit unter Steuerung');
+    } else toast(tgt ? `Freigegeben – ${tgt.name} läuft noch: erst stoppen, dann im Cockpit unter Steuerung übernehmen`
+      : 'Freigegeben – kein Autobuilder erreichbar; übernehmen im Cockpit unter Steuerung, sobald ein Gerät da ist');
     setTimeout(() => route(true), 1500);
   } catch (e) { toast(e.message); }
 }
