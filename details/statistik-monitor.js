@@ -61,7 +61,7 @@ let smCache = null;
 async function smLoad() {
   if (smCache && smCache.acc === S.acc && Date.now() - smCache.t < 60e3) return smCache;
   const [st, hl] = await Promise.all([
-    Cloud.q('state_latest', { select: 'collected_at,version,prod:data->prod,status:data->status,req:data->requirements,emp:data->empire,mon:data->monitor,bld:data->buildings->items,res:data->research->items',
+    Cloud.q('state_latest', { select: 'collected_at,version,start:data->start,prod:data->prod,status:data->status,req:data->requirements,emp:data->empire,mon:data->monitor,bld:data->buildings->items,res:data->research->items',
       account_id: `eq.${S.acc}`, kind: 'eq.live' }).catch(() => []),
     Cloud.q('hitlist', { select: 'collected_at,mode,side,cat,head,own,list', account_id: `eq.${S.acc}`, order: 'collected_at.desc', limit: 40 }).catch(() => []),
   ]);
@@ -76,6 +76,7 @@ async function viewStatMonitor(head) {
   if (tab === 'stan') body = await smStan(s);
   else if (tab === 'foerder') body = await smFoerder(s);
   else if (!s) body = '<p class="small muted">Kein Live-Stand vorhanden.</p>';
+  else if (tab === 'hitlist') body = smHitlist(s, d) + smTrend(await smHist(smHlSel()));
   else body = ({ prod: smProd, check: smCheck, wanted: smWanted, overview: smOverview, aggregate: smAggregate, status: smStatus,
     emp_prod: smEmp, hitlist: smHitlist, orden: smOrden }[tab] || (() => ''))(s, d);
   $('#view').innerHTML = head + `<div class="card">${stand}${body}</div>`;
@@ -192,8 +193,9 @@ function smStatus(s) {
     const rk = smOrder([...SM_BUILD, 'Summe'], Object.keys(t)), cols = smOrder(SM_COLS, [...new Set(rk.flatMap(k => Object.keys(t[k]).filter(c => c !== 'level')))]);
     return smTable(['Gebäudeklasse / Stufe', ...cols], rk.map(k => `<tr${k === 'Summe' ? ' style="font-weight:600"' : ''}><td>${esc(k === 'Summe' ? k : `${k.toUpperCase()} ${t[k].level ?? ''}`)}</td>${cols.map(c => smCell(t[k][c])).join('')}</tr>`));
   }).join('');
+  const pl = s.start?.coords ? `${s.start.planet ? s.start.planet + ' ' : ''}(${s.start.coords})` : 'den beim Erfassen im Spiel gewählten Planeten';
   return `<div class="row">${smSel('scls', keys, cls, 'Produktionsklasse:')}</div>${tabs}
-    <p class="small muted">Gilt für den Planeten, der beim Erfassen im Spiel gewählt war.</p>`;
+    <p class="small muted">Gilt für <b>${esc(pl)}</b>: Das Spiel liefert den Gebäudestatus nur für den gewählten Planeten, und der Collector liest bisher nur diesen (alle Live-Stände stammen vom Heimatplaneten). Andere Planeten brauchen einen Collector-Umbau (Planet wechseln oder cmd=status je Planet).</p>`;
 }
 
 function smEmp(s) {
@@ -209,9 +211,72 @@ function smEmp(s) {
   return sel + smTable(['Kolonie', 'Eisenerz', 'Minerale', 'Treibstoff'], rows);
 }
 
-function smHitlist(s, d) {
+function smHlSel() {
   const st = smState(), mode = st.hmode === 'hardcore' ? 'hardcore' : 'normal', side = st.hside === 'alliance' ? 'alliance' : 'player';
-  const cat = side === 'alliance' ? 'total' : SM_HLCAT.some(c => c[0] === st.hcat) ? st.hcat : 'total';
+  return { mode, side, cat: side === 'alliance' ? 'total' : SM_HLCAT.some(c => c[0] === st.hcat) ? st.hcat : 'total' };
+}
+// Alle Erfassungen einer Liste (Verlauf fremder Spieler, 30.10.2026); 60 s im Speicher je Auswahl
+let smHistCache = null;
+async function smHist({ mode, side, cat }) {
+  const key = `${S.acc}|${mode}|${side}|${cat}`;
+  if (smHistCache?.key === key && Date.now() - smHistCache.t < 60e3) return smHistCache.rows;
+  const rows = await Cloud.q('hitlist', { select: 'collected_at,head,own,list', account_id: `eq.${S.acc}`, mode: `eq.${mode}`, side: `eq.${side}`,
+    cat: `eq.${cat}`, order: 'collected_at.asc', limit: 400 }).catch(() => []);
+  smHistCache = { key, t: Date.now(), rows: rows || [] };
+  return smHistCache.rows;
+}
+/* Reihen je Name aus den Erfassungen: [{name, pts: [[t, Punkte, Platz]]}]. Auswahl: „top5“ = Top 5 der neuesten Liste + ich,
+   „nah“ = je zwei über und unter mir, sonst ein Name (+ ich). Eigene Zeile kommt aus own, wenn ich nicht in der Liste stehe. */
+function smTrendSeries(rows, me, pick) {
+  if (!rows.length) return [];
+  const H = rows[rows.length - 1].head || [], iN = H.indexOf('Nickname') >= 0 ? H.indexOf('Nickname') : H.indexOf('Name');
+  const iP = H.indexOf('Punkte'), iR = H.indexOf('Platz');
+  if (iN < 0 || iP < 0) return [];
+  const last = rows[rows.length - 1], lst = [...(last.list || [])];
+  if (last.own && !lst.some(r => r[iN] === last.own[iN])) lst.push(last.own);
+  lst.sort((a, b) => (a[iR] ?? 1e9) - (b[iR] ?? 1e9));
+  const mi = lst.findIndex(r => r[iN] === me);
+  let names;
+  if (pick === 'nah') names = mi < 0 ? [] : lst.slice(Math.max(0, mi - 2), mi + 3).map(r => r[iN]);
+  else if (pick && pick !== 'top5') names = [pick];
+  else names = lst.slice(0, 5).map(r => r[iN]);
+  if (me && !names.includes(me) && mi >= 0) names.push(me);
+  return names.map(name => ({ name, pts: rows.map(r => {
+    const row = (r.list || []).find(x => x[iN] === name) || (r.own?.[iN] === name ? r.own : null);
+    return row && typeof row[iP] === 'number' ? [Date.parse(r.collected_at), row[iP], row[iR]] : null;
+  }).filter(Boolean) })).filter(x => x.pts.length);
+}
+const SM_LINE = ['#2563c9', '#c0392b', '#1f8a4c', '#b7791f', '#8e44ad', '#16a085', '#d35400'];
+function smTrend(rows) {
+  if (!rows.length) return '';
+  const st = smState(), me = account()?.player, H = rows[rows.length - 1].head || [];
+  const iN = H.indexOf('Nickname') >= 0 ? H.indexOf('Nickname') : H.indexOf('Name');
+  const names = iN < 0 ? [] : (rows[rows.length - 1].list || []).map(r => r[iN]).filter(Boolean);
+  const pick = st.hcmp === 'nah' || names.includes(st.hcmp) ? st.hcmp : 'top5';
+  const sel = smSel('hcmp', [['top5', 'Top 5 + ich'], ['nah', 'Je 2 über/unter mir'], ...names.map(n => [n, n])], pick, 'Vergleich:');
+  const ser = smTrendSeries(rows, me, pick);
+  if (!ser.length || rows.length < 2) return `<h3>Verlauf</h3><div class="row">${sel}</div><p class="small muted">Zu wenige Erfassungen für einen Verlauf.</p>`;
+  const all = ser.flatMap(x => x.pts), t0 = Math.min(...all.map(p => p[0])), t1 = Math.max(...all.map(p => p[0]));
+  const v1 = Math.max(1, ...all.map(p => p[1])), W = 600, Hh = 220, L = 50, B = 20;
+  const X = t => L + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (W - L - 6), Y = v => 6 + (1 - v / v1) * (Hh - B - 6);
+  const grid = [0, 0.5, 1].map(f => `<line x1="${L}" x2="${W - 6}" y1="${Y(v1 * f)}" y2="${Y(v1 * f)}" stroke="var(--line)"/><text x="${L - 4}" y="${Y(v1 * f) + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${esc(fmt(v1 * f))}</text>`).join('');
+  const days = `<text x="${L}" y="${Hh - 4}" font-size="10" fill="var(--muted)">${esc(dt(new Date(t0).toISOString()))}</text><text x="${W - 6}" y="${Hh - 4}" text-anchor="end" font-size="10" fill="var(--muted)">${esc(dt(new Date(t1).toISOString()))}</text>`;
+  const lines = ser.map((x, i) => {
+    const own = x.name === me, col = own ? 'var(--accent)' : SM_LINE[i % SM_LINE.length];
+    return `<polyline fill="none" stroke="${col}" stroke-width="${own ? 3 : 1.5}" points="${x.pts.map(p => `${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(' ')}"><title>${esc(x.name)}</title></polyline>`;
+  }).join('');
+  const legend = ser.map((x, i) => {
+    const a = x.pts[0], z = x.pts[x.pts.length - 1], d = z[1] - a[1], h = (z[0] - a[0]) / 864e5;
+    return `<tr><td><span style="display:inline-block;width:10px;height:10px;background:${x.name === me ? 'var(--accent)' : SM_LINE[i % SM_LINE.length]}"></span> ${x.name === me ? `<b>${esc(x.name)}</b>` : esc(x.name)}</td>${smCell(z[2])}${smCell(z[1])}${smCell(d)}${smCell(h > 0.5 ? d / h : null)}</tr>`;
+  });
+  return `<h3>Verlauf</h3><div class="row">${sel}</div>
+    <svg viewBox="0 0 ${W} ${Hh}" width="100%" role="img" aria-label="Punkte über die Zeit">${grid}${days}${lines}</svg>
+    ${smTable(['Spieler', 'Platz', 'Punkte', '± seit Beginn', '± je Tag'], legend)}
+    <p class="small muted">${rows.length} Erfassungen (alle 6 h). Lücken = Spieler stand bei der Erfassung nicht in der Liste.</p>`;
+}
+
+function smHitlist(s, d) {
+  const { mode, side, cat } = smHlSel();
   const sel = `<div class="row">${smSel('hmode', [['normal', 'Normal'], ['hardcore', 'Hardcore']], mode, 'Highscoreliste:')}
     ${smSel('hside', [['player', 'Spieler'], ['alliance', 'Allianz']], side, '')}${smSel('hcat', SM_HLCAT, cat, '')}</div>`;
   const runs = [...new Set(d.hl.map(r => r.collected_at))];
