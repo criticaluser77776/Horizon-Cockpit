@@ -215,7 +215,30 @@ function msgBody(e) {
     ? ` (noch ${esc(dur((Date.parse(x.effect.until) - Date.now()) / 1000))})` : ' (abgelaufen)'} <span class="muted">· ${esc(EFF_SRC[x.effect.src] || x.effect.src || '')}</span></div>` : '';
   const links = Array.isArray(x.links) && x.links.length ? `<div class="small muted">Links (nur Text, nicht aufrufen): ${x.links.map(l =>
     `${esc(l.text || 'ohne Text')} <code>${esc(l.href)}</code>`).join(' · ')}</div>` : '';
-  return msgDecision(e, x) + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(tidy(x.body))}</div>${links}</details>` : '');
+  return msgDecision(e, x) + traderRows(x.body) + eff + (x.body ? `<details class="msg"><summary class="small">Inhalt</summary><div class="msgbody small">${esc(tidy(x.body))}</div>${links}</details>` : '');
+}
+/* Fliegender Händler (D5, 30.10.2026, Altskript nachricht-fliegender-haendler): Angebote „Bis zu X Metall für nur Y Treibstoff.“
+   gegen den Standardkurs Metall : Minerale : Treibstoff = 4 : 2 : 1 (Mengen gleichen Werts → Wert je Einheit 1 : 2 : 4).
+   Preis = Wert der Gegenleistung ÷ Wert der Ware; über 105 % teuer, unter 95 % günstig (Toleranz 5 % wie im Altskript). */
+const TRADER_VAL = { metall: 1, erz: 1, mineral: 2, minerale: 2, treibstoff: 4 };
+function traderOffers(body) {
+  const out = [], re = /(?:bis zu\s+)?([\d.'’\s]+?)\s*(Metall|Erz|Minerale?|Treibstoff)\s+f(?:ü|ue)r\s+nur\s+([\d.'’\s]+?)\s*(Metall|Erz|Minerale?|Treibstoff)/gi;
+  const num = s => +String(s).replace(/\D/g, '');
+  let m;
+  while ((m = re.exec(String(body || '')))) {
+    const x = num(m[1]), y = num(m[3]), vx = TRADER_VAL[m[2].toLowerCase()], vy = TRADER_VAL[m[4].toLowerCase()];
+    if (!x || !y || vx === vy) continue;
+    const pct = y * vy / (x * vx) * 100;
+    out.push({ menge: x, ware: m[2], preis: y, gegen: m[4], pct, urteil: pct > 105 ? 'teuer' : pct < 95 ? 'günstig' : 'fair' });
+  }
+  return out;
+}
+function traderRows(body) {
+  const o = traderOffers(body);
+  if (!o.length) return '';
+  const col = { teuer: 'var(--bad)', fair: 'var(--muted)', 'günstig': 'var(--ok)' };
+  return `<div class="small" style="margin:4px 0"><b>Händler-Kurse</b> <span class="muted">(gegen 4 : 2 : 1, ±5 %)</span>${o.map(a =>
+    `<div>${fmt(a.menge)} ${esc(a.ware)} für ${fmt(a.preis)} ${esc(a.gegen)}: <b style="color:${col[a.urteil]}">${fmt(a.pct, 0)} % – ${a.urteil}</b></div>`).join('')}</div>`;
 }
 /* Entscheidungen beantworten (Paket B, Autobuilder ab 0.5.29, Nutzer 17.10.2026: per Tipp wie beim Werbebanner).
    decision = [{i, text, href, cost?}] (bis 0.5.28 nur Texte → nur Anzeige). Knopf je Option (nur Owner) → confirm() mit Text,

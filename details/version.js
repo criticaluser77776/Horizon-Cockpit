@@ -1,3 +1,3 @@
 // Versionsnummer des Horizon Atlas; tools/deploy_cockpit.py ersetzt die Zeile beim Veröffentlichen (nur wenn sich details/ ändert).
 window.DETAILS_VERSION = window.DETAILS_VERSION || { number: 0, built: 'lokal' };
-window.DETAILS_VERSION = {"number": 135, "built": "2026-10-30T06:31:43+01:00"};
+window.DETAILS_VERSION = {"number": 137, "built": "2026-10-30T14:24:43+01:00"};

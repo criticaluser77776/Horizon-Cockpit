@@ -119,7 +119,7 @@ function planetsCard(d, nm, W) {
       const items = e[t]?.items?.filter(i => i.sum || i.values.some(Boolean)) || [];
       if (items.length) html += `<h3>${lbl}</h3><table class="small">${items.map(i => `<tr><td>${esc(i.type)}</td><td class="num">${fmt(i.sum ?? i.values.reduce((a, b) => a + b, 0))}</td></tr>`).join('')}</table>`;
     }
-    return html + '</div>';
+    return html + shrineWeakening(pl.length) + '</div>';
   }
   const a = ausbau(d, p, W);
   html += `<p class="small">Ausbau <b>${ausbauText(a)}</b>${a.slots && !a.slots.exact ? ' <span class="muted">(Baustellen aus den Stufen berechnet)</span>' : ''}</p>
@@ -136,6 +136,17 @@ function planetsCard(d, nm, W) {
     if (p[t]?.length) html += `<details class="sub" data-open="pl${t}"${S.plOpen?.['pl' + t] ? ' open' : ''}><summary class="small"><b>${lbl}</b> <span class="muted">${fmt(p[t].reduce((a, i) => a + i.n, 0))}</span></summary><table class="small">${lst(p[t])}</table></details>`;
   }
   return html + '</div>';
+}
+/* Schrein-Abschwächung (D5, 30.10.2026, Altskript enhanced EmpireBonusChecker): Ein Schrein mit fünf Aggregaten derselben Rasse
+   überträgt seine Wirkung aufs ganze Imperium, abgeschwächt mit dem Exponenten 1 / (0,25 × Planeten + 1) auf den Wirkfaktor
+   (1 + p/100). Planeten = alle Planeten des Imperiums, wie im Altskript. */
+function shrineWeakening(n) {
+  if (!n) return '';
+  const ex = 1 / (0.25 * n + 1), tr = p => (Math.pow(1 + p / 100, ex) - 1) * 100;
+  return `<details class="sub" data-open="plsh"${S.plOpen?.plsh ? ' open' : ''}><summary class="small"><b>Schrein-Abschwächung</b> <span class="muted">${n} Planeten · Exponent ${fmt(ex, 3)}</span></summary>
+    <p class="small muted">Ein Schrein mit fünf Aggregaten derselben Rasse wirkt im ganzen Imperium, abgeschwächt: Faktor<sup>1 / (0,25 × ${n} + 1)</sup>. Jeder weitere Planet schwächt die Übertragung.</p>
+    <table class="small"><tr><th class="num">im Schrein</th><th class="num">im Imperium</th><th class="num">mit 1 Planet mehr</th></tr>${[10, 25, 50, 100, 200].map(p =>
+      `<tr><td class="num">+${p} %</td><td class="num">+${fmt(tr(p), 1)} %</td><td class="num muted">+${fmt((Math.pow(1 + p / 100, 1 / (0.25 * (n + 1) + 1)) - 1) * 100, 1)} %</td></tr>`).join('')}</table></details>`;
 }
 // Versorgung des gewählten Planeten (cmd=prod): Anteil der benötigten Arbeiter/Energie, der verfügbar ist
 function supplyText(d) {
