@@ -22,16 +22,21 @@ const Zeitfeed = (() => {
      *   reichen nie          → at null, never true, which = erster Rohstoff, der nie reicht, reason 'foerderung' (net <= 0) | 'lager' (Bedarf > max)
      * Ungültiges Lager → null.
      */
+    // Bestand, Förderung und Lagergrenze eines Rohstoffs x zum Zeitpunkt now (ab Messzeitpunkt lager.at hochgerechnet)
+    function stockAt(x, lager, now) {
+        const t0 = ms(lager.at), dt = t0 != null ? Math.max(0, (now - t0) / 1000) : 0;
+        const r0 = num(lager.res[x]) ?? 0, net = num(lager.net?.[x]) ?? 0, mx = num(lager.max?.[x]);
+        const max = mx != null && mx > 0 ? mx : Infinity;
+        let have = r0 + net * dt;
+        if (net > 0 && isFinite(max)) have = Math.min(have, Math.max(r0, max));   // Lager voll: Förderung stoppt
+        if (net < 0) have = Math.max(0, have);
+        return { have, net, max };
+    }
     function resAt(cost, lager, now = Date.now()) {
         if (!Array.isArray(cost) || !lager || !Array.isArray(lager.res)) return null;
-        const t0 = ms(lager.at), dt = t0 != null ? Math.max(0, (now - t0) / 1000) : 0;
         let at = null, which = null;
         for (let x = 0; x < 3; x++) {
-            const c = num(cost[x]) ?? 0, r0 = num(lager.res[x]) ?? 0, net = num(lager.net?.[x]) ?? 0, mx = num(lager.max?.[x]);
-            const max = mx != null && mx > 0 ? mx : Infinity;
-            let have = r0 + net * dt;
-            if (net > 0 && isFinite(max)) have = Math.min(have, Math.max(r0, max));   // Lager voll: Förderung stoppt
-            if (net < 0) have = Math.max(0, have);
+            const c = num(cost[x]) ?? 0, { have, net, max } = stockAt(x, lager, now);
             if (c <= have) continue;
             if (net <= 0) return { at: null, which: RN[x], never: true, reason: 'foerderung' };
             if (c > max) return { at: null, which: RN[x], never: true, reason: 'lager' };
@@ -40,25 +45,43 @@ const Zeitfeed = (() => {
         }
         return { at, which, never: false };
     }
+    // Fehlmenge je Rohstoff jetzt (Kosten minus Bestand, nur was fehlt): { Eisenerz: n, … } oder null (nichts fehlt / ungültig)
+    function fehlt(cost, lager, now = Date.now()) {
+        if (!Array.isArray(cost) || !lager || !Array.isArray(lager.res)) return null;
+        const out = {};
+        for (let x = 0; x < 3; x++) { const d = (num(cost[x]) ?? 0) - stockAt(x, lager, now).have; if (d >= 1) out[RN[x]] = Math.ceil(d); }
+        return Object.keys(out).length ? out : null;
+    }
+    // Dauer kurz: „45 min“, „2 h 05 min“, „3 T 4 h“
+    const dauer = sec => {
+        const s = Math.max(0, Math.round(sec / 60) * 60), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+        return d ? `${d} T ${h} h` : h ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min`;
+    };
+    const menge = n => Math.round(n).toLocaleString('de-DE');
 
-    // Kurztext des Wartegrunds, eine Stelle für alle Ansichten
-    function whyText(why) {
+    /* Kurztext des Wartegrunds, eine Stelle für alle Ansichten. wait (next.wait aus feed, Nutzer 30.10.2026): worauf genau gewartet wird –
+       fehl = fehlende Rohstoffmengen jetzt, frei = Zeitpunkt (ms), zu dem Baustelle/Labor/Werft frei bzw. die Voraussetzung oder der
+       Vorgängerschritt fertig ist. */
+    function whyText(why, wait = null, now = Date.now()) {
         if (!why || !why.art) return '';
+        const fehl = wait?.fehl && typeof wait.fehl === 'object' ? RN.filter(r => wait.fehl[r] > 0).map(r => `${menge(wait.fehl[r])} ${r}`) : [];
+        const frei = num(wait?.frei) != null && wait.frei > now ? dauer((wait.frei - now) / 1000) : null;
+        const fz = fehl.length ? ` (fehlen ${fehl.join(', ')})` : '';
         switch (why.art) {
-            case 'res': return why.res ? `wartet auf ${why.res}` : 'wartet auf Rohstoffe';
-            case 'baustelle': return why.detail === 'werft' ? 'Werft belegt' : 'Baustelle belegt';
-            case 'labor': return 'Labor belegt';
+            case 'res': return (why.res ? `wartet auf ${why.res}` : 'wartet auf Rohstoffe') + fz;
+            case 'baustelle': return (why.detail === 'werft' ? 'Werft belegt' : 'Baustelle belegt') + (frei ? ` (frei in ${frei})` : '');
+            case 'labor': return 'Labor belegt' + (frei ? ` (frei in ${frei})` : '');
             case 'voraussetzung': {
                 const d = String(why.detail || '').replace(/^Voraussetzung\s*/i, '').trim();
-                return d ? `Voraussetzung fehlt (${d})` : 'Voraussetzung fehlt';
+                return (d ? `Voraussetzung fehlt (${d})` : 'Voraussetzung fehlt') + (frei ? `, fertig in ${frei}` : '');
             }
-            case 'nach': return `nach #${String(why.detail ?? '').replace(/^#/, '')}`;
+            case 'nach': return `nach #${String(why.detail ?? '').replace(/^#/, '')}` + (frei ? ` (fertig in ${frei})` : '');
             case 'jetzt': return 'startbar';
             case 'plan': return 'laut Plan';
             case 'nie':
-                if (why.detail === 'lager') return 'nie (Lager zu klein)';
-                if (why.detail === 'foerderung') return 'nie (keine Förderung)';
-                return why.detail ? `nie (${why.detail})` : 'nie';
+                if (why.detail === 'lager') return 'nie (Lager zu klein)' + fz;
+                if (why.detail === 'foerderung') return 'nie (keine Förderung)' + fz;
+                return (why.detail ? `nie (${why.detail})` : 'nie') + fz;
             default: return '';
         }
     }
@@ -88,7 +111,7 @@ const Zeitfeed = (() => {
      * F     Ergebnis von Zeitplan.forecast / planLive ({t, first})
      * src   {gd, hb, execs} – alle optional; gd = Zeile getdata_state, hb = Lebenszeichen {at, plan, fc, stock, rate, jobs, liveAt}
      * Ergebnis [{ q, planet: 'heim' | Koordinaten | null (Forschung), run: {i, end} | null,
-     *            next: {i, at, due, why: {art, res?, detail?}, src: 'getData'|'Autobuilder'|'Plan', srcAt} | null }]
+     *            next: {i, at, due, why: {art, res?, detail?}, wait?: {fehl?, frei?}, src: 'getData'|'Autobuilder'|'Plan', srcAt} | null }]
      *   i ab 0; at/due/end/srcAt in ms; next.at ist nie vor jetzt (due = ursprünglich erwarteter Start, wenn schon überfällig);
      *   next.at null bei „nie“ (why.art 'nie', oder 'voraussetzung' ohne Zeit).
      */
@@ -153,18 +176,42 @@ const Zeitfeed = (() => {
             return mkLager(arr(gd?.colonies).find(x => x && x.coords === c), gdAt);
         };
 
+        // Kosten eines Schritts; Werft: Plankosten gelten je Einheit, der Autobuilder bestellt die ganze Menge (steps[i][7]) auf einmal
+        const costOf = i => {
+            const n = steps[i]?.[0] === 's' ? Math.max(1, num(steps[i][7]) || 1) : 1;
+            return Array.isArray(steps[i]?.[6]) ? steps[i][6].map(c => (num(c) ?? 0) * n) : null;
+        };
+        // Worauf genau gewartet wird (whyText wait): Fehlmengen bei Rohstoffen, sonst Ende des blockierenden Auftrags
+        const waitOf = (q, i, why, run) => {
+            if (why.art === 'res' || (why.art === 'nie' && why.res)) {
+                const c = costOf(i), L = c ? lagerOf(q) : null, f = L ? fehlt(c, L, now) : null;
+                return f ? { fehl: f } : null;
+            }
+            if (why.art === 'baustelle' || why.art === 'labor') return run && run.end > now ? { frei: run.end } : null;
+            if (why.art === 'voraussetzung') {   // „Voraussetzung energy 5“: läuft der Auftrag gerade irgendwo, ist er dann fertig
+                const m = /([a-z_]+)\s+(\d+)\s*$/i.exec(String(why.detail || ''));
+                if (!m) return null;
+                const end = Math.min(...jobSrc.flatMap(s => s.jobs).filter(j => j.cls === low(m[1]) && j.level >= +m[2]).map(j => j.end));
+                return isFinite(end) ? { frei: end } : null;
+            }
+            if (why.art === 'nach') {
+                const x = F.t?.[(parseInt(why.detail, 10) || 0) - 1];
+                return x?.run && isFinite(x.e) && x.e > now ? { frei: x.e } : null;
+            }
+            return null;
+        };
+
         // Wartegrund aus eigener Rechnung (Quellen b und c)
         const deriveWhy = (q, i, at, run) => {
             const slot = { art: q[0] === 'r' ? 'labor' : 'baustelle', ...(q[0] === 's' ? { detail: 'werft' } : {}) };
             const rEnd = run && run.end > now ? run.end : null;
-            // Werft: Plankosten gelten je Einheit, der Autobuilder bestellt die ganze Menge (steps[i][7]) auf einmal
-            const menge = steps[i]?.[0] === 's' ? Math.max(1, num(steps[i][7]) || 1) : 1;
-            const cost = Array.isArray(steps[i]?.[6]) ? steps[i][6].map(c => (num(c) ?? 0) * menge) : null, L = cost ? lagerOf(q) : null;
+            const cost = costOf(i), L = cost ? lagerOf(q) : null;
             const r = L ? resAt(cost, L, now) : null;
             if (r?.never) return { art: 'nie', res: r.which, detail: r.reason };
             const resT = r?.at ?? null;
             if (rEnd != null && at <= rEnd + TOL && (resT == null || rEnd >= resT - TOL)) return slot;
-            if (resT != null && resT > now && at >= resT - TOL) return { art: 'res', res: r.which };
+            // auch wenn der Zeitplan „jetzt“ sagt, aber die Rohstoffe noch fehlen (Rückfall Plan: überfälliger Schritt)
+            if (resT != null && resT > now && (at >= resT - TOL || (at <= now + TOL && resT > now + TOL))) return { art: 'res', res: r.which };
             if (at <= now + TOL) return { art: 'jetzt' };
             return { art: 'plan' };
         };
@@ -180,8 +227,10 @@ const Zeitfeed = (() => {
             if (fq && Number.isInteger(fq.i) && steps[fq.i]) {
                 const i = fq.i, ft = F.t?.[i];
                 const fin = (raw, source, srcAt, why) => {
-                    const never = why.art === 'nie' || raw == null;
-                    return { i, at: never ? null : Math.max(raw, now), due: never ? null : (ft?.due ?? (raw < now ? raw : null)), why, src: source, srcAt };
+                    const never = why.art === 'nie' || raw == null, wait = waitOf(q, i, why, run);
+                    // eigene Rechnung (b, c): wartet der Schritt auf Rohstoffe, startet er frühestens, wenn sie reichen
+                    if (!never && source !== 'getData' && why.art === 'res') { const c = costOf(i), L = c && lagerOf(q), r = L ? resAt(c, L, now) : null; if (r?.at > raw) raw = r.at; }
+                    return { i, at: never ? null : Math.max(raw, now), due: never ? null : (ft?.due ?? (raw < now ? raw : null)), why, ...(wait ? { wait } : {}), src: source, srcAt };
                 };
                 const e = wakeSteps.find(x => num(x.n) === i + 1 && wakeQ(x) === q);
                 const eAt = e ? ms(e.at) : null;
@@ -201,6 +250,6 @@ const Zeitfeed = (() => {
         });
     }
 
-    return { resAt, feed, whyText };
+    return { resAt, fehlt, feed, whyText };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Zeitfeed;

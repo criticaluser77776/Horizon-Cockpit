@@ -173,7 +173,7 @@ function askPlanetPayload(p, rows, planId, steps) {
   const nm = i => (Number.isInteger(i) && steps?.[i]?.[5]) || '';
   const context = { planet: p.coords };
   if (!r) return { kind: 'schritt', text: `Lage auf ${name}: Woran liegt das?`, context };
-  const why = r.next && typeof Zeitfeed !== 'undefined' ? Zeitfeed.whyText(r.next.why) : '';
+  const why = r.next && typeof Zeitfeed !== 'undefined' ? Zeitfeed.whyText(r.next.why, r.next.wait) : '';
   if (r.next) {
     const x = r.next;
     context.step = { n: Number.isInteger(x.i) ? x.i + 1 : null, text: nm(x.i) };
@@ -595,14 +595,16 @@ function planetKarte(p, rows, opts = {}) {
     if (!r) return '';
     const nm = i => (Number.isInteger(i) && steps?.[i]?.[5]) || '';
     let name, time, title = '', sub = [];
+    // Zeitspalte (Nutzer 30.10.2026): immer Restzeit und darunter Ende bzw. Start mit Datum und Uhrzeit
+    const tcol = (a, b) => `<div>${a}</div><div class="small muted">${b}</div>`;
     if (r.run && r.run.end > now) {
       name = r.run.name || nm(r.run.i) || 'läuft';
-      time = `noch ${esc(durDHM((r.run.end - now) / 1000))}`; title = `fertig ${dt(r.run.end)}`;
+      time = tcol(`noch ${esc(durDHM((r.run.end - now) / 1000))}`, `bis ${esc(dt(r.run.end))}`); title = `fertig ${dt(r.run.end)}`;
     } else if (r.next) {
       const x = r.next;
       name = nm(x.i) || `Schritt ${Number.isInteger(x.i) ? x.i + 1 : '?'}`;
-      time = x.at != null ? `ab ${esc(clockT(x.at))}` : '–';
-      const why = typeof Zeitfeed !== 'undefined' ? Zeitfeed.whyText(x.why) : '';
+      time = x.at == null ? '–' : x.at <= now + 60e3 ? tcol('jetzt', esc(dt(x.at))) : tcol(`in ${esc(durDHM((x.at - now) / 1000))}`, `ab ${esc(dt(x.at))}`);
+      const why = typeof Zeitfeed !== 'undefined' ? Zeitfeed.whyText(x.why, x.wait, now) : '';
       if (why) sub.push(esc(why));
       if (x.due != null) sub.push(`fällig seit ${esc(dt(x.due))}`);
       title = [x.src && `Quelle ${x.src}`, x.srcAt != null && `Stand ${ago(x.srcAt)}`].filter(Boolean).join(', ');
@@ -612,7 +614,11 @@ function planetKarte(p, rows, opts = {}) {
   };
   let body = line('Bau', find('b')) + (opts.research ? line('Forschung', find('r')) : '') + line('Werft', find('s'));
   if (!body) body = '<div class="small muted">Nichts in der Schlange.</div>';
-  if (opts.plan?.plan) body += planKarteSchritte(p, opts.plan, !!opts.research);
+  // Pläne: „Aktuell“ (laufende/nächste Aufträge) und die Planschritte sichtbar getrennt (Nutzer 30.10.2026)
+  if (opts.plan?.plan) body = `<div class="plsec">Aktuell</div>${body}<div class="plplan"><div class="plsec">Plan</div>${planKarteSchritte(p, opts.plan, !!opts.research)}</div>`;
+  // aktive Ereignisse am Planeten ganz oben (Nutzer 30.10.2026): opts.effects [{name, until, src}] aus planetEffects (app.js)
+  const effs = (opts.effects || []).filter(e => Date.parse(e.until) > now);
+  if (effs.length) body = effs.map(e => `<div class="pleff small">⚡ <b>${esc(e.name)}</b> · noch ${esc(durDHM((Date.parse(e.until) - now) / 1000))} · bis ${esc(dt(e.until))}${e.src === 'typisch' ? ' <span class="muted">(geschätzt)</span>' : ''}</div>`).join('') + body;
   if (opts.extra) body += opts.extra;   // Lage (Umbau 2 U2): aufklappbar Ausbau je Art und Flotten (lageAusbau in app.js)
   const ask = typeof window !== 'undefined' && window.HZ_ASK && (typeof isOwner !== 'function' || isOwner()) ?`<div class="plfoot"><button class="small askgo" data-ask="${esc(p.coords)}">Claude fragen</button></div>` : '';
   return `<div class="card plcard"><h2>${esc(p.name || p.coords)} <span class="muted small">${esc(p.coords)}</span>${opts.current ? ' <span title="im Spiel gewählt">◉</span>' : ''}</h2>${body}${ask}</div>`;
@@ -749,9 +755,14 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     };
     return qs.length ? `<div class="small qlegend">${qs.map(q => `<span class="tag">${qmark('⏵', q)} ${esc(label(q))}</span>`).join(' ')}</div>` : '';
   };
+  // Pfeil wie früher (Nutzer 30.10.2026): grün = läuft gerade, rot = nächster Schritt einer Schlange, in der nichts läuft (wartet auf etwas)
+  const runQ = new Set((LT.t || []).filter(x => x && x.run).map(x => x.q));
+  const arr = c => `<span class="arr ${c}" title="${c === 'go' ? 'läuft gerade' : 'wartet'}">▶</span>`;
   const row = r => {
     const e = done.get(r.n), run = LT.t[r.n - 1]?.run, kol = planAway(plan, r.n), isUntil = !all && r.n === until;
-    const mark = run ? '⏵' : isDone(r.n) ? '✓' : open.includes(r.n) ? '▶' : !all && (st.halts || []).includes(r.n) ? '⏸' : '';
+    const lq = LT.t[r.n - 1]?.q ?? Zeitplan.queueOf(plan, r.n - 1);
+    const waits = !run && !isDone(r.n) && LT.first?.[lq]?.i === r.n - 1 && !runQ.has(lq);
+    const mark = run ? arr('go') : isDone(r.n) ? '✓' : waits ? arr('wait') : open.includes(r.n) ? '▶' : !all && (st.halts || []).includes(r.n) ? '⏸' : '';
     const q = qcols ? Zeitplan.queueOf(plan, r.n - 1) : null;
     const qm = !qcols ? '' : run ? qmark('▶', q) + ' ' : LT.first?.[q]?.i === r.n - 1 ? qmark('⏵', q) + ' ' : '';
     return `<tr class="step${KIND_ROW[r.s[0]] || ''}${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${stepKosten(r.s[6])}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>

@@ -200,10 +200,7 @@ async function viewLage() {
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }),
     loadSessions(),
     loadActivePlan(),   // aktiver Bauplan für die Steuerung („bis #“, Start)
-    Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
-      select: 'id,t,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
-    Cloud.q('events', { account_id: acc, kind: 'eq.bericht', t: `gt.${new Date(Date.now() - 15 * 86400e3).toISOString()}`, or: EFF_END_OR,
-      select: 'id,t,text', order: 't.desc', limit: 30 }).catch(() => []),
+    ...loadEffects(acc),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,queues,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
     loadDecisions('id,t,text,data:data->decision,answer:data->answer').then(l => l.filter(e => /Motivationsvideo/i.test(e.text || ''))
       .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision)).catch(() => []),
@@ -221,7 +218,7 @@ async function viewLage() {
   const W = await loadWissen().catch(() => null);  // Namen für noch nicht gebaute Stufen
   const active = ap ? { ...ap.row, payload: ap.payload } : null, nf = { active: ap?.row || null, known: {} };
   const nm = (i, set) => i.name || W?.[set]?.[i.type]?.n || i.type;
-  const karten = await planetenKarten(d, ap, gds[0], sess, W, live?.collected_at).catch(() => '');   // Fehler hier dürfen die Lage nie blockieren
+  const karten = await planetenKarten(d, ap, gds[0], sess, W, live?.collected_at, planetEffects(effs, effEnds)).catch(() => '');   // Fehler hier dürfen die Lage nie blockieren
   const trLine = await naechsterTransport(ap, d).catch(() => '');
   // Umbau 2 U1 (30.10.2026): Werbebanner, Steuerung und Motivationsvideo stehen im Reiter Steuerung; hier nur ein Hinweis
   const todo = [bannerCard(sess) ? 'Werbebanner' : '', movis.length ? 'Motivationsvideo' : ''].filter(Boolean);
@@ -295,7 +292,7 @@ function liveJobRows(gd, home, W, now = Date.now()) {
       run: { i: null, end: Date.parse(j.end), name: j.k === 's' ? nm : `${nm}${j.level != null ? ` ${j.level}` : ''}` }, next: null };
   });
 }
-async function planetenKarten(d, ap, gd, sess, W, liveAt) {
+async function planetenKarten(d, ap, gd, sess, W, liveAt, effByPl = {}) {
   const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
   if (!pl.length) return '';
   const plan = ap?.payload && Array.isArray(ap.payload.steps) ? ap.payload : null;
@@ -317,7 +314,7 @@ async function planetenKarten(d, ap, gd, sess, W, liveAt) {
   const ctx = { plan, LT, home, gd, d, W, liveAt, wplans: wplans || [], open: lageOpen() };
   return pl.map(p => {
     const rows = by[p.coords];
-    return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), steps: plan?.steps, current: p.coords === cur, plan: null, extra: lageAusbau(p, ctx) });
+    return planetKarte(p, rows, { research: rows.some(r => r.q === 'r'), steps: plan?.steps, current: p.coords === cur, plan: null, effects: effByPl[p.coords], extra: lageAusbau(p, ctx) });
   }).join('');
 }
 
@@ -417,12 +414,39 @@ function lageFlotten(p, d) {
 const EFF_END_RE = /Wirkung|erschöpft|abgelaufen/i;
 const EFF_END_OR = '(text.ilike.*Wirkung*,text.ilike.*erschöpft*,text.ilike.*abgelaufen*)';
 const effKey = s => String(s || '').replace(/^Bericht:\s*/i, '').trim().split(/\s+/)[0].toLowerCase();
-function effectsLine(effs, ends = []) {
+// Effekt-Berichte mit Ende in der Zukunft und End-Berichte der letzten 15 Tage (zwei Abfragen, für Promise.all ausgebreitet)
+const loadEffects = acc => [
+  Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->effect->>until': `gt.${new Date().toISOString()}`,
+    select: 'id,t,text,eff:data->effect', order: 't.desc', limit: 20 }).catch(() => []),
+  Cloud.q('events', { account_id: acc, kind: 'eq.bericht', t: `gt.${new Date(Date.now() - 15 * 86400e3).toISOString()}`, or: EFF_END_OR,
+    select: 'id,t,text', order: 't.desc', limit: 30 }).catch(() => []),
+];
+// noch wirkende Effekte, je Name der jüngste, nach Ende sortiert
+function liveEffects(effs, ends = []) {
   const endAt = {};
   for (const e of ends || []) if (EFF_END_RE.test(e.text || '')) { const k = effKey(e.text), t = Date.parse(e.t); if (!(endAt[k] >= t)) endAt[k] = t; }
   const live = r => !EFF_END_RE.test(r.eff.name || '') && !(endAt[effKey(r.eff.name)] > Date.parse(r.t));
-  const seen = new Set(), list = (effs || []).filter(r => r.eff?.until && live(r) && !seen.has(r.eff.name) && seen.add(r.eff.name))
+  const seen = new Set();
+  return (effs || []).filter(r => r.eff?.until && live(r) && !seen.has(r.eff.name) && seen.add(r.eff.name))
     .sort((a, b) => Date.parse(a.eff.until) - Date.parse(b.eff.until));
+}
+/* Effekte je Planet für die Planetenkarten (Nutzer 30.10.2026): Koordinaten aus dem Berichtstext („(Minenbehörde · Yontaurza V (1:156:5))“).
+   Je Planet und Effekt nur der jüngste; ein „… erschöpft“ gilt nur für denselben Planeten (Text mit denselben Koordinaten). */
+function planetEffects(effs, ends = []) {
+  const at = t => (String(t || '').match(/\((\d+:\d+:\d+)\)/) || [])[1] || null;
+  const out = {}, seen = new Set();
+  for (const r of (effs || []).filter(r => r.eff?.until && !EFF_END_RE.test(r.eff.name || ''))) {
+    const c = at(r.text), k = `${c}|${r.eff.name}`;
+    if (!c || seen.has(k)) continue;
+    seen.add(k);
+    if ((ends || []).some(e => EFF_END_RE.test(e.text || '') && at(e.text) === c && effKey(e.text) === effKey(r.eff.name) && Date.parse(e.t) > Date.parse(r.t))) continue;
+    (out[c] = out[c] || []).push({ name: String(r.eff.name).replace(/\s*·\s*$/, '').split(/\s*·\s*/)[0], until: r.eff.until, src: r.eff.src });
+  }
+  for (const c in out) out[c].sort((a, b) => Date.parse(a.until) - Date.parse(b.until));
+  return out;
+}
+function effectsLine(effs, ends = []) {
+  const list = liveEffects(effs, ends);
   return list.length ? `<p class="small">Effekte: ${list.map(r => `${esc(String(r.eff.name || '').split(/\s*·\s*/)[0])} <span class="muted">bis ${esc(clockT(r.eff.until))}${r.eff.src === 'typisch' ? ' (geschätzt)' : ''}</span>`).join(' · ')}</p>` : '';
 }
 /* ---------- Überblick (B10): Lauf, Rohstoffe, laufende Aufträge in wenigen Zeilen ----------
@@ -877,7 +901,7 @@ async function viewPlans(rest = []) {
   // Plan-Editor seit C1 nur im Atlas; alte Links (#/plaene/edit/<id>) dorthin umleiten
   if (rest[0] === 'edit' && rest[1]) { location.replace(`details/#/plaene/edit/${encodeURIComponent(rest[1])}`); return; }
   const acc = `eq.${S.acc}`;
-  let [plans, heads, sess, W, lives, gds] = await Promise.all([
+  let [plans, heads, sess, W, lives, gds, effs, effEnds] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 30,
       select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
@@ -886,6 +910,7 @@ async function viewPlans(rest = []) {
     loadWissen().catch(() => null),
     Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'kind,collected_at,version' }).catch(() => []),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,queues,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
+    ...loadEffects(acc),
   ]);
   await ensureSnap(lives[0]).catch(() => {});
   const d = lives[0] ? S.snap?.data : null;
@@ -920,7 +945,8 @@ async function viewPlans(rest = []) {
     const gd = gds[0] || null, home = planHomeCoords(plan, gd, pl[0]?.coords), cur = d?.start?.coords;
     const by = feedByPlanet(plan, planFeed(plan, execs, sess, gd), home, pl);
     askCtx = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], active.id, plan.steps)]));
-    planCards = pl.map(p => planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'),
+    const effByPl = planetEffects(effs, effEnds);
+    planCards = pl.map(p => planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'), effects: effByPl[p.coords],
       steps: plan.steps, current: p.coords === cur, plan: { plan, st: hst, execs, W, LT, home } })).join('');
   }
   // B15: je Art nur der neueste Entwurf (der angebotene steht schon oben im Angebot); ältere Pläne und Löschen im Atlas

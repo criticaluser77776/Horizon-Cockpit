@@ -233,6 +233,12 @@ details.sub summary { cursor: pointer; padding: 4px 0; }
 .plrow:first-of-type { border-top: 0; }
 .pll { overflow-wrap: anywhere; min-width: 0; }
 .plt { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+.plsec { font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #888); margin: 2px 0 0; }
+.plplan { margin-top: 8px; padding-top: 6px; border-top: 2px solid var(--line); }
+.pleff { padding: 4px 6px; margin: 0 0 6px; border-left: 3px solid var(--warn); background: var(--accent-2); border-radius: 4px; }
+.arr { font-size: .8em; }
+.arr.go { color: var(--ok); }
+.arr.wait { color: var(--bad); }
 .plfoot { margin-top: 4px; text-align: right; }
 /* Belegung je Planet unter den Kolopunkten (Lage) */
 table.ausbau { margin: 2px 0 6px; }
