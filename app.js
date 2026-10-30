@@ -1068,14 +1068,18 @@ async function fillPushCard() {
 const TR_ST = { faellig: ['fällig', 'warn'], naechster: ['als Nächstes', 'ok'], spaeter: ['', ''], geflogen: ['geflogen', 'muted'] };
 // Reiter Transport: oben Transportaufträge (Formular + Liste), darunter die Takt-Flüge des aktiven Plans
 async function viewTransporte() {
-  const [ap, d, heads, auf, sperre] = await Promise.all([loadActivePlan(), loadDrift(true),
+  const [ap, d, heads, auf, sperre, adhoc] = await Promise.all([loadActivePlan(), loadDrift(true),
     Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live', select: 'kind,collected_at,version' }).catch(() => []),
     Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, order: 'created_at.desc', limit: 30,
       select: 'id,von,nach,menge,flotte,status,geliefert,fluege,meldung,created_at,updated_at,done_at,plan_id,plan_nr,plan_nrs,einmal' }).catch(() => null),
-    Cloud.q('flotten_sperre', { account_id: `eq.${S.acc}`, select: 'name' }).catch(() => null)]);
+    Cloud.q('flotten_sperre', { account_id: `eq.${S.acc}`, select: 'name' }).catch(() => null),
+    Cloud.q('events', { account_id: `eq.${S.acc}`, kind: 'eq.transport', 'data->>adhoc': 'eq.true', t: `gte.${new Date(Date.now() - 48 * 3600e3).toISOString()}`,
+      order: 't.desc', limit: 20, select: 't,level,text' }).catch(() => null)]);
   await ensureSnap(heads[0]).catch(() => {});
   const snap = heads[0] ? S.snap?.data : null;
-  $('#view').innerHTML = `<div class="stack">${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap, ap?.row?.id)}${flottenCard(snap, sperre)}${await planTransportCard(ap, d)}</div>`;
+  const next = await naechsterTransport(ap, snap).catch(() => '');
+  $('#view').innerHTML = `<div class="stack"><div class="card"><h2>Nächster Flug</h2>${next || '<p class="muted small">Kein offener Auftrag und kein offener Plan-Transport.</p>'}</div>`
+    + `${isOwner() ? auftragFormCard(snap, heads[0]) : ''}${auftragListCard(auf, snap, ap?.row?.id)}${adhocCard(adhoc, snap)}${flottenCard(snap, sperre)}${await planTransportCard(ap, d)}</div>`;
   if (isOwner()) bindAuftragForm(snap);
   $('#view').querySelectorAll('button[data-fsperre]').forEach(b => b.addEventListener('click', async () => {
     const name = b.dataset.fsperre, on = !!b.dataset.on;
@@ -1222,19 +1226,48 @@ function bindAuftragForm(snap) {
 }
 // Abgeschlossene Aufträge früherer Pläne (plan_id gesetzt, nicht der aktive Plan) stehen zugeklappt in „Aus früheren Plänen“
 // (Nutzer 30.10.2026: nur ausblenden, nichts löschen); von Hand angelegte (ohne Plan) bleiben unter „Abgeschlossen“
+/* Einzelflüge (Umbau 2 U4, Nutzer 30.10.2026; Anlass Auftrag #69: Flüge mit 247 t und 161 t bei je 118 T-Stoff): je Flug Ladung in % von
+   12 000 t (1 PTRN), T-Stoff, Kette, Zeiten; unter 35 % (Regelset Paket G: nie ein Flug darunter) rot. Grund aus Plan-Nr./einmal. */
+const TR_CAP = Transporte.LADERAUM.PTRN, TR_MIN_PCT = 35;
+const trPct = l => trSum(l) / TR_CAP * 100;
+const trGrund = a => a.plan_nr ? `Plan-Transport #${(a.plan_nrs || [a.plan_nr]).join(', #')}${a.einmal ? ' (vom Autobuilder angelegt)' : ''}` : a.einmal ? 'vom Autobuilder angelegt' : 'von Hand';
+function trFlugHtml(x) {
+  const p = trPct(x.ladung), low = p < TR_MIN_PCT;
+  return `<div class="small"><b>Flug ${esc(x.nr ?? '')}</b> ${esc(x.befehl || '')}${x.flotte ? ` · ${esc(x.flotte)}` : ''}: ${trLad(x.ladung)}`
+    + ` · <span class="${low ? 'err' : ''}">${esc(fmt(p))} % von ${esc(fmt(TR_CAP))} t</span>${x.fuel != null ? ` · T-Stoff ${esc(fmt(+x.fuel))}` : ''}`
+    + `${x.kette ? ` · über ${esc(x.kette)}` : ''}${x.ab ? ` · ab ${esc(clockT(Date.parse(x.ab)))}` : ''}${x.an ? ` · an ${esc(clockT(Date.parse(x.an)))}` : ''}${x.status ? ` · ${esc(x.status)}` : ''}</div>`;
+}
+// Ad-hoc-Flüge des Autobuilders (Paket G Stufe 2, AB ab 0.7.15): kein Auftrag in der DB, nur Ereignis „transport“ mit adhoc: true; Text
+// „Ad-hoc-Flug n: Liefern A → B E/M/T mit Flotte, an hh:mm (Grund, wartet sonst ≈ x min)“. T-Stoff steht nicht im Ereignis.
+const AD_RE = /^Ad-hoc-Flug (\d+): (Liefern|Abholen) (\S+) → (\S+) (\d+)\/(\d+)\/(\d+) mit (.+?), an (\S+) \((.*)\)$/;
+function adhocCard(evs, snap) {
+  if (evs == null) return '';
+  const item = e => {
+    const m = AD_RE.exec(e.text || '');
+    if (!m) return `<div class="list-item small${e.level === 'mittel' ? ' err' : ''}"><span class="muted">${esc(when(e.t))}</span> ${esc(e.text || '')}</div>`;
+    const lad = [+m[5], +m[6], +m[7]], p = trPct(lad);
+    return `<div class="list-item"><div class="row between"><span><b>Ad-hoc ${esc(m[1])}</b> ${esc(trName(snap, m[3]))} → ${esc(trName(snap, m[4]))} <span class="tag">${esc(m[2])}</span></span>
+      <span class="muted small nowrap">${esc(when(e.t))}</span></div>
+      <div class="small">${trLad(lad)} · <span class="${p < TR_MIN_PCT ? 'err' : ''}">${esc(fmt(p))} % von ${esc(fmt(TR_CAP))} t</span> · ${esc(m[8])} · an ${esc(m[9])}</div>
+      <div class="small muted">Grund: ${esc(m[10])}</div></div>`;
+  };
+  return `<div class="card"><h2>Ad-hoc-Flüge (48 h)</h2>${evs.length ? evs.map(item).join('') : '<p class="muted small">Keine. Der Autobuilder fliegt sie nur mit Option „Ad-hoc-Transporte“, wenn ein Planschritt über 30 min auf Rohstoffe wartet.</p>'}</div>`;
+}
 function auftragListCard(auf, snap, planId = null) {
   if (auf == null) return '<div class="card"><h2>Transportaufträge</h2><p class="err small">Liste nicht ladbar.</p></div>';
   const own = isOwner(), offen = auf.filter(a => ['offen', 'laeuft'].includes(a.status));
   const frueher = auf.filter(a => !offen.includes(a) && a.plan_id && a.plan_id !== planId), alt = auf.filter(a => !offen.includes(a) && !frueher.includes(a));
   const item = a => {
     const [st, cls] = TA_ST[a.status] || [a.status, ''];
-    const fl = Array.isArray(a.fluege) ? a.fluege : [];
+    const fl = Array.isArray(a.fluege) ? a.fluege : [], schwach = fl.filter(x => trPct(x.ladung) < TR_MIN_PCT).length;
+    const fuel = fl.reduce((t, x) => t + (+x.fuel || 0), 0), ges = fl.reduce((t, x) => t + trSum(x.ladung), 0);
     return `<div class="list-item"><div class="row between">
       <span><b>#${esc(a.id)}</b> ${esc(trName(snap, a.von))} → ${esc(trName(snap, a.nach))} <span class="tag ${cls}">${esc(st)}</span>${a.plan_nr ? ` <span class="tag kt">Plan-Transport #${esc((a.plan_nrs || [a.plan_nr]).join(', #'))}</span>` : ''}${a.einmal ? ' <span class="tag">automatisch</span>' : ''}</span>
       <span class="muted small nowrap">${esc(when(a.created_at))}</span></div>
       <div class="small">Menge: ${trLad(a.menge)}${(a.geliefert || []).some(x => +x > 0) ? ` · geliefert: ${trLad(a.geliefert)}` : ''}</div>
-      <div class="small muted">Flotte: ${a.flotte ? esc(a.flotte) : 'Autobuilder entscheidet'}${fl.length ? ` · ${fl.length} ${fl.length === 1 ? 'Flug' : 'Flüge'}` : ''}${a.done_at ? ` · fertig ${esc(when(a.done_at))}` : ''}</div>
-      ${fl.length ? `<details class="sub"><summary class="small muted">Flüge</summary>${fl.map(x => `<div class="small">${esc(x.nr ?? '')} ${esc(x.befehl || '')} ${esc(x.flotte || '')}: ${trLad(x.ladung)}${x.an ? ` · an ${esc(clockT(Date.parse(x.an)))}` : ''}${x.status ? ` · ${esc(x.status)}` : ''}</div>`).join('')}</details>` : ''}
+      <div class="small muted">Grund: ${esc(trGrund(a))} · Flotte: ${a.flotte ? esc(a.flotte) : 'Autobuilder entscheidet'}${a.done_at ? ` · fertig ${esc(when(a.done_at))}` : ''}</div>
+      ${fl.length ? `<div class="small">${fl.length} ${fl.length === 1 ? 'Flug' : 'Flüge'} · Auslastung Ø ${esc(fmt(ges / fl.length / TR_CAP * 100))} % · T-Stoff ${esc(fmt(fuel))}${fuel && ges ? ` (${esc(fmt(fuel / ges * 1000, 1))} je 1 000 t)` : ''}${schwach ? ` <span class="tag hoch">${schwach} unter ${TR_MIN_PCT} %</span>` : ''}</div>
+      <details class="sub"${schwach && ['offen', 'laeuft'].includes(a.status) ? ' open' : ''}><summary class="small muted">Flüge</summary>${fl.map(trFlugHtml).join('')}</details>` : ''}
       ${a.meldung ? `<div class="small${a.status === 'fehler' ? ' err' : ' muted'}">${esc(a.meldung)}</div>` : ''}
       ${own && ['offen', 'laeuft'].includes(a.status) ? `<div class="row" style="margin-top:4px"><button class="small" data-ta="${esc(a.id)}">Abbrechen</button></div>` : ''}
     </div>`;
