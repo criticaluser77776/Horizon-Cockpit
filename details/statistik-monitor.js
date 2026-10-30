@@ -19,7 +19,8 @@ const SM_CAP = ['Aktuelle Verfügbarkeit', 'Benötigte Kapazitäten', 'Ungenutzt
 const SM_BASE = [['1', '1 Sekunde', 'Sekunde'], ['60', '1 Minute', 'Minute'], ['3600', '1 Stunde', 'Stunde'], ['86400', '1 Tag', 'Tag'],
   ['604800', '1 Woche', 'Woche']];
 const SM_STATUS = [['RESOURCES', 'Ressourcen'], ['STORAGE', 'Lager'], ['CONSTRUCTION', 'Konstruktion'], ['FLEET', 'Flotte'],
-  ['RESEARCH', 'Forschung'], ['EMBASSY', 'Diplomatie']];
+  ['RESEARCH', 'Forschung'], ['EMBASSY', 'Diplomatie'], ['SUPPORT', 'Unterstützung'], ['MILITARY', 'Militär'], ['ECONOMY', 'Wirtschaft'],
+  ['ALIENTECH', 'Alientechnik']];
 const SM_COLS = ['Erz', 'Mineral', 'T-Stoff', 'Energie', 'Arbeiter', 'E-Lager', 'M-Lager', 'T-Lager', 'E-Safe', 'M-Safe', 'T-Safe',
   'Gebäude', 'Baustellen', 'Schiffe', 'Verteidigung', 'Bauplatz', 'Mondbauplatz', 'Raumhafen', 'Raumstation', 'Res.Umschlag.',
   'Forschung', 'Hirnwäsche', 'Flottenscan', 'Systemteleskop', 'Planetenteleskop', 'Kolonien', 'Allianzrang', 'Allianzgröße', 'Bündnisse'];
@@ -61,7 +62,7 @@ let smCache = null;
 async function smLoad() {
   if (smCache && smCache.acc === S.acc && Date.now() - smCache.t < 60e3) return smCache;
   const [st, hl] = await Promise.all([
-    Cloud.q('state_latest', { select: 'collected_at,version,start:data->start,prod:data->prod,status:data->status,req:data->requirements,emp:data->empire,mon:data->monitor,bld:data->buildings->items,res:data->research->items',
+    Cloud.q('state_latest', { select: 'collected_at,version,start:data->start,prod:data->prod,status:data->status,statusPlanets:data->statusPlanets,req:data->requirements,emp:data->empire,mon:data->monitor,bld:data->buildings->items,res:data->research->items',
       account_id: `eq.${S.acc}`, kind: 'eq.live' }).catch(() => []),
     Cloud.q('hitlist', { select: 'collected_at,mode,side,cat,head,own,list', account_id: `eq.${S.acc}`, order: 'collected_at.desc', limit: 40 }).catch(() => []),
   ]);
@@ -186,16 +187,26 @@ function smAggregate(s) {
   return smTextTables(a) + (hasRows ? '' : '<p class="small muted">Keine aktiven Aggregate im Schrein.</p>');
 }
 
+// Gebäudestatus je Planet (Collector ab 0.5.12): Heimat aus status, Kolonien aus statusPlanets (gelesen beim Kolonie-Besuch des
+// Autobuilders, höchstens alle 2 h; Stand je Kolonie). Klassen: bekannte in Spielreihenfolge, unbekannte mit ihrem Namen dahinter.
 function smStatus(s) {
-  const st = smState(), keys = SM_STATUS.filter(c => s.status?.[c[0]]), cls = keys.some(c => c[0] === st.scls) ? st.scls : keys[0]?.[0];
-  if (!cls) return '<p class="small muted">Keine Werte.</p>';
-  const tabs = (s.status[cls].tables || []).map(t => {
+  const st = smState(), home = s.start?.coords || '';
+  const pls = [[home, `${s.start?.chosen?.name || s.start?.planet || 'Heimat'} (${home || '?'})`],
+    ...Object.entries(s.statusPlanets || {}).map(([c, v]) => [c, `${v.name || 'Kolonie'} (${c})`])];
+  const pl = pls.some(p => p[0] === st.spl) ? st.spl : pls[0][0], kol = pl !== home ? s.statusPlanets?.[pl] : null;
+  const status = kol ? kol.status : s.status;
+  const keys = [...SM_STATUS.filter(c => status?.[c[0]]),
+    ...Object.keys(status || {}).filter(k => !SM_STATUS.some(c => c[0] === k)).map(k => [k, status[k].label || k])];
+  const cls = keys.some(c => c[0] === st.scls) ? st.scls : keys[0]?.[0];
+  const wahl = pls.length > 1 ? smSel('spl', pls, pl, 'Planet:') + ' ' : '';
+  if (!cls) return `<div class="row">${wahl}</div><p class="small muted">Keine Werte.</p>`;
+  const tabs = (status[cls].tables || []).map(t => {
     const rk = smOrder([...SM_BUILD, 'Summe'], Object.keys(t)), cols = smOrder(SM_COLS, [...new Set(rk.flatMap(k => Object.keys(t[k]).filter(c => c !== 'level')))]);
     return smTable(['Gebäudeklasse / Stufe', ...cols], rk.map(k => `<tr${k === 'Summe' ? ' style="font-weight:600"' : ''}><td>${esc(k === 'Summe' ? k : `${k.toUpperCase()} ${t[k].level ?? ''}`)}</td>${cols.map(c => smCell(t[k][c])).join('')}</tr>`));
   }).join('');
-  const pl = s.start?.coords ? `${s.start.planet ? s.start.planet + ' ' : ''}(${s.start.coords})` : 'den beim Erfassen im Spiel gewählten Planeten';
-  return `<div class="row">${smSel('scls', keys, cls, 'Produktionsklasse:')}</div>${tabs}
-    <p class="small muted">Gilt für <b>${esc(pl)}</b>: Das Spiel liefert den Gebäudestatus nur für den gewählten Planeten, und der Collector liest bisher nur diesen (alle Live-Stände stammen vom Heimatplaneten). Andere Planeten brauchen einen Collector-Umbau (Planet wechseln oder cmd=status je Planet).</p>`;
+  const name = pls.find(p => p[0] === pl)[1];
+  return `<div class="row">${wahl}${smSel('scls', keys, cls, 'Produktionsklasse:')}</div>${tabs}
+    <p class="small muted">Gilt für <b>${esc(name)}</b>${kol ? `, Stand ${esc(dt(kol.at))}` : ''}. Das Spiel liefert den Gebäudestatus nur für den gewählten Planeten: Die Heimat liest der Collector bei jeder Erfassung, Kolonien ab Collector 0.5.12 beim Besuch des Autobuilders (höchstens alle 2 h).</p>`;
 }
 
 function smEmp(s) {
