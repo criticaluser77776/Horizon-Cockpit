@@ -229,6 +229,11 @@ details.sub summary { cursor: pointer; padding: 4px 0; }
 /* Planetenkarten der Lage (PR 5): Label/Inhalt links (darf umbrechen), Zeit rechts (eine Zeile) */
 .plcard { padding: 8px 10px; }
 .plcard h2 { font-size: .95rem; margin: 0 0 4px; }
+/* Pläne: Planeten-Karten einklappbar (Umbau 2 U3) – Kopf als summary, Kartenüberschrift entfällt */
+details.plfold > summary { cursor: pointer; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+details.plfold[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom: 0; }
+details.plfold[open] > .plcard { border-top-left-radius: 0; border-top-right-radius: 0; }
+details.plfold > .plcard > h2 { display: none; }
 .plrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline; padding: 3px 0; border-top: 1px solid var(--line); }
 .plrow:first-of-type { border-top: 0; }
 .pll { overflow-wrap: anywhere; min-width: 0; }

@@ -725,7 +725,7 @@ const planLadung = l => { const p = (Array.isArray(l) ? l : []).map((v, i) => +v
 // Kosten eines Planschritts (steps[i][6] = [Eisenerz, Mineral, Treibstoff]) als kleine Zeile unter dem Namen (Nutzer 30.10.2026)
 const stepKosten = c => { const p = (Array.isArray(c) ? c : []).map((v, i) => +v > 0 ? `${['E', 'M', 'T'][i]} ${fmt(+v)}` : '').filter(Boolean); return p.length ? `<div class="small muted">${esc(p.join(' · '))}</div>` : ''; };
 function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
-  const { all = false, fcRows = true, nearLimit = 12, marks = null, home = null, horizonH = null, now = Date.now() } = opt;
+  const { all = false, fcRows = true, nearLimit = 12, marks = null, home = null, horizonH = null, gesamt = null, now = Date.now() } = opt;
   const t0 = Date.parse(plan.startTime);
   const tip = tau => ` title="Plan: ${esc(dt(t0 + tau * 3600e3))}"`;
   const fcAt = tau => esc(dt(Zeitplan.atTau(plan, LT, tau, 'b', LT.lagB)));
@@ -782,6 +782,27 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     for (const x of planTransports(plan, tab)) { const k = trAt(x.t); rows.push({ tau: x.t, tr: x, k }); }
     rows.sort(cmp);
     return `${qLegend(rows.filter(r => !r.fc && !r.tr).map(r => r.n - 1))}${kindLegend}<table class="small">${rows.map(r => r.fc ? fcRow(r.fc) : r.tr ? trRow(r.tr, r.k) : row(r)).join('')}</table>`;
+  }
+  // Gesamtablauf (Cockpit Pläne oben, Umbau 2 U3, Nutzer 30.10.2026): die letzten gesamt.last erledigten und alle laufenden/offenen Schritte
+  // aller Schlangen nach Live-Zeit, Faktorwechsel und Plan-Transporte ab dort; gesamt.hide {fc, tr, s} blendet Faktor/Transport/Schiffbau aus,
+  // nach gesamt.max offenen Schritten der Rest aufklappbar
+  if (gesamt) {
+    const hide = gesamt.hide || {}, isRun = n => !!LT.t[n - 1]?.run;
+    const rows = [];
+    plan.steps.forEach((s, i) => { if (!(hide.s && s[0] === 's')) rows.push(stepRow(s, i)); });
+    rows.sort(cmp);
+    const past = rows.filter(r => isDone(r.n) && !isRun(r.n)).slice(-(gesamt.last ?? 5)), next = rows.filter(r => isRun(r.n) || !isDone(r.n));
+    if (!past.length && !next.length) return '<p class="muted small">Keine Planschritte.</p>';
+    const lo = (past[0] || next[0]).k;
+    const list = [...past, ...next,
+      ...(hide.fc ? [] : factorChanges(plan).map(fc => ({ tau: fc.tau, fc, k: fcKey(fc) }))),
+      ...(hide.tr ? [] : planTransports(plan, 'alle').map(x => ({ tau: x.t, tr: x, k: trAt(x.t) })))].filter(r => r.k >= lo).sort(cmp);
+    const max = gesamt.max ?? 25, nextSet = new Set(next.slice(max));
+    const cut = nextSet.size ? list.findIndex(r => nextSet.has(r)) : -1;
+    const html = r => r.fc ? fcRow(r.fc) : r.tr ? trRow(r.tr, r.k) : row(r);
+    const head = cut < 0 ? list : list.slice(0, cut), tail = cut < 0 ? [] : list.slice(cut);
+    return `${kindLegend}<table class="small">${head.map(html).join('')}</table>${!next.length ? '<p class="muted small">Kein offener Schritt.</p>' : ''}`
+      + (tail.length ? `<details class="sub"><summary class="small muted">Weitere ${nextSet.size} Schritte einblenden</summary><table class="small">${tail.map(html).join('')}</table></details>` : '');
   }
   if (horizonH != null) {
     const mine = [];

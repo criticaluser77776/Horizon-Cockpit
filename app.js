@@ -935,7 +935,7 @@ async function viewPlans(rest = []) {
   plans = plans.filter(p => !hidden.includes(p));
   const own = isOwner();
   // Stand des Autobuilders für diesen Plan (Lauf-Halter bevorzugt), Erledigt-Logik und Live-Zeitplan
-  let hst = {}, planCards = '', askCtx = {};
+  let hst = {}, planCards = '', askCtx = {}, gesamt = null;
   if (plan) {
     const holder = sess.devs.find(x => x.holds), st = abTarget(sess)?.ab?.state || {};
     const h0 = (holder?.ab?.state?.plan === plan.id ? holder.ab.state : null) || (st.plan === plan.id ? st : {});
@@ -945,9 +945,11 @@ async function viewPlans(rest = []) {
     const gd = gds[0] || null, home = planHomeCoords(plan, gd, pl[0]?.coords), cur = d?.start?.coords;
     const by = feedByPlanet(plan, planFeed(plan, execs, sess, gd), home, pl);
     askCtx = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], active.id, plan.steps)]));
-    const effByPl = planetEffects(effs, effEnds);
-    planCards = pl.map(p => planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'), effects: effByPl[p.coords],
-      steps: plan.steps, current: p.coords === cur, plan: { plan, st: hst, execs, W, LT, home } })).join('');
+    const effByPl = planetEffects(effs, effEnds), po = planOpen();
+    planCards = pl.map(p => `<details class="plfold" data-plopen="${esc(p.coords)}"${po[p.coords] === false ? '' : ' open'}><summary><b>${esc(p.name || p.coords)}</b> <span class="muted small">${esc(p.coords)}</span>${p.coords === cur ? ' <span title="im Spiel gewählt">◉</span>' : ''}</summary>`
+      + planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'), effects: effByPl[p.coords],
+      steps: plan.steps, current: p.coords === cur, plan: { plan, st: hst, execs, W, LT, home } }) + '</details>').join('');
+    gesamt = () => stepsTable(plan, hst, execs, W, 'alle', LT, { gesamt: { last: 5, hide: planHide() }, home: { coords: home, name: S.home?.name } });
   }
   // B15: je Art nur der neueste Entwurf (der angebotene steht schon oben im Angebot); ältere Pläne und Löschen im Atlas
   const kinds = new Set(), list = [];   // plans ist nach created_at absteigend sortiert
@@ -961,10 +963,20 @@ async function viewPlans(rest = []) {
       ${own ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
     </div>`;
-  $('#view').innerHTML = (offer ? `<div class="card warn small"><a href="#/steuerung">Neuer Plan verfügbar: ${esc(planLabel(offer.draft.id))} – Freigabe in der Steuerung →</a></div>` : '') + planKopfCard(active, sess, own, drift, hst) + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
+  $('#view').innerHTML = (offer ? `<div class="card warn small"><a href="#/steuerung">Neuer Plan verfügbar: ${esc(planLabel(offer.draft.id))} – Freigabe in der Steuerung →</a></div>` : '') + planKopfCard(active, sess, own, drift, hst) + (gesamt ? planGesamtCard(gesamt) : '')
+    + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
     + `<div class="card"><h2>Entwürfe</h2>${list.length ? list.map(item).join('') : `<p class="muted small">Kein offener Entwurf.${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
   bindAsk($('#view'), c => askCtx[c]);
+  $('#view').querySelectorAll('details[data-plopen]').forEach(x => x.addEventListener('toggle', () => planOpenSet(x.dataset.plopen, x.open)));
+  $('#view').querySelectorAll('button[data-phide]').forEach(b => b.addEventListener('click', () => {
+    const h = planHide(), k = b.dataset.phide;
+    h[k] = !h[k];
+    try { localStorage.setItem('hz.planHide', JSON.stringify(h)); } catch { /* egal */ }
+    b.setAttribute('aria-pressed', String(!h[k]));
+    $('#plGesamt').innerHTML = gesamt();
+    bindPlanSteps();
+  }));
   $('#view').querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act, p = plans.find(x => x.id === b.dataset.id);
     if (act === 'freigegeben' && p?.kind === 'build') return takeNewPlan({ draft: p, teil: gains[p.id]?.teil }, sess);   // F4: danach direkt übernehmen
@@ -975,12 +987,30 @@ async function viewPlans(rest = []) {
     catch (e) { toast(e.message); }
   }));
   // Tipp auf einen Planschritt = „bis #“ (gemeinsamer Zustand S.abSel); gestartet wird im Reiter Steuerung
-  if (own && plan) {
-    $('#view').querySelectorAll('tr.step').forEach(r => r.addEventListener('click', () => {
+  function bindPlanSteps(root = $('#view')) {
+    if (!own || !plan) return;
+    root.querySelectorAll('tr.step[data-i]').forEach(r => r.addEventListener('click', () => {
       const n = +r.dataset.i, st = setBis(active, sess, n);
       if (st) toast(`bis #${n} gewählt (${st[5]}) – Start unter Steuerung`);
     }));
   }
+  bindPlanSteps();
+}
+/* Gesamtablauf oben im Reiter Pläne (Umbau 2 U3, Nutzer 30.10.2026): alle Planeten nach Live-Zeit (stepsTable gesamt), Schalter blenden
+   Faktorwechsel, Transporte und Schiffbau aus (Wahl in localStorage hz.planHide); Planeten-Karten darunter einklappbar (hz.planOpen). */
+const planHide = () => { try { return JSON.parse(localStorage.getItem('hz.planHide') || '{}') || {}; } catch { return {}; } };
+const planOpen = () => { try { return JSON.parse(localStorage.getItem('hz.planOpen') || '{}') || {}; } catch { return {}; } };
+function planOpenSet(c, on) {
+  const o = planOpen();
+  o[c] = on;
+  try { localStorage.setItem('hz.planOpen', JSON.stringify(o)); } catch { /* egal */ }
+}
+function planGesamtCard(gesamt) {
+  const h = planHide(), btn = (k, t) => `<button type="button" data-phide="${k}" aria-pressed="${!h[k]}">${t}</button>`;
+  return `<div class="card"><h2>Gesamtablauf</h2>
+    <div class="kseg" style="margin:4px 0">${btn('fc', 'Faktor')}${btn('tr', 'Transport')}${btn('s', 'Schiffbau')}</div>
+    <p class="small muted">Letzte 5 erledigte und alle laufenden und geplanten Schritte aller Planeten in der Reihenfolge der Ausführung (Live-Zeit). Tipp auf einen Schritt = „bis #“.</p>
+    <div id="plGesamt">${gesamt()}</div></div>`;
 }
 
 /* ---------- Mehr: Geräte & Rechte, Gruppe, Abmelden ---------- */
