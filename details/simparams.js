@@ -10,10 +10,10 @@
     gruendlich: { iter: 100, rounds: 2, patience: 30, kicks: 10 },
   };
   const DEFAULTS = {
-    v: 1, kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', '11:RKPL:rohstoff'], platzbahn: 6,
-    // Pflicht nur kolo4, Minen über das Maß Deckungstage (Nutzer 29.10.2026 abends; B1 davor: alle Minen 16 als Pflicht)
+    v: 1, kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', '11:RKPL:rohstoff', '12:RKPL:rohstoff'], platzbahn: 6,
+    // Pflicht nur der Kolopunkt (kolo5 seit 30.10.2026, vorher kolo4), Minen über das Maß Deckungstage (Nutzer 29.10.2026 abends; B1 davor: alle Minen 16 als Pflicht)
     kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:1'], werft: 1,
-    pflicht: ['kolo:4'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
+    pflicht: ['kolo:5'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
     rabatt: 0,             // Boden für den STAN-Rabatt je Stufe; 0 = STAN allein (Nutzer 27.10.2026, bis dahin 0.1)
     movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 1, patience: 20, kicks: 2 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
