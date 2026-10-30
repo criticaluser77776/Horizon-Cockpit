@@ -485,15 +485,7 @@ function overviewCard(sess, d, live, abLive, nm, W, extra = '', gd = null) {
       ? `<span class="${col.free < 0 ? 'err' : ''}" title="frei ${esc(fmt(col.free, 3))}">Kolopunkte <b>${fmt(col.used, 2)}</b> / ${fmt(col.max, 2)}${col.free < 0 ? ' überzogen' : ''}</span>`
       : '<span class="muted">Kolopunkte: ab Collector 0.4.7</span>'}</div>`;
     html += ausbauTable(d, gd, live.collected_at);
-    const fromAb = abLive && abLive.liveAt > at.getTime();
-    const jobs = fromAb
-      ? (abLive.jobs || []).map(j => ({ k: j.k === 'b' ? 'Bau' : 'Forschung', name: nm({ type: j.t }, j.k === 'b' ? 'B' : 'R'), level: j.l, end: new Date(j.end) }))
-      : [...(d.buildings?.items || []).map(i => ({ ...i, k: 'Bau', name: nm(i, 'B') })), ...(d.research?.items || []).map(i => ({ ...i, k: 'Forschung', name: nm(i, 'R') }))]
-        .filter(i => i.inProgress).map(j => ({ ...j, end: j.remaining != null ? new Date(at.getTime() + j.remaining * 1000) : null }));
-    html += jobs.length ? `<table class="small">${jobs.map(j => {
-      const left = j.end ? (j.end - Date.now()) / 1000 : null;
-      return `<tr><td><span class="tag">${j.k}</span> ${esc(j.name)} ${esc(j.level)}</td><td class="num">${left == null ? '–' : left > 0 ? `${dur(left)} <span class="muted">${esc(clockT(j.end))}</span>` : 'fertig'}</td></tr>`;
-    }).join('')}</table>` : '<p class="small muted">Baustelle und Labor frei.</p>';
+    // Laufende Aufträge (Bau/Forschung des gewählten Planeten) stehen seit Umbau 2 U2 nur noch je Planet (Nutzer 30.10.2026)
   }
   return html + extra + '</div>';
 }
