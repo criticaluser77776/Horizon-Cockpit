@@ -381,7 +381,7 @@ const SL_FIELDS = [
     ['kolohilfe', 'Hilfsgebäude Kolonien', 'txt', 'leer = aus · ja = Bauhof bis 5 · constructionfacility:6, infrastructure:2'],
     ['forschort', 'Forschungsort Typ:Faktor', 'txt', 'z. B. JUPL:0.69, heimat:1 (günstigster Planet; Heimat-Labor nur als Voraussetzung) · leer = Heimat'],
     ['versorgung', 'Versorgung', 'sel', [['', 'Standard (voll)'], ['voll', 'voll (100 %)'], ['aus', 'aus (nur Vergleich)']]],
-    ['bis', 'Stichtag T der Förderung (nur Gleichstand)', 'txt', '+14d = 14 Tage ab Snapshot (rollend) · +36h · Planstunde · ISO-Zeit'],
+    ['bis', 'Stichtag T (Maß: Deckungstage bei T)', 'txt', '+30d = 30 Tage ab Snapshot (rollend) · +36h · Planstunde · ISO-Zeit'],
     ['kololive', 'Gelandete Kolonien aus dem Snapshot', 'sel', [['ja', 'übernehmen'], ['nein', 'nicht übernehmen']]],
     ['flugfaktor', 'Flugfaktor SCOL', 'num', 'z. B. 0,043 (geeicht, ≈ 14 min) · leer = Modellwert'],
     ['takt', 'Transport: Flüge je Tag', 'num', 'z. B. 2 (wie Plan 21) · leer = kein Transport · wirkt nur mit getrennten Lagern und Flotte'],

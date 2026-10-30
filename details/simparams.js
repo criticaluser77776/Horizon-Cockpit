@@ -11,14 +11,15 @@
   };
   const DEFAULTS = {
     v: 1, kolo: ['5:JUPL:rohstoff', '6:RKPL:rohstoff', '11:RKPL:rohstoff'], platzbahn: 6,
-    // Ziel nach kolo4: alle Minen 16 auf Heimat (h) und Kolonien (B1, Nutzer 29.10.2026)
-    kolopflicht: ['*:b:metalmine:16', '*:b:crystalmine:16', '*:b:fuelrefinery:16', 'h:b:metalmine:16', 'h:b:crystalmine:16',
-      'h:b:fuelrefinery:16', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:1'], werft: 1,
+    // Pflicht nur kolo4, Minen über das Maß Deckungstage (Nutzer 29.10.2026 abends; B1 davor: alle Minen 16 als Pflicht)
+    kolopflicht: ['*:b:metalmine:1', '1:b:researchcenter:heimat'], flotte: ['PFLS:1', 'PTRN:1'], werft: 1,
     pflicht: ['kolo:4'], verbot: [], aus: [], techcap: ['r:miningtech:14', 'r:refinerytech:12'],
     rabatt: 0,             // Boden für den STAN-Rabatt je Stufe; 0 = STAN allein (Nutzer 27.10.2026, bis dahin 0.1)
     movi: null, aufwand: { stufe: 'eigen', iter: 40, rounds: 1, patience: 20, kicks: 2 },
     seeds: ['k1o-A2-T2-1022.json', 'k1z-T2-T2-1021.json', 'k1o-B0-T2-1022.json'],
-    kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll', bis: '+14d',
+    kolominen: '16', kolohilfe: true, forschort: ['JUPL:0.69', 'heimat:1'], versorgung: 'voll',
+    // Maß immer Deckungstage bei T (--bedarf, wie der Nachtlauf; Work hängt es selbst an)
+    bis: '+30d',
     kololive: true, flugfaktor: 0.043,
     takt: 6, taktlast: 12000, taktmod: ['tempo:-0.5'],   // Transport 6 Flüge/Tag mit 1 PTRN (12 000 t live, Nutzer 25.10.)
   };
@@ -117,7 +118,7 @@
     }
     if (p.kolominen != null && !/^\d{1,2}$/.test(p.kolominen)) e.push('kolominen: Zahl 1–99');
     if (Array.isArray(p.kolohilfe)) for (const x of p.kolohilfe) if (!PAT.kolohilfe.test(x)) e.push(`kolohilfe: „${x}“ (Form gebäude:stufe oder „ja“)`);
-    if (p.bis != null && !((typeof p.bis === 'string' && ISO.test(p.bis)) || (Number.isFinite(p.bis) && p.bis >= 0 && p.bis <= 2000))) e.push('bis: +14d, Planstunde oder ISO-Zeit');
+    if (p.bis != null && !((typeof p.bis === 'string' && ISO.test(p.bis)) || (Number.isFinite(p.bis) && p.bis >= 0 && p.bis <= 2000))) e.push('bis: +30d, Planstunde oder ISO-Zeit');
     if (p.kololive != null && p.kololive !== true) e.push('Gelandete Kolonien: ja oder leer');
     if (p.flugfaktor != null && !(Number.isFinite(p.flugfaktor) && p.flugfaktor >= 0.001 && p.flugfaktor <= 5)) e.push('Flugfaktor: Zahl 0,001…5');
     if (p.takt != null && !(Number.isFinite(p.takt) && p.takt >= 0.5 && p.takt <= 24)) e.push('Transport: Flüge je Tag 0,5…24');
@@ -130,7 +131,7 @@
     // Ziel ist immer ein Kolopunkt (Schritt 2, 24.10.2026: kein SCOL-Ziel mehr)
     if (!kn.length) e.push('Pflicht: kolo:N fehlt (Ziel Kolopunkt, z. B. kolo:4)');
     else if (p.kolo.length < kn[0] - 1) e.push(`Kolonien: für kolo:${kn[0]} mindestens ${kn[0] - 1} Ziele`);
-    if (p.bis == null) e.push('Stichtag „bis“ fehlt (z. B. +14d)');
+    if (p.bis == null) e.push('Stichtag „bis“ fehlt (z. B. +30d)');
     if (p.versorgung != null && !p.kolopflicht.length) e.push('Versorgung nur mit Kolonie-Pflichten');
     return e;
   }
