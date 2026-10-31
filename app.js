@@ -234,14 +234,24 @@ async function viewLage() {
 async function naechsterTransport(ap, d) {
   const nm = c => esc(trName(d, c));
   const [auf, hk, drift] = await Promise.all([
-    Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, status: 'in.(offen,laeuft)', order: 'id.asc', limit: 5, select: 'id,von,nach,menge,status' }).catch(() => []),
+    Cloud.q('transport_auftraege', { account_id: `eq.${S.acc}`, status: 'in.(offen,laeuft)', order: 'id.asc', limit: 5,
+      select: 'id,von,nach,menge,geliefert,fluege,meldung,status,plan_nr,plan_nrs' }).catch(() => []),
     ap ? Cloud.q('transport_haken', { plan_id: `eq.${ap.row.id}`, select: 'nr' }).catch(() => []) : [],
     loadDrift().catch(() => null)]);
-  const parts = (auf || []).map(a => `Auftrag #${esc(a.id)} ${nm(a.von)} → ${nm(a.nach)} <span class="tag ${a.status === 'laeuft' ? 'aktiv' : ''}">${a.status === 'laeuft' ? 'läuft' : 'offen'}</span>`);
-  const x = ap ? Transporte.transportListe(ap.payload, drift?.plan === ap.row.id ? drift : null, (hk || []).map(h => h.nr)).find(t => t.status !== 'geflogen') : null;
+  // je Auftrag: Strecke, Status, Menge (geliefert), Ankunft des nächsten Flugs, sonst die Meldung des Autobuilders als Wartegrund (31.10.2026)
+  const parts = (auf || []).map(a => {
+    const fl = Array.isArray(a.fluege) ? a.fluege : [], now = Date.now();
+    const an = fl.map(f => Date.parse(f.an)).filter(t => t > now).sort((p, q) => p - q)[0];
+    return `Auftrag #${esc(a.id)} ${nm(a.von)} → ${nm(a.nach)} <span class="tag ${a.status === 'laeuft' ? 'aktiv' : ''}">${a.status === 'laeuft' ? 'läuft' : 'offen'}</span>`
+      + ` <span class="muted">· ${trLad(a.menge)}${(a.geliefert || []).some(v => +v > 0) ? ` · geliefert ${trLad(a.geliefert)}` : ''}</span>`
+      + (an ? ` · an ${esc(clockT(an))}` : a.meldung ? ` <span class="muted">· ${esc(a.meldung)}</span>` : '');
+  });
+  // Plan-Transport, für den schon ein Auftrag offen ist, steht oben als Auftrag – dann den nächsten danach zeigen
+  const x = ap ? Transporte.transportListe(ap.payload, drift?.plan === ap.row.id ? drift : null, (hk || []).map(h => h.nr))
+    .find(t => t.status !== 'geflogen' && !(auf || []).some(a => trHasNr(a, t.nr))) : null;
   if (x) parts.push(`Plan #${x.nr} ${nm(x.von)} → ${nm(x.nach)} <span class="${x.status === 'faellig' ? 'warn' : 'muted'}">${x.status === 'faellig' ? 'fällig seit' : 'ab'} ${esc(clockT(x.ab))}</span>`
     + ` <span class="muted">· hin ${trLad(x.hin)} · zurück ${trLad(x.zurueck)}</span>`);
-  return parts.length ? `<p class="small">Nächster Transport: ${parts.join(' · ')} <a href="#/transporte">→</a></p>` : '';
+  return parts.length ? `<p class="small">Nächster Transport <a href="#/transporte">→</a><br>${parts.join('<br>')}</p>` : '';
 }
 
 /* ---------- Steuerung (Umbau 2 U1, Nutzer 30.10.2026) ----------
