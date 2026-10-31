@@ -124,7 +124,7 @@ function editedPlan(E) {
   const steps = keep.map(r => r.s);
   const halts = keep.map((r, i) => r.halt ? i + 1 : null).filter(Boolean);
   const changed = E.rows.some(r => r.skip || r.moved || r.ins || r.halt !== r.halt0) || E.dropDone && E.rows.some(r => r.done)
-    || JSON.stringify(E.limits) !== JSON.stringify(E.orig.limits || {});
+    || E.rows.some(r => (r.rp || null) !== (r.rp0 || null)) || JSON.stringify(E.limits) !== JSON.stringify(E.orig.limits || {});
   return { keep, steps, halts, changed };
 }
 // Eingefügter Schritt (B17): Name und Kosten wie im Plan (Gebäude: Stufenname der Datenbank, Forschung: Grundkosten × 1,5^(Stufe−1)
@@ -156,8 +156,8 @@ async function viewPlanEdit(id) {
     const orig = src.payload, lv = L?.lv;
     S.ed = { id, src, orig, W, L, dropDone: false, limits: { ...(orig.limits || {}) }, note: '', ins: { k: 'b', id: '', l: 1, at: 0 },
       rows: orig.steps.map((s, i) => {
-        const halt = (orig.halts || []).includes(i + 1);
-        return { s, n0: i + 1, halt, halt0: halt, done: !!lv && s[0] !== 's' && !(s[0] === 'b' && planAway(orig, i + 1)) && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };   // Live-Stand: nur Heimat
+        const halt = (orig.halts || []).includes(i + 1), rp = planResPlanet(orig, i + 1);
+        return { s, n0: i + 1, halt, halt0: halt, rp, rp0: rp, done: !!lv && s[0] !== 's' && !(s[0] === 'b' && planAway(orig, i + 1)) && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };   // Live-Stand: nur Heimat
       }) };
   }
   renderPlanEdit(isOwner());
@@ -174,6 +174,10 @@ function renderPlanEdit(own) {
   // Gebäude mit Faktor: aus dem Plan und den Grenzen
   const types = [...new Set([...(orig.factors || []).flatMap(f => Object.keys(f[1] || {})), ...Object.keys(E.limits)])]
     .sort((a, b) => nm(a).localeCompare(nm(b), 'de'));
+  // Forschungs-Startplanet je Forschungsschritt (M6): Owner wählt Heimat oder eine Kolonie des Plans; sonst Anzeige wie bisher
+  const cols = (Array.isArray(orig.planets) ? orig.planets : []).filter(p => p?.coords && p.coords !== orig.planet?.coords);
+  const rpCell = r => !own ? planResTag({ ...orig, steps: [r.s], researchPlanet: r.rp ? { 1: r.rp } : {} }, 1)
+    : ` <select data-rp title="Forschung startet auf"><option value="">startet auf Heimat</option>${cols.map(p => `<option value="${esc(p.coords)}"${p.coords === r.rp ? ' selected' : ''}>startet auf ${esc(p.name || p.coords)}</option>`).join('')}</select>${(r.rp || null) !== (r.rp0 || null) ? ' <b>geändert</b>' : ''}`;
   let n = 0;
   const rows = E.rows.map((r, i) => {
     const out = r.skip || E.dropDone && r.done && !r.ins;
@@ -181,7 +185,7 @@ function renderPlanEdit(own) {
     return `${r.halt && !out ? `<tr class="halt"><td></td><td colspan="2">⏸ Haltepunkt: Autobuilder hält vor #${no} an</td></tr>` : ''}
       <tr class="step${out ? ' skip' : ''}${!out && bad.has(no - 1) ? ' bad' : ''}" data-i="${i}">
       <td class="num">${out ? '–' : '#' + no}</td>
-      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + (r.n0 ? planResTag(E.orig, r.n0) : '') : ''}${plOf(r) ? ` <span class="tag aktiv">${esc(planTabName(orig, plOf(r)))} (${esc(plOf(r))})</span>` : r.s[0] === 'b' ? ' <span class="tag">Heimat</span>' : ''}<div class="small muted">${r.ins ? '<b>neu eingefügt</b>' : `war #${r.n0}`}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
+      <td>${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + rpCell(r) : ''}${plOf(r) ? ` <span class="tag aktiv">${esc(planTabName(orig, plOf(r)))} (${esc(plOf(r))})</span>` : r.s[0] === 'b' ? ' <span class="tag">Heimat</span>' : ''}<div class="small muted">${r.ins ? '<b>neu eingefügt</b>' : `war #${r.n0}`}${r.moved ? ' · verschoben' : ''}${r.done ? ' · live erreicht' : ''}${r.skip ? ' · übersprungen' : ''}</div></td>
       <td class="acts">${own ? `<button data-a="up" title="nach oben"${i ? '' : ' disabled'}>↑</button><button data-a="down" title="nach unten"${i < E.rows.length - 1 ? '' : ' disabled'}>↓</button><button data-a="halt" title="Haltepunkt davor"${r.halt ? ' class="on"' : ''}>⏸</button><button data-a="skip" title="${r.ins ? 'wieder entfernen' : 'überspringen'}"${r.skip ? ' class="on"' : ''}>✕</button>` : ''}</td></tr>`;
   }).join('');
   const lim = Object.entries(E.limits).map(([t, [a, b]]) => `<div class="row between small"><span>${esc(nm(t))}: ${a}–${b} %</span>${own ? `<button class="link" data-lim-del="${esc(t)}">entfernen</button>` : ''}</div>`).join('');
@@ -220,6 +224,11 @@ function renderPlanEdit(own) {
   });
   if (W) bindIns(E, own);
   $('#view').querySelectorAll('[data-lim-del]').forEach(b => b.addEventListener('click', () => { delete E.limits[b.dataset.limDel]; renderPlanEdit(own); }));
+  $('#view').querySelector('.edsteps').addEventListener('change', e => {
+    const sel = e.target.closest('select[data-rp]'); if (!sel) return;
+    E.rows[+sel.closest('tr').dataset.i].rp = sel.value || null;
+    renderPlanEdit(own);
+  });
   $('#view').querySelector('.edsteps').addEventListener('click', e => {
     const b = e.target.closest('button[data-a]'); if (!b) return;
     const i = +b.closest('tr').dataset.i, r = E.rows[i];
@@ -309,18 +318,21 @@ async function createEdited(E, P, errs) {
   // (eine Liste aus Plänen vor M1 gilt nicht und fällt weg)
   delete payload.stepPlanet;
   if (o.stepPlanet && !Array.isArray(o.stepPlanet)) payload.stepPlanet =Object.fromEntries(P.keep.map((r, i) => [i + 1, o.stepPlanet[r.n0]]).filter(x => x[1]));
-  // Forschungs-Startplanet (M6, plan.researchPlanet {Nr: Koordinaten}) ebenso; eingefügte Forschung startet auf der Heimat
+  // Forschungs-Startplanet (M6, plan.researchPlanet {Nr: Koordinaten}) ebenso, mit der Auswahl im Editor (r.rp; eingefügte
+  // Forschung: Heimat, bis anders gewählt)
   delete payload.researchPlanet;
-  if (o.researchPlanet) { const rp = Object.fromEntries(P.keep.map((r, i) => [i + 1, r.n0 ? planResPlanet(o, r.n0) : null]).filter(x => x[1])); if (Object.keys(rp).length) payload.researchPlanet = rp; }
+  const rp = Object.fromEntries(P.keep.map((r, i) => [i + 1, r.s[0] === 'r' ? r.rp || null : null]).filter(x => x[1]));
+  if (Object.keys(rp).length) payload.researchPlanet = rp;
   // Haltepunkte zusätzlich über die feste Kennung (M7, Autobuilder ab 0.5.47): gelten auch, wenn sich Nummern verschieben
   delete payload.haltKeys;
   if (P.halts.length) { const ks = planStepKeys(payload); payload.haltKeys = P.halts.map(n => ks[n - 1]).filter(Boolean); }
   payload.id = await planId([payload.startTime, payload.steps, payload.factors, payload.halts || [], payload.limits || {}, o.id, now.toISOString()]);
   const sk = E.rows.filter(r => r.skip).map(r => '#' + r.n0), mv = E.rows.filter(r => r.moved && !r.skip && !r.ins).map(r => '#' + r.n0);
   const ins = P.keep.map((r, i) => r.ins ? `#${i + 1} ${r.s[5]}` : null).filter(Boolean);
+  const rpm = P.keep.map((r, i) => (r.rp || null) !== (r.rp0 || null) ? `#${i + 1} → ${r.rp ? planTabName(o, r.rp) : 'Heimat'}` : null).filter(Boolean);
   const note = [`${P.changed ? 'Geändert' : 'Neu gestartet'} aus ${o.id} (${E.src.status}) im Cockpit: ${P.steps.length} Schritte`,
     E.dropDone ? `live erreichte weggelassen (${E.rows.filter(r => r.done && !r.skip).length})` : '',
-    sk.length ? `übersprungen ${sk.join(' ')}` : '', ins.length ? `eingefügt ${ins.join(', ')}` : '', mv.length ? `verschoben ${mv.join(' ')}` : '',
+    sk.length ? `übersprungen ${sk.join(' ')}` : '', rpm.length ? `Forschungsort ${rpm.join(', ')}` : '', ins.length ? `eingefügt ${ins.join(', ')}` : '', mv.length ? `verschoben ${mv.join(' ')}` : '',
     P.halts.length ? `Haltepunkte vor #${P.halts.join(', #')}` : '',
     Object.keys(E.limits).length ? `Faktor-Grenzen ${Object.entries(E.limits).map(([t, [a, b]]) => `${t} ${a}–${b} %`).join(', ')}` : '',
     errs.length ? `${errs.length} Voraussetzungs-Hinweise` : '', E.note.trim()].filter(Boolean).join(' · ');
