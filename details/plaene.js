@@ -449,19 +449,51 @@ function simlaufWire(el, pl) {
   });
 }
 
+/* Transport-Regelset (Paket G, 31.10.2026): Standard für neue Pläne (accounts.settings.transportRegel, RPC transport_regel_setzen,
+   nur Owner; Sets in simparams.js = tools/sim_params.py). Gilt nicht für den aktiven Plan: Work rechnet den nächsten Plan damit
+   (tools/sim_actions.py, ohne Wahl NUTZEN), der Plan trägt es fest (plan.transportRegel); Freigabe des Plans = Freigabe des Regelsets. */
+// gewähltes Regelset (null = noch keins) und Standard für neue Pläne (sonst Rückfall NUTZEN)
+const regelStd = settings => { const cur = HZ_SIMPARAMS.TRANSPORT_REGELSETS[settings?.transportRegel] ? settings.transportRegel : null; return { cur, std: cur || HZ_SIMPARAMS.TRANSPORT_RUECKFALL }; };
+function regelCard(settings, plan, own) {
+  const R = HZ_SIMPARAMS.TRANSPORT_REGELSETS, { cur, std } = regelStd(settings), an = plan ? HZ_SIMPARAMS.regelName(plan.transportRegel) : '';
+  const aktiv = !plan ? 'kein aktiver Plan' : an === 'fest' ? 'fester Takt (Plan ohne Regelset)' : an || 'eigene Werte';
+  return `<div class="card" id="trrCard"><h2>Transport-Regelset</h2>
+    <p class="muted small">Danach fliegt der Autobuilder Transporte ohne Einzelfreigabe. Eine Änderung gilt erst ab dem nächsten Plan: Work rechnet ihn mit dem gewählten Regelset, mit der Freigabe des Plans gibst du es frei. Der aktive Plan bleibt bei seinem.</p>
+    <div class="small">Aktiver Plan: <b>${esc(aktiv)}</b></div>
+    <div class="small">Standard für neue Pläne: <b>${esc(std)}</b>${cur ? settings.transportRegelAt ? ` <span class="muted">· gewählt ${esc(dt(settings.transportRegelAt))}</span>` : '' : ' <span class="muted">(noch nicht gewählt)</span>'}</div>
+    ${Object.entries(R).map(([n, x]) => `<label style="display:flex;gap:8px;align-items:baseline;margin-top:6px"><input type="radio" name="trr" style="width:auto;flex:none;margin:0" value="${esc(n)}"${n === std ? ' checked' : ''}${own ? '' : ' disabled'}>
+      <span><b>${esc(n)}</b> <span class="small">${esc(x.text)}</span></span></label>`).join('')}
+    ${own ? '<div class="row" style="margin-top:6px"><button id="trrGo" disabled>Als Standard für neue Pläne übernehmen</button></div>' : ''}</div>`;
+}
+function regelWire(el, settings) {
+  const card = el.querySelector('#trrCard'), go = card?.querySelector('#trrGo');
+  if (!go) return;
+  const R = HZ_SIMPARAMS.TRANSPORT_REGELSETS, { cur, std } = regelStd(settings);
+  const pick = () => card.querySelector('input[name="trr"]:checked')?.value;
+  card.querySelectorAll('input[name="trr"]').forEach(r => r.addEventListener('change', () => { go.disabled = !!cur && pick() === std; }));
+  go.disabled = !!cur;   // noch nicht gewählt: Rückfall ausdrücklich übernehmen können
+  go.addEventListener('click', async () => {
+    const n = pick();
+    if (!R[n] || !confirm(`Transport-Regelset ${n} als Standard für neue Pläne?\n${R[n].text}\n\nDer aktive Plan bleibt bei seinem Regelset; der nächste Lauf auf Work rechnet mit ${n}.`)) return;
+    try { const r = await Cloud.rpc('transport_regel_setzen', { p_account: S.acc, p_regel: n }); toast(`Standard: ${r?.regel || n}`); route(true); } catch (e) { toast(e.message); }
+  });
+}
+
 const ATLAS_RUN = p => ['freigegeben', 'aktiv'].includes(p.status);
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
-  const [plans, heads, sess, W, homes, pl] = await Promise.all([
+  const [plans, heads, sess, W, homes, pl, accs] = await Promise.all([
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', order: 'created_at.desc', limit: 200,
-      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
+      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,regel:payload->transportRegel' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1, select: 'id,status,title,plan_hash' }),
     loadSessions(),
     loadWissen().catch(() => null),
     S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
     Cloud.rpc('planlauf_status', { p_account: S.acc }).catch(() => null),
+    Cloud.q('accounts', { id: acc, select: 'settings' }).catch(() => null),
   ]);
+  const settings = accs?.[0]?.settings || null;
   if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   if (plans.some(p => !planNo(p.id))) await loadNums(true);
   const head = heads[0];
@@ -502,18 +534,21 @@ async function viewPlans(rest = []) {
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
       ${gainText(gains[p.id]) ? `<div class="small ${gainOk(gains[p.id]) ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
       ${planTeilHtml(gains[p.id]?.teil)}
+      ${p.regel ? `<div class="small">Transport-Regelset: <b>${esc(HZ_SIMPARAMS.regelName(p.regel) || 'eigene Werte')}</b></div>` : ''}
       <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${p.status !== 'entwurf' && p.status_at ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
       ${planDetails(p)}
       ${own ? `<div class="row between" style="margin-top:6px">${p.plan_hash ? `<a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a>` : '<span></span>'}
         <span class="row" style="gap:6px">${p.status === 'entwurf' ? `<button class="primary small" data-go="${esc(p.id)}">Freigeben</button>` : ''}
         ${ATLAS_RUN(p) ? '' : `<button class="danger small" data-del="${esc(p.id)}">Löschen</button>`}</span></div>` : ''}</div>`;
   html += simlaufCard(pl, own);
+  html += regelCard(settings, plan, own);
   html += `<div class="card"><h2>Alle Baupläne <span class="muted small">${plans.length}, neueste zuerst</span></h2>
     <p class="muted small">Hier (Owner): Entwürfe freigeben (danach Übernehmen anbieten, „bis #“ und Start im Cockpit), als neuen Entwurf ändern, nicht laufende löschen. Verwerfen und Abbrechen im Cockpit.</p>
     ${plans.length ? plans.map(item).join('') : '<p class="muted">Noch keine Pläne.</p>'}</div>`;
   $('#view').innerHTML = html;
   planTabsWire($('#view'));
   simlaufWire($('#view'), pl);
+  regelWire($('#view'), settings);
   $('#view').querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () =>
     takeNewPlan({ draft: plans.find(x => x.id === b.dataset.go), teil: gains[b.dataset.go]?.teil }, sess)));
   $('#view').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => deletePlan(plans.find(x => x.id === b.dataset.del))));

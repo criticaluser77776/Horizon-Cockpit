@@ -23,6 +23,25 @@
     kololive: true, flugfaktor: 0.043,
     takt: 6, taktlast: 12000, taktmod: ['tempo:-0.5'],   // Transport 6 Flüge/Tag mit 1 PTRN (12 000 t live, Nutzer 25.10.)
   };
+  // Transport-Regelsets (Paket G, 31.10.2026): Name → Abweichung vom Regelset STANDARD (analyse/sim/transport-regel.js), gleich
+  // tools/sim_params.py TRANSPORT_REGELSETS. Der Owner wählt den Standard für neue Pläne (RPC transport_regel_setzen); der aktive
+  // Plan behält seins (plan.transportRegel). KERN = die Werte von STANDARD, an denen sich die Sets unterscheiden (Test prüft).
+  const TRANSPORT_KERN = { minLadung: 0.35, minLadungAdhoc: 0.35, voraus: 1, auffuellen: true };
+  const TRANSPORT_REGELSETS = {
+    STANDARD: { regel: {}, text: 'jeder Flug ≥ 35 % des Laderaums (auch Ad-hoc), Bedarf des nächsten Schritts, aufgefüllt bis 35 % (Regelset 28.10.)' },
+    NUTZEN: { regel: { minLadung: 0.7, minLadungAdhoc: 0.8, voraus: 3, auffuellen: false }, text: 'jeder Flug ≥ 70 % (Ad-hoc ≥ 80 %), Bedarf der nächsten 3 Schritte, nicht auffüllen (Nutzer 30.10.)' },
+    VOLL: { regel: { minLadung: 0.9, minLadungAdhoc: 0.9, voraus: 5 }, text: 'jeder Flug ≥ 90 % (auch Ad-hoc), Bedarf der nächsten 5 Schritte, aufgefüllt (Vergleich g3-voll)' },
+  };
+  const TRANSPORT_RUECKFALL = 'NUTZEN';
+  // Name des Regelsets eines Plans (plan.transportRegel, ganzes Regelset) oder null (eigene Werte); ohne Regelset 'fest' (fester Takt)
+  function regelName(tr) {
+    if (!tr || typeof tr !== 'object') return 'fest';
+    return Object.keys(TRANSPORT_REGELSETS).find(n => {
+      const r = { ...TRANSPORT_KERN, ...TRANSPORT_REGELSETS[n].regel };
+      return Object.keys(TRANSPORT_KERN).every(k => tr[k] === r[k]);
+    }) || null;
+  }
+
   const ID = '[a-z][a-z0-9_]{1,39}';
   const PAT = {
     kolo: /^(\d{1,2}|K|N\d{0,2}):([A-Z]{4}|\?):(rohstoff|kolozentrum|auto)$/,
@@ -148,7 +167,8 @@
     return d;
   }
 
-  const api = { AUFWAND, DEFAULTS, PAT, fromForm, toForm, check, diff, defaults: () => clone(DEFAULTS) };
+  const api = { AUFWAND, DEFAULTS, PAT, fromForm, toForm, check, diff, defaults: () => clone(DEFAULTS),
+    TRANSPORT_KERN, TRANSPORT_REGELSETS, TRANSPORT_RUECKFALL, regelName };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.HZ_SIMPARAMS = api;
 })(typeof window !== 'undefined' ? window : globalThis);
