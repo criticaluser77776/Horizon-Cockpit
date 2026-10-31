@@ -105,14 +105,19 @@ function checkOrder(steps, orig, live, W, pl = [], plOrig = []) {
   });
   return errs;
 }
-// Live-Stufen aus dem neuesten Live-Stand {'b:typ': Stufe} (Titel zeigt bei laufendem Auftrag schon die Zielstufe)
+// Live-Stufen aus dem neuesten Live-Stand {'b:typ': Stufe} (Titel zeigt bei laufendem Auftrag schon die Zielstufe);
+// lvc: Gebäude der Kolonien aus der Imperiumsübersicht {'b:typ@Koordinaten': Stufe}, laufender Ausbau zählt als fertig
 async function liveLevels() {
   const r = (await Cloud.q('state_latest', { account_id: `eq.${S.acc}`, kind: 'eq.live',
-    select: 'collected_at,b:data->buildings->items,r:data->research->items' }).catch(() => []))[0];
+    select: 'collected_at,b:data->buildings->items,r:data->research->items,ep:data->empire->planets,eb:data->empire->buildings->items' }).catch(() => []))[0];
   if (!r) return null;
-  const out = {};
+  const out = {}, lvc = {};
   for (const k of ['b', 'r']) for (const o of r[k] || []) if (o?.type && Number.isInteger(o.level)) out[`${k}:${o.type}`] = o.level;
-  return { at: r.collected_at, lv: out };
+  (Array.isArray(r.ep) ? r.ep : []).forEach((p, k) => {
+    if (typeof p?.coords === 'string') for (const o of r.eb || []) if (o?.type && Number.isInteger(o.values?.[k]))
+      lvc[`b:${o.type.toLowerCase()}@${p.coords}`] = o.values[k] + ((o.busy || []).includes(k) ? 1 : 0);
+  });
+  return { at: r.collected_at, lv: out, lvc };
 }
 async function planId(x) {
   const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(x)));
@@ -137,10 +142,12 @@ function newStep(W, k, id, l) {
   const o = W.R[id], m = Math.pow(o.c === 'Allianzforschung' ? 2.5 : 1.5, l - 1);
   return ['r', id, l, 0, 0, `${o.n} ${l}`, (o.k || [0, 0, 0]).map(x => Math.floor(x * m))];
 }
-// Stufe, die ein Objekt vor Zeile j des Editors erreicht hat (frühere Schritte, sonst Live-Stand, sonst 0)
-function levelBefore(E, k, id, j) {
-  let l = E.L?.lv?.[`${k}:${id}`] ?? 0;
-  E.rows.slice(0, j).forEach(r => { if (!r.skip && r.s[0] === k && r.s[1] === id) l = Math.max(l, r.s[2]); });
+// Stufe, die ein Objekt vor Zeile j des Editors erreicht hat (frühere Schritte, sonst Live-Stand, sonst 0); Gebäude je Planet
+// (c = Koordinaten der Kolonie, null = Heimat)
+const liveLevel = (E, k, id, c) => (k === 'b' && c ? E.L?.lvc?.[`b:${id}@${c}`] : E.L?.lv?.[`${k}:${id}`]) ?? null;
+function levelBefore(E, k, id, j, c = null) {
+  let l = liveLevel(E, k, id, c) ?? 0;
+  E.rows.slice(0, j).forEach(r => { if (!r.skip && r.s[0] === k && r.s[1] === id && (k !== 'b' || (r.pl || null) === c)) l = Math.max(l, r.s[2]); });
   return l;
 }
 // Planzeit für einen neuen Schritt an Position j: zwischen den Startzeiten der Nachbarn (am Ende: Ende des letzten), Dauer 0
@@ -154,28 +161,30 @@ async function viewPlanEdit(id) {
     if (!src || src.kind !== 'build' || !Array.isArray(src.payload?.steps)) throw new Error('Bauplan nicht gefunden');
     const [W, L] = await Promise.all([loadWissen().catch(() => null), liveLevels()]);
     const orig = src.payload, lv = L?.lv;
-    S.ed = { id, src, orig, W, L, dropDone: false, limits: { ...(orig.limits || {}) }, note: '', ins: { k: 'b', id: '', l: 1, at: 0 },
+    S.ed = { id, src, orig, W, L, dropDone: false, limits: { ...(orig.limits || {}) }, note: '', ins: { k: 'b', id: '', l: 1, at: 0, pl: '' },
       rows: orig.steps.map((s, i) => {
-        const halt = (orig.halts || []).includes(i + 1), rp = planResPlanet(orig, i + 1);
-        return { s, n0: i + 1, halt, halt0: halt, rp, rp0: rp, done: !!lv && s[0] !== 's' && !(s[0] === 'b' && planAway(orig, i + 1)) && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };   // Live-Stand: nur Heimat
+        const halt = (orig.halts || []).includes(i + 1), rp = planResPlanet(orig, i + 1), pl = s[0] === 'b' ? planAway(orig, i + 1) : null;
+        return { s, n0: i + 1, halt, halt0: halt, rp, rp0: rp, pl, done: !!lv && s[0] !== 's' && !(s[0] === 'b' && planAway(orig, i + 1)) && (lv[`${s[0]}:${s[1]}`] ?? -1) >= s[2] };   // Live-Stand: nur Heimat
       }) };
   }
   renderPlanEdit(isOwner());
 }
+// Kolonien des Plans (ohne Heimat): wählbar als Bauort eingefügter Gebäude und als Forschungs-Startplanet
+const edCols = orig => (Array.isArray(orig.planets) ? orig.planets : []).filter(p => p?.coords && p.coords !== orig.planet?.coords);
 function renderPlanEdit(own) {
   const E = S.ed, { W, L, orig } = E;
   const P = editedPlan(E);
   // eingefügte Objekte: Ausgangsstufe = Stufe davor (sonst gälten Objekte ohne Live-Wert als vorhanden)
-  const plOf = r => r.n0 && r.s[0] === 'b' ? planAway(orig, r.n0) : null;   // Kolonie je Zeile (eingefügte Schritte: Heimat)
+  const plOf = r => r.s[0] === 'b' ? r.pl || null : null;   // Kolonie je Zeile (eingefügte Schritte: gewählter Planet)
   const errs = checkOrder(P.steps, [...orig.steps, ...E.rows.filter(r => r.ins).map(r => r.s)], L?.lv, W,
-    P.keep.map(plOf), [...orig.steps.map((s, j) => s[0] === 'b' ? planAway(orig, j + 1) : null), ...E.rows.filter(r => r.ins).map(() => null)]);
+    P.keep.map(plOf), [...orig.steps.map((s, j) => s[0] === 'b' ? planAway(orig, j + 1) : null), ...E.rows.filter(r => r.ins).map(plOf)]);
   const bad = new Set(errs.map(e => e.i));
   const nm = t => W?.B?.[t]?.n || t;
   // Gebäude mit Faktor: aus dem Plan und den Grenzen
   const types = [...new Set([...(orig.factors || []).flatMap(f => Object.keys(f[1] || {})), ...Object.keys(E.limits)])]
     .sort((a, b) => nm(a).localeCompare(nm(b), 'de'));
   // Forschungs-Startplanet je Forschungsschritt (M6): Owner wählt Heimat oder eine Kolonie des Plans; sonst Anzeige wie bisher
-  const cols = (Array.isArray(orig.planets) ? orig.planets : []).filter(p => p?.coords && p.coords !== orig.planet?.coords);
+  const cols = edCols(orig);
   const rpCell = r => !own ? planResTag({ ...orig, steps: [r.s], researchPlanet: r.rp ? { 1: r.rp } : {} }, 1)
     : ` <select data-rp title="Forschung startet auf"><option value="">startet auf Heimat</option>${cols.map(p => `<option value="${esc(p.coords)}"${p.coords === r.rp ? ' selected' : ''}>startet auf ${esc(p.name || p.coords)}</option>`).join('')}</select>${(r.rp || null) !== (r.rp0 || null) ? ' <b>geändert</b>' : ''}`;
   let n = 0;
@@ -256,10 +265,15 @@ function retime(rows, j) {
 // Karte „Schritt einfügen“ (B17): Art, Objekt, Stufe, Position (vor Zeile j des Editors; Nummern wie in der Tabelle)
 const insObjs = (W, k) => Object.entries(k === 'b' ? W.B : W.R).sort((a, b) => a[1].n.localeCompare(b[1].n, 'de'));
 function insCard(E, P) {
-  const { W, ins } = E, src = ins.k === 'b' ? W.B : W.R, objs = insObjs(W, ins.k);
-  if (!src[ins.id]) { ins.id = objs[0][0]; ins.l = Math.min(levelBefore(E, ins.k, ins.id, ins.at) + 1, src[ins.id].f || 99); }
+  const { W, ins } = E, src = ins.k === 'b' ? W.B : W.R, objs = insObjs(W, ins.k), cols = edCols(E.orig);
+  if (!cols.some(p => p.coords === ins.pl)) ins.pl = '';
+  const c = ins.k === 'b' ? ins.pl || null : null;
+  if (!src[ins.id]) { ins.id = objs[0][0]; ins.l = Math.min(levelBefore(E, ins.k, ins.id, ins.at, c) + 1, src[ins.id].f || 99); }
   if (ins.at > E.rows.length) ins.at = E.rows.length;
-  const max = src[ins.id].f || 99, have = levelBefore(E, ins.k, ins.id, ins.at);
+  const max = src[ins.id].f || 99, have = levelBefore(E, ins.k, ins.id, ins.at, c);
+  const pre = ins.k === 'b' ? 'auf' : 'startet auf';
+  const plSel = cols.length ? ` <select id="insPl" title="${ins.k === 'b' ? 'Planet, auf dem gebaut wird' : 'Planet, auf dem die Forschung startet'}">
+    <option value="">${pre} Heimat${E.orig.planet?.name ? ` (${esc(E.orig.planet.name)})` : ''}</option>${cols.map(p => `<option value="${esc(p.coords)}"${p.coords === ins.pl ? ' selected' : ''}>${pre} ${esc(p.name || p.coords)} (${esc(p.coords)})</option>`).join('')}</select>` : '';
   let n = 0;
   const pos = E.rows.map((r, i) => {
     const out = r.skip || E.dropDone && r.done && !r.ins;
@@ -268,14 +282,16 @@ function insCard(E, P) {
   return `<div class="card" style="margin-top:12px"><h3 style="margin-top:0">Schritt einfügen</h3>
     <div class="row wrap"><select id="insK"><option value="b"${ins.k === 'b' ? ' selected' : ''}>Gebäude</option><option value="r"${ins.k === 'r' ? ' selected' : ''}>Forschung</option></select>
       <select id="insId">${objs.map(([id, o]) => `<option value="${esc(id)}"${id === ins.id ? ' selected' : ''}>${esc(o.n)}</option>`).join('')}</select>
-      Stufe <input id="insL" type="number" min="1" max="${max}" value="${ins.l}" style="width:4.5em"></div>
+      Stufe <input id="insL" type="number" min="1" max="${max}" value="${ins.l}" style="width:4.5em">${plSel}</div>
     <div class="row wrap" style="margin-top:6px"><select id="insAt" style="max-width:100%">${pos}</select> <button id="insGo">einfügen</button></div>
-    <p class="muted small">An dieser Stelle hat ${esc(src[ins.id].n)} Stufe ${have}${have >= max ? ' (Höchststufe)' : ''}. Der Autobuilder führt den Schritt wie jeden Planschritt aus: Voraussetzungen laut Datenbank, Kosten und Bauzeit live von der Spielseite; die Faktor-Vorgaben des Plans bleiben unverändert, spätere Planzeiten verschieben sich nicht.</p></div>`;
+    <p class="muted small">An dieser Stelle hat ${esc(src[ins.id].n)}${c ? ` auf ${esc(planTabName(E.orig, c))}` : ''} Stufe ${have}${have >= max ? ' (Höchststufe)' : ''}. Der Autobuilder führt den Schritt wie jeden Planschritt aus: Voraussetzungen laut Datenbank, Kosten und Bauzeit live von der Spielseite; die Faktor-Vorgaben des Plans bleiben unverändert, spätere Planzeiten verschieben sich nicht.</p></div>`;
 }
 function bindIns(E, own) {
   const ins = E.ins, max = () => (ins.k === 'b' ? E.W.B : E.W.R)[ins.id]?.f || 99;
-  const sugg = () => { ins.l = Math.min(levelBefore(E, ins.k, ins.id, ins.at) + 1, max()); renderPlanEdit(own); };
+  const c = () => ins.k === 'b' ? ins.pl || null : null;
+  const sugg = () => { ins.l = Math.min(levelBefore(E, ins.k, ins.id, ins.at, c()) + 1, max()); renderPlanEdit(own); };
   $('#insK')?.addEventListener('change', e => { ins.k = e.target.value; ins.id = insObjs(E.W, ins.k)[0][0]; sugg(); });
+  $('#insPl')?.addEventListener('change', e => { ins.pl = e.target.value; sugg(); });
   $('#insId')?.addEventListener('change', e => { ins.id = e.target.value; sugg(); });
   $('#insAt')?.addEventListener('change', e => { ins.at = +e.target.value; sugg(); });
   $('#insL')?.addEventListener('input', e => { ins.l = +e.target.value; });
@@ -283,7 +299,7 @@ function bindIns(E, own) {
     const l = +$('#insL').value;
     if (!Number.isInteger(l) || l < 1 || l > max()) return toast(`Stufe 1–${max()} wählen`);
     // Stufe steht schon im Plan (z. B. Sternwarte 2 als #78): an die gewählte Stelle verschieben statt doppelt einfügen
-    const k = E.rows.findIndex(r => r.s[0] === ins.k && r.s[1] === ins.id && r.s[2] === l);
+    const k = E.rows.findIndex(r => r.s[0] === ins.k && r.s[1] === ins.id && r.s[2] === l && (ins.k !== 'b' || (r.pl || null) === c()));
     if (k >= 0) {
       if (k === ins.at || k === ins.at - 1) return toast(`${E.rows[k].s[5]} steht schon an dieser Stelle`);
       if (!confirm(`${E.rows[k].s[5]} steht schon im Plan${E.rows[k].n0 ? ` (war #${E.rows[k].n0})` : ''}${E.rows[k].skip ? ', übersprungen' : ''}.\nAn die gewählte Stelle verschieben?`)) return;
@@ -297,10 +313,11 @@ function bindIns(E, own) {
     }
     const s = newStep(E.W, ins.k, ins.id, l);
     s[3] = s[4] = insTime(E.rows, ins.at);
-    const done = !!E.L && (E.L.lv[`${ins.k}:${ins.id}`] ?? -1) >= l;
-    E.rows.splice(ins.at, 0, { s, n0: null, ins: true, halt: false, halt0: false, done });
+    const done = !!E.L && (liveLevel(E, ins.k, ins.id, c()) ?? -1) >= l;
+    const rp = ins.k === 'r' ? ins.pl || null : null;
+    E.rows.splice(ins.at, 0, { s, n0: null, ins: true, halt: false, halt0: false, pl: c(), rp, rp0: rp, done });
     ins.at++;
-    toast(`${s[5]} eingefügt${done ? ' – live schon erreicht' : ''}`);
+    toast(`${s[5]}${c() ? ` (${planTabName(E.orig, c())})` : ''} eingefügt${done ? ' – live schon erreicht' : ''}`);
     sugg();
   });
 }
@@ -315,9 +332,11 @@ async function createEdited(E, P, errs) {
   if (!P.halts.length) delete payload.halts;
   if (!Object.keys(E.limits).length) delete payload.limits;
   // Planet je Schritt (Kolonien, plan.stepPlanet {Nr: Koordinaten}) auf die neuen Nummern umschreiben
-  // (eine Liste aus Plänen vor M1 gilt nicht und fällt weg)
+  // (eine Liste aus Plänen vor M1 gilt nicht und fällt weg); eingefügte Gebäude: der im Editor gewählte Planet (r.pl)
   delete payload.stepPlanet;
-  if (o.stepPlanet && !Array.isArray(o.stepPlanet)) payload.stepPlanet =Object.fromEntries(P.keep.map((r, i) => [i + 1, o.stepPlanet[r.n0]]).filter(x => x[1]));
+  const okSp = o.stepPlanet && !Array.isArray(o.stepPlanet);
+  const sp = Object.fromEntries(P.keep.map((r, i) => [i + 1, r.ins ? r.pl : okSp ? o.stepPlanet[r.n0] : null]).filter(x => x[1]));
+  if (okSp || Object.keys(sp).length) payload.stepPlanet = sp;
   // Forschungs-Startplanet (M6, plan.researchPlanet {Nr: Koordinaten}) ebenso, mit der Auswahl im Editor (r.rp; eingefügte
   // Forschung: Heimat, bis anders gewählt)
   delete payload.researchPlanet;
@@ -328,7 +347,7 @@ async function createEdited(E, P, errs) {
   if (P.halts.length) { const ks = planStepKeys(payload); payload.haltKeys = P.halts.map(n => ks[n - 1]).filter(Boolean); }
   payload.id = await planId([payload.startTime, payload.steps, payload.factors, payload.halts || [], payload.limits || {}, o.id, now.toISOString()]);
   const sk = E.rows.filter(r => r.skip).map(r => '#' + r.n0), mv = E.rows.filter(r => r.moved && !r.skip && !r.ins).map(r => '#' + r.n0);
-  const ins = P.keep.map((r, i) => r.ins ? `#${i + 1} ${r.s[5]}` : null).filter(Boolean);
+  const ins = P.keep.map((r, i) => r.ins ? `#${i + 1} ${r.s[5]}${r.pl || r.rp ? ` (${r.rp ? 'startet auf ' : ''}${planTabName(o, r.pl || r.rp)})` : ''}` : null).filter(Boolean);
   const rpm = P.keep.map((r, i) => (r.rp || null) !== (r.rp0 || null) ? `#${i + 1} → ${r.rp ? planTabName(o, r.rp) : 'Heimat'}` : null).filter(Boolean);
   const note = [`${P.changed ? 'Geändert' : 'Neu gestartet'} aus ${o.id} (${E.src.status}) im Cockpit: ${P.steps.length} Schritte`,
     E.dropDone ? `live erreichte weggelassen (${E.rows.filter(r => r.done && !r.skip).length})` : '',
