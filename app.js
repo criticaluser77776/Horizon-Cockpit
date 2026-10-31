@@ -1238,8 +1238,9 @@ function trFlugHtml(x) {
     + `${x.kette ? ` · über ${esc(x.kette)}` : ''}${x.ab ? ` · ab ${esc(clockT(Date.parse(x.ab)))}` : ''}${x.an ? ` · an ${esc(clockT(Date.parse(x.an)))}` : ''}${x.status ? ` · ${esc(x.status)}` : ''}</div>`;
 }
 // Ad-hoc-Flüge des Autobuilders (Paket G Stufe 2, AB ab 0.7.15): kein Auftrag in der DB, nur Ereignis „transport“ mit adhoc: true; Text
-// „Ad-hoc-Flug n: Liefern A → B E/M/T mit Flotte, an hh:mm (Grund, wartet sonst ≈ x min)“. T-Stoff steht nicht im Ereignis.
-const AD_RE = /^Ad-hoc-Flug (\d+): (Liefern|Abholen) (\S+) → (\S+) (\d+)\/(\d+)\/(\d+) mit (.+?), an (\S+) \((.*)\)$/;
+// „Ad-hoc-Flug n: Liefern A → B E/M/T mit Flotte, an Sa., hh:mm (Grund, wartet sonst ≈ x min)“. T-Stoff steht nicht im Ereignis.
+// Ankunft mit Wochentag (AB clock(), 31.10. live gesehen; bis Shell v71 nur ein Wort erwartet → Rohtext).
+const AD_RE = /^Ad-hoc-Flug (\d+): (Liefern|Abholen) (\S+) → (\S+) (\d+)\/(\d+)\/(\d+) mit (.+?), an (.+?) \((.*)\)$/;
 function adhocCard(evs, snap) {
   if (evs == null) return '';
   const item = e => {
