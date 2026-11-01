@@ -702,10 +702,20 @@ function factorChanges(plan) {
 }
 // Erledigt: Ausführung (executions) oder vor dem ersten offenen Schritt des Autobuilders – Kolonie-Schritte baut er (bis M3)
 // nicht, für sie zählt nur eine Ausführung
+// Kolonie-Schritte (01.11.2026): auch erledigt, wenn sie vor dem nächsten offenen Schritt ihres Planeten laut Autobuilder liegen
+// (st.fc['b:<Koordinaten>'].i, Index ab 0) – ohne Ausführung blieben von Hand oder beim Planwechsel gebaute Schritte offen
+// (#23/#29 auf YontaurzaXI)
 const planStepDone = (plan, st, execs) => {
   const open = (st.open || []).filter(Number.isInteger), first = open.length ? Math.min(...open) : null;
   const done = new Set(execs.filter(e => e.step).map(e => e.step));
-  return n => done.has(n) || (first != null && n < first && !planAway(plan, n));
+  const fc = st.fc && typeof st.fc === 'object' ? st.fc : {};
+  return n => {
+    if (done.has(n)) return true;
+    const away = planAway(plan, n);
+    if (!away) return first != null && n < first;
+    const ci = fc['b:' + away]?.i;
+    return Number.isInteger(ci) && n <= ci;
+  };
 };
 /* Planschritte (Reiter aus planTabs/planInTab, M5): tab = 'alle' | 'heim' | Koordinaten einer Kolonie | 'r' (Forschung).
    Zeiten: Live-Zeitplan (LT = planLive, Nutzer 24.10.2026, wie im Autobuilder), reine Planzeit als Tooltip.
