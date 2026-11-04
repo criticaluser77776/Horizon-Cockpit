@@ -484,7 +484,7 @@ async function loadPlanExecs(accId, planId, plan) {
   const keys = [...new Set(planStepKeys(plan))], blocks = [];
   for (let i = 0; i < keys.length; i += 60) blocks.push(keys.slice(i, i + 60));
   const [own, ...keyedBlocks] = await Promise.all([
-    Cloud.q('executions', { account_id: accId, plan_id: `eq.${planId}`, select: 't,step,action,src_name,end:data->>end', order: 't.asc', limit: 1000 }),
+    Cloud.q('executions', { account_id: accId, plan_id: `eq.${planId}`, select: 't,step,action,src_name,end:data->>end,kolo:data->>kolo', order: 't.asc', limit: 1000 }),
     ...blocks.map(b => Cloud.q('executions', { account_id: accId, or: `(plan_id.is.null,plan_id.neq.${planId})`, ok: 'is.true',
       'data->>key': `in.(${b.map(k => `"${k}"`).join(',')})`, select: 't,action,src_name,key:data->>key', order: 't.desc', limit: 1000 }).catch(() => [])),
   ]);
@@ -732,6 +732,20 @@ const KIND_ROW = { r: ' kr', s: ' ks' };
 const planTransports = (plan, tab) => (Array.isArray(plan?.transporte) ? plan.transporte : [])
   .filter(x => x && isFinite(x.t) && (!tab || tab === 'alle' || tab === 'heim' || (tab !== 'r' && (x.nach === tab || x.von === tab))));
 const planLadung = l => { const p = (Array.isArray(l) ? l : []).map((v, i) => +v > 0 ? `${['Erz', 'Min', 'Treib'][i]} ${fmt(+v)}` : '').filter(Boolean); return p.length ? p.join(' · ') : 'leer'; };
+// Kolonisierungsflug eines Kolonieschiff-Schritts n (plan.kolonisieren aus analyse/build_autobuilder.js, Nutzer 04.11.2026): Ziel,
+// Ladung, Abflug und Landung. Live: Abflug = Ende des Schiffbaus laut Live-Zeitplan (x = LT.t[n − 1]), Landung = Abflug + Flug und
+// Kolonisieren laut Plan; gesendet = Ausführung „Kolonisieren“ des Autobuilders (executions.data.kolo = Flugnummer, AB 0.7.35)
+const planKolo = (plan, n) => (Array.isArray(plan?.kolonisieren) ? plan.kolonisieren : []).find(k => k && k.scol === n) || null;
+function koloZeile(plan, k, x, execs) {
+  const offen = !/^\d+:\d+:\d+$/.test(k.nach || ''), name = planTabName(plan, k.nach);
+  const ziel = offen ? `${name} – Ziel offen` : name !== k.nach ? `${name} (${k.nach})` : k.nach;
+  const sent = (execs || []).find(e => /^Kolonisieren/.test(e.action || '') && String(e.kolo) === String(k.nr));
+  const flugH = isFinite(k.landH) && isFinite(k.t) ? k.landH - k.t : null;
+  const ab = sent ? Date.parse(sent.t) : x && isFinite(x.e) ? x.e : null;
+  const zeit = sent ? `gesendet ${dt(sent.t)}${sent.end ? ` · Kolonie ca. ${dt(+sent.end)}` : ''}`
+    : ab ? `Abflug ca. ${dt(ab)}${flugH != null ? ` · Landung ca. ${dt(ab + flugH * 3600e3)}` : ''}` : '';
+  return `<div class="small">Kolonisieren → ${esc(ziel)} · Ladung ${esc(planLadung(k.ladung))}${zeit ? ` · ${esc(zeit)}` : ''}</div>`;
+}
 // Kosten eines Planschritts (steps[i][6] = [Eisenerz, Mineral, Treibstoff]) als kleine Zeile unter dem Namen (Nutzer 30.10.2026)
 const stepKosten = c => { const p = (Array.isArray(c) ? c : []).map((v, i) => +v > 0 ? `${['E', 'M', 'T'][i]} ${fmt(+v)}` : '').filter(Boolean); return p.length ? `<div class="small muted">${esc(p.join(' · '))}</div>` : ''; };
 function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
@@ -775,7 +789,7 @@ function stepsTable(plan, st, execs, W, tab, LT, opt = {}) {
     const mark = run ? arr('go') : isDone(r.n) ? '✓' : waits ? arr('wait') : open.includes(r.n) ? '▶' : !all && (st.halts || []).includes(r.n) ? '⏸' : '';
     const q = qcols ? Zeitplan.queueOf(plan, r.n - 1) : null;
     const qm = !qcols ? '' : run ? qmark('▶', q) + ' ' : LT.first?.[q]?.i === r.n - 1 ? qmark('⏵', q) + ' ' : '';
-    return `<tr class="step${KIND_ROW[r.s[0]] || ''}${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${stepKosten(r.s[6])}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
+    return `<tr class="step${KIND_ROW[r.s[0]] || ''}${isDone(r.n) && !run ? ' muted' : ''}${isUntil ? ' until' : ''}" data-i="${r.n}"><td class="num">${mark} #${r.n}</td><td>${qm}${esc(r.s[5])}${r.s[0] === 'r' ? ' <span class="tag">global</span>' + planResTag(plan, r.n) : ''}${kol && (!tab || tab === 'alle') ? ` <span class="tag aktiv">${esc(planTabName(plan, kol))}</span>` : ''}${kol && !isDone(r.n) && !st.colony ? ' <span class="muted">· von Hand</span>' : ''}${isUntil ? ' <span class="tag ok">bis #</span>' : ''}${stepKosten(r.s[6])}${r.s[0] === 's' && planKolo(plan, r.n) ? koloZeile(plan, planKolo(plan, r.n), LT.t[r.n - 1], execs) : ''}${e ? `<div class="small">gestartet ${esc(dt(e.t))} · ${esc(e.src_name)}${all && e.carried ? ' · aus Vorplan (gleiche Kennung)' : ''}</div>` : ''}</td>
       <td class="num"${tip(r.tau)}>${planLiveCell(LT.t[r.n - 1], e)}</td></tr>`;
   };
   // Transporte des Plans (payload.transporte, Takt-Flüge) als eigene Zeilen; Zeit wie Faktorwechsel an der Heimat-Bauschlange ausgerichtet
@@ -863,7 +877,7 @@ const activeEnd = (active, drift) => {
 };
 // Ausführungsrelevanter Inhalt eines Bauplans wie INHALT in tools/push_plan.py: Felder der Plan-ID (analyse/build_autobuilder.js
 // planHash) plus Haltepunkte und Faktor-Grenzen, ohne Metadaten (id, created, parent, lauf, bis, vergleich …)
-const PLAN_INHALT = ['startTime', 'steps', 'factors', 'stepPlanet', 'researchPlanet', 'planetFactors', 'park', 'halts', 'limits'];
+const PLAN_INHALT = ['startTime', 'steps', 'factors', 'stepPlanet', 'researchPlanet', 'planetFactors', 'park', 'kolonisieren', 'halts', 'limits'];
 const PLAN_INHALT_SELECT = PLAN_INHALT.map(k => `${k}:payload->${k}`).join(',');
 const leerWert = x => x == null || x === '' || (Array.isArray(x) ? !x.length : typeof x === 'object' && !Object.keys(x).length);
 // Tiefer Vergleich unabhängig von der Schlüsselreihenfolge (jsonb ordnet Schlüssel um), Zahlen per Wert

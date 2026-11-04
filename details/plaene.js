@@ -342,6 +342,12 @@ async function createEdited(E, P, errs) {
   delete payload.researchPlanet;
   const rp = Object.fromEntries(P.keep.map((r, i) => [i + 1, r.s[0] === 'r' ? r.rp || null : null]).filter(x => x[1]));
   if (Object.keys(rp).length) payload.researchPlanet = rp;
+  // Kolonisierungsflüge (plan.kolonisieren, 04.11.2026): Kolonieschiff-Schritt scol auf die neue Nummer; gestrichenes Schiff → scol
+  // null (der Autobuilder fliegt dann ab der Planzeit des Abflugs)
+  if (Array.isArray(o.kolonisieren)) {
+    const nr = new Map(P.keep.filter(r => !r.ins).map(r => [r.n0, P.keep.indexOf(r) + 1]));
+    payload.kolonisieren = o.kolonisieren.map(k => ({ ...k, scol: nr.get(k.scol) ?? null }));
+  }
   // Haltepunkte zusätzlich über die feste Kennung (M7, Autobuilder ab 0.5.47): gelten auch, wenn sich Nummern verschieben
   delete payload.haltKeys;
   if (P.halts.length) { const ks = planStepKeys(payload); payload.haltKeys = P.halts.map(n => ks[n - 1]).filter(Boolean); }
