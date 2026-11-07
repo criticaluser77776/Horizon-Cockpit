@@ -480,19 +480,43 @@ function planTeilHtml(x) {
 // 0.5.47): so behält ein neuer Plan den Stand unveränderter Planeten. step = Nummer in diesem Plan.
 // Fremde Ausführungen nur mit den Kennungen dieses Plans, in Blöcken zu 60 (URL-Länge); vorher alle mit Kennung, begrenzt auf
 // die neuesten 1000 (Review C3: wächst mit jedem Plan um 150–300).
+// Aufstieg (07.11.2026, Nutzer): Ausführungen vor dem letzten Aufstieg (Tabelle aufstiege, RPC plan_stand) gehören zum alten Account
+// und zählen nicht. Am Ergebnis hängt (nicht aufzählbar) .live = Stufen aus dem neuesten Live-Snapshot (planLiveLevels) für planStepDone.
 async function loadPlanExecs(accId, planId, plan) {
   const keys = [...new Set(planStepKeys(plan))], blocks = [];
   for (let i = 0; i < keys.length; i += 60) blocks.push(keys.slice(i, i + 60));
-  const [own, ...keyedBlocks] = await Promise.all([
+  const [own, stand, ...keyedBlocks] = await Promise.all([
     Cloud.q('executions', { account_id: accId, plan_id: `eq.${planId}`, select: 't,step,action,src_name,end:data->>end,kolo:data->>kolo', order: 't.asc', limit: 1000 }),
+    Cloud.rpc('plan_stand', { p_account: String(accId).replace(/^eq\./, '') }).catch(() => null),
     ...blocks.map(b => Cloud.q('executions', { account_id: accId, or: `(plan_id.is.null,plan_id.neq.${planId})`, ok: 'is.true',
       'data->>key': `in.(${b.map(k => `"${k}"`).join(',')})`, select: 't,action,src_name,key:data->>key', order: 't.desc', limit: 1000 }).catch(() => [])),
   ]);
-  const keyed = keyedBlocks.flat().sort((a, b) => Date.parse(b.t) - Date.parse(a.t));
-  const no = new Map(planStepKeys(plan).map((k, i) => [k, i + 1])), have = new Set(own.filter(e => e.step).map(e => e.step));
+  return planExecsMerge(plan, own, keyedBlocks.flat(), stand);
+}
+// Zusammenführen (ohne Netz, testbar): eigene + übernommene Ausführungen ab dem letzten Aufstieg, .live aus plan_stand
+function planExecsMerge(plan, own, keyedAll, stand) {
+  const cut = Date.parse(stand?.aufstieg || '');
+  const neu = e => !isFinite(cut) || !(Date.parse(e.t) < cut);
+  const mine = (own || []).filter(neu);
+  const keyed = (keyedAll || []).filter(neu).sort((a, b) => Date.parse(b.t) - Date.parse(a.t));
+  const no = new Map(planStepKeys(plan).map((k, i) => [k, i + 1])), have = new Set(mine.filter(e => e.step).map(e => e.step));
   const more = [];
   for (const e of keyed) { const n = no.get(e.key); if (n && !have.has(n)) { have.add(n); more.push({ t: e.t, step: n, action: e.action, src_name: e.src_name, carried: true }); } }
-  return [...own, ...more].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+  const out = [...mine, ...more].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+  Object.defineProperty(out, 'live', { value: planLiveLevels(stand), enumerable: false });
+  return out;
+}
+// Stufen aus plan_stand: Gebäude je Planet („Koordinaten|Kennung“, Startplanet aus der Gebäudeseite, sonst Imperium-Übersicht),
+// Forschung global; at = Zeit des Snapshots. null ohne Snapshot.
+function planLiveLevels(st) {
+  const at = Date.parse(st?.at || '');
+  if (!isFinite(at)) return null;
+  const b = new Map(), r = new Map(), pls = Array.isArray(st.planets) ? st.planets : [];
+  for (const [id, vals] of Array.isArray(st.eb) ? st.eb : [])
+    (Array.isArray(vals) ? vals : []).forEach((v, i) => { if (typeof pls[i] === 'string' && typeof v === 'number') b.set(`${pls[i]}|${id}`, v); });
+  if (typeof st.start === 'string') for (const [id, v] of Array.isArray(st.b) ? st.b : []) if (typeof v === 'number') b.set(`${st.start}|${id}`, v);
+  for (const [id, v] of Array.isArray(st.r) ? st.r : []) if (typeof v === 'number') r.set(id, v);
+  return { at, start: typeof st.start === 'string' ? st.start : null, b, r };
 }
 const planTabName = (plan, c) => (Array.isArray(plan.planets) && plan.planets.find(p => p?.coords === c)?.name) || c;
 // Forschungs-Startplanet (M6): plan.researchPlanet {Nr: Koordinaten} nur für Forschung, die auf einer Kolonie startet (dort
@@ -705,11 +729,24 @@ function factorChanges(plan) {
 // Kolonie-Schritte (01.11.2026): auch erledigt, wenn sie vor dem nächsten offenen Schritt ihres Planeten laut Autobuilder liegen
 // (st.fc['b:<Koordinaten>'].i, Index ab 0) – ohne Ausführung blieben von Hand oder beim Planwechsel gebaute Schritte offen
 // (#23/#29 auf YontaurzaXI)
+// Live-Stufen (07.11.2026, Nutzer): Kennt der neueste Live-Snapshot die Stufe (execs.live aus loadPlanExecs), entscheidet sie –
+// erledigt nur bei Stufe ≥ Planstufe oder mit einer Ausführung, die nach dem Snapshot begann oder endete. So erscheint ein Gebäude,
+// das Stufen verloren hat, wieder offen. Unbekannte Stufe (nicht auf der Seite, Schiffe): Regeln wie bisher.
 const planStepDone = (plan, st, execs) => {
   const open = (st.open || []).filter(Number.isInteger), first = open.length ? Math.min(...open) : null;
   const done = new Set(execs.filter(e => e.step).map(e => e.step));
   const fc = st.fc && typeof st.fc === 'object' ? st.fc : {};
+  const L = execs.live || null, home = plan.planet?.coords || L?.start || null;
+  const after = new Set(L ? execs.filter(e => e.step && Math.max(Date.parse(e.t) || 0, +e.end || 0) > L.at).map(e => e.step) : []);
+  const liveLvl = n => {
+    const s = plan.steps[n - 1];
+    if (!L || !s || (s[0] !== 'b' && s[0] !== 'r')) return null;
+    const v = s[0] === 'r' ? L.r.get(s[1]) : L.b.get(`${planAway(plan, n) || home}|${s[1]}`);
+    return v ?? null;
+  };
   return n => {
+    const v = liveLvl(n);
+    if (v != null) return v >= +plan.steps[n - 1][2] || after.has(n);
     if (done.has(n)) return true;
     const away = planAway(plan, n);
     if (!away) return first != null && n < first;
