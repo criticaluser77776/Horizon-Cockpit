@@ -21,6 +21,7 @@ const Zeitplan = (() => {
      * o.ends   {i: Ende in ms} laufender Schritte (Restzeit aus dem Spiel bzw. executions.data.end)
      * o.anchors {Schlange: {i, at}} erwarteter Start eines offenen Schritts (Startschätzung des Autobuilders)
      * o.lags   {Schlange: h} Abweichung je Schlange; o.lag Rückfall für alle (h)
+     * o.lands  {Koordinaten: {at (ms), h}} erwartetes Ende der Kolonisierung einer noch nicht bestehenden Kolonie (h = Planzeit der Landung)
      * o.slide  false: nicht auf „jetzt“ rücken (Startpunkte fürs Lebenszeichen, ändern sich nicht mit der Uhr)
      * Ergebnis {t: [{q, a, s (nur laufend: Start = Ende − Dauer, höchstens jetzt), e, due, run} | null (fertig)], first: {Schlange: {i, at}} erster offener Schritt je Schlange}
      */
@@ -33,7 +34,17 @@ const Zeitplan = (() => {
             const c = state(i);
             if (c === '2') return;
             const q = queueOf(plan, i), ps = t0 + s[3] * H, dur = Math.max(0, (s[4] - s[3]) * H);
-            const x = Q[q] || (Q[q] = { sh: (isFinite(lags[q]) ? lags[q] : isFinite(o.lag) ? o.lag : 0) * H, last: -Infinity });
+            let x = Q[q];
+            if (!x) {
+                x = Q[q] = { sh: (isFinite(lags[q]) ? lags[q] : isFinite(o.lag) ? o.lag : 0) * H, last: -Infinity };
+                // Kolonie, die es noch nicht gibt (o.lands, ab AB 0.7.39): Schlange ab dem erwarteten Ende der Kolonisierung – früher
+                // oder später als geplant –, Planabstand zur Landung (Planzeit h) bleibt; vor dem Ende startet nichts
+                const L = o.lands?.[q.slice(q.indexOf(':') + 1)];
+                if (q.includes(':') && L && isFinite(L.at)) {
+                    if (isFinite(L.h)) x.sh = L.at - (t0 + L.h * H);
+                    x.last = L.at;
+                }
+            }
             if (c === '1') {
                 let e = isFinite(ends[i]) ? ends[i] : ps + x.sh + dur;
                 if (slide && e < now) e = now;
