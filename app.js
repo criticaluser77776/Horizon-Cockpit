@@ -203,7 +203,7 @@ async function viewLage() {
     ...loadEffects(acc),
     Cloud.q('getdata_state', { account_id: acc, select: 'at,colony,colonies,queues,jobs,wake,expires_at,ok_at,error,error_at' }).catch(() => []),
     loadDecisions('id,t,text,data:data->decision,answer:data->answer').then(l => l.filter(e => /Motivationsvideo/i.test(e.text || ''))
-      .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision)).catch(() => []),
+      .map(e => ({ ...e, data: { decision: e.data, answer: e.answer } })).filter(openDecision).filter(moviFresh)).catch(() => []),
     loadDrift(),
   ]);
   const head = heads[0];
@@ -274,7 +274,7 @@ async function viewSteuerung() {
   const offer = newPlanOffer(plans, active, await draftGains(plans, active, drift).catch(() => ({})));
   const abLive = sess.devs.map(x => x.ab?.state).filter(s => s?.liveAt).sort((a, b) => b.liveAt - a.liveAt)[0] || null;
   const open = dec.filter(openDecision);
-  const movis = open.filter(e => /Motivationsvideo/i.test(e.text || ''));
+  const movis = open.filter(e => /Motivationsvideo/i.test(e.text || '')).filter(moviFresh);
   const others = open.filter(e => !movis.includes(e));
   $('#view').innerHTML = bannerCard(sess) + newPlanCard(offer, isOwner()) + steuerungCard(sess, nf, active) + moviCard(sess, abLive, movis)
     + `<div class="card"><h2>Entscheidungen aus Nachrichten${others.length ? ` <span class="muted small">${others.length}</span>` : ''}</h2>${others.length
@@ -716,6 +716,8 @@ function bannerCard(sess) {
    Forschung mit langen Aufträgen belegt sind (Simulation PR 374: Gewinn vor allem aus Aufträgen im Video-Fenster) und ein
    Live-Lauf mit Autobuilder ab 0.5.53 die verkürzten Restzeiten sofort nachlegt. Werft sieht die Lage hier nicht. */
 const MOVI_VER = '0.5.53', MOVI_LONG = 2 * 3600e3;
+// verfallenes Video (14 Tage nach „verfügbar“) nicht mehr anbieten; erledigt (benutzt/weg) meldet der Autobuilder ab 0.7.45 als Antwort
+const moviFresh = e => !(Date.now() - new Date(e.t).getTime() > 14 * 86400e3);
 function moviCard(sess, abLive, movis) {
   const on = sess.devs.map(x => x.ab && isFresh(x.ab.at, 10) && x.ab.state?.movi).find(m => m && m.until > Date.now());
   if (on) return `<div class="card"><div class="row between"><h2>Motivationsvideo</h2><span class="muted small">läuft</span></div>
