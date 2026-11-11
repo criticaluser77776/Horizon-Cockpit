@@ -516,13 +516,13 @@ function regelWire(el, settings) {
   });
 }
 
-const ATLAS_RUN = p => ['freigegeben', 'aktiv'].includes(p.status);
+const ATLAS_RUN = p => ['freigegeben', 'aktiv', 'vorgemerkt'].includes(p.status);
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
   const [plans, heads, sess, W, homes, pl, accs] = await Promise.all([
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', order: 'created_at.desc', limit: 200,
-      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,regel:payload->transportRegel' }),
+      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,vormerk,regel:payload->transportRegel' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1, select: 'id,status,title,plan_hash' }),
     loadSessions(),
     loadWissen().catch(() => null),
@@ -571,11 +571,13 @@ async function viewPlans(rest = []) {
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
       ${gainText(gains[p.id]) ? `<div class="small ${gainOk(gains[p.id]) ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
       ${planTeilHtml(gains[p.id]?.teil)}
+      ${p.status === 'vorgemerkt' ? `<div class="small"><b>${esc(vormerkTxt(p))}</b></div>` : ''}
       ${p.regel ? `<div class="small">Transport-Regelset: <b>${esc(HZ_SIMPARAMS.regelName(p.regel) || 'eigene Werte')}</b></div>` : ''}
       <div class="muted small">${esc(SRC[p.source] || p.source)} · ${esc(dt(p.created_at))}${p.parent_id ? ` · aus ${esc(planLabel(p.parent_id))}` : ''}${p.approved_at ? ` · freigegeben ${esc(dt(p.approved_at))}` : ''}${p.status !== 'entwurf' && p.status_at ? ` · ${esc(p.status)} ${esc(dt(p.status_at))}` : ''}</div>
       ${planDetails(p)}
       ${own ? `<div class="row between" style="margin-top:6px">${p.plan_hash ? `<a class="small" href="#/plaene/edit/${esc(p.id)}">${['abgebrochen', 'erledigt', 'verworfen'].includes(p.status) ? 'Plan neu starten / ändern' : 'Planschritte ändern (neuer Entwurf)'}</a>` : '<span></span>'}
-        <span class="row" style="gap:6px">${p.status === 'entwurf' ? `<button class="primary small" data-go="${esc(p.id)}">Freigeben</button>` : ''}
+        <span class="row" style="gap:6px">${p.status === 'entwurf' ? `<button class="primary small" data-go="${esc(p.id)}">Freigeben</button><button class="small" data-vm="${esc(p.id)}">Nach dem Reset starten</button>` : ''}
+        ${p.status === 'vorgemerkt' ? `<button class="small" data-vmoff="${esc(p.id)}">Vormerk zurücknehmen</button>` : ''}
         ${ATLAS_RUN(p) ? '' : `<button class="danger small" data-del="${esc(p.id)}">Löschen</button>`}</span></div>` : ''}</div>`;
   html += simlaufCard(pl, own);
   html += regelCard(settings, plan, own);
@@ -588,6 +590,8 @@ async function viewPlans(rest = []) {
   regelWire($('#view'), settings);
   $('#view').querySelectorAll('button[data-go]').forEach(b => b.addEventListener('click', () =>
     takeNewPlan({ draft: plans.find(x => x.id === b.dataset.go), teil: gains[b.dataset.go]?.teil }, sess)));
+  $('#view').querySelectorAll('button[data-vm]').forEach(b => b.addEventListener('click', () => vormerkPlan(plans.find(x => x.id === b.dataset.vm))));
+  $('#view').querySelectorAll('button[data-vmoff]').forEach(b => b.addEventListener('click', () => unvormerkPlan(plans.find(x => x.id === b.dataset.vmoff))));
   $('#view').querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', () => deletePlan(plans.find(x => x.id === b.dataset.del))));
 }
 

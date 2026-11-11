@@ -89,7 +89,7 @@ tr:last-child td { border-bottom: 0; }
 .tag.hoch { color: var(--hoch); border-color: var(--hoch); }
 .tag.mittel { color: var(--mittel); border-color: var(--mittel); }
 .tag.ok, .tag.freigegeben, .tag.erledigt { color: var(--ok); border-color: var(--ok); }
-.tag.aktiv { color: var(--accent); border-color: var(--accent); }
+.tag.aktiv, .tag.vorgemerkt { color: var(--accent); border-color: var(--accent); }
 .tag.abgebrochen, .tag.verworfen { color: var(--muted); }
 .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin-top: 3px; }
 .bar > i { display: block; height: 100%; background: var(--accent); }

@@ -307,6 +307,28 @@ Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein 
     setTimeout(() => route(true), 1500);
   } catch (e) { toast(e.message); }
 }
+/* Plan vormerken (R7, 11.11.2026, Account-Reset/Ascension): Bau-Entwurf schon vor dem Reset freigeben. Der aktive Plan läuft weiter;
+   erkennt der Autobuilder, dass die Heimat des aktiven Plans nicht mehr zum Account gehört, übernimmt er den vorgemerkten Plan und
+   startet ihn live bis „bis #“ (Standard: alle Schritte). Vormerken ist Freigabe und Startkommando zugleich; nur Owner (RPC plan_vormerken). */
+const vormerkTxt = p => `startet nach dem Reset live bis ${p.vormerk?.until ? '#' + p.vormerk.until : 'Ende'}`;
+async function vormerkPlan(draft) {
+  const a = prompt(`${planLabel(draft.id)} („${tidy(draft.title)}“) nach dem Reset starten.\n\nDer aktive Plan läuft unverändert weiter. Merkt der Autobuilder, dass die Heimat des aktiven Plans nicht mehr zum Account gehört (Reset), übernimmt er diesen Plan und startet LIVE bis zum gewählten „bis #“.\n\n„bis #“ (leer = alle Schritte):`, '');
+  if (a === null) return;
+  const t = a.trim(), until = t === '' ? null : Number(t);
+  if (until !== null && (!Number.isInteger(until) || until < 1)) return toast('„bis #“ muss eine ganze Zahl ab 1 sein');
+  if (!confirm(`${planLabel(draft.id)} vormerken: Start LIVE nach dem Reset bis ${until ? '#' + until : 'zum letzten Schritt'}. Das ist die Freigabe und das Startkommando – ein früher vorgemerkter Plan wird wieder Entwurf. Vormerken?`)) return;
+  try {
+    await Cloud.rpc('plan_vormerken', { p_id: draft.id, p_until: until });
+    S.planCache = null;
+    toast('Vorgemerkt – startet nach dem Reset (zurücknehmen unter Pläne)');
+    setTimeout(() => route(true), 800);
+  } catch (e) { toast(e.message); }
+}
+async function unvormerkPlan(p) {
+  if (!confirm(`Vormerk von ${planLabel(p.id)} zurücknehmen? Der Plan wird wieder Entwurf, nach dem Reset startet nichts.`)) return;
+  try { await Cloud.rpc('plan_status', { p_id: p.id, p_status: 'entwurf' }); S.planCache = null; toast('Vormerk zurückgenommen'); setTimeout(() => route(true), 800); }
+  catch (e) { toast(e.message); }
+}
 const nfTarget = sess => sess.devs.filter(x => x.ab && isFresh(x.ab.at) && x.ab.state?.page === 'game').sort((a, b) => b.holds - a.holds)[0] || null;
 const NF_ASK = name => `Notfall verbauen auf ${name}? 2 Stunden lang startet der Autobuilder in jeder freien Schlange sofort den teuersten startbaren Planschritt der nächsten 25 – auch außer der Reihe, nichts außerhalb des Plans, kein Abbrechen. Das kann den Plan etwas verschieben.`;
 async function sendNotfall(dev, args) {

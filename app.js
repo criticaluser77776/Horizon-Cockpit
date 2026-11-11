@@ -281,6 +281,7 @@ async function viewSteuerung() {
       ? others.map(evRow).join('') : '<p class="muted small">Keine offene Entscheidung.</p>'}</div>`;
   $('#bannerGo')?.addEventListener('click', () => sendBanner(sess));
   $('#npGo')?.addEventListener('click', () => takeNewPlan(offer, sess));
+  $('#npVm')?.addEventListener('click', () => vormerkPlan(offer.draft));
   $('#npNo')?.addEventListener('click', async () => {
     if (!confirm('Entwurf verwerfen?')) return;
     try { await Cloud.rpc('plan_status', { p_id: offer.draft.id, p_status: 'verworfen' }); toast('Verworfen'); route(); } catch (e) { toast(e.message); }
@@ -887,7 +888,7 @@ function newPlanCard(o, own) {
   return `<div class="card warn"><div class="row between"><h2>Neuer Plan verfügbar – starten?</h2><span class="muted small">${esc(when(o.draft.created_at))}</span></div>
     <p><b>${esc(planLabel(o.draft.id))}</b> · ${esc(tidy(o.draft.title || ''))}${o.end ? ` · SCOL ca. ${esc(dt(o.end))}` : ''}</p>${why ? `<p class="small">${esc(why)}</p>` : ''}
     ${planTeilHtml(o.teil)}${planDetails(o.draft)}
-    ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npNo">Verwerfen</button></div>
+    ${own ? `<div class="row" style="margin-top:6px"><button class="primary" id="npGo">Freigeben</button><button id="npVm">Nach dem Reset starten</button><button id="npNo">Verwerfen</button></div>
       <p class="muted small">Gestartet wird danach wie gewohnt in der Steuerung („bis #“ neu wählen, neue Schrittnummern).</p>` : ''}</div>`;
 }
 // takeNewPlan (Freigeben + Übernehmen anbieten) steht seit 27.10.2026 in common.js, der Atlas nutzt es auch
@@ -915,7 +916,7 @@ async function viewPlans(rest = []) {
   const acc = `eq.${S.acc}`;
   let [plans, heads, sess, W, lives, gds, effs, effEnds] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 30,
-      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at' }),
+      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,vormerk' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
       select: 'id,status,title,plan_hash' }),
     loadSessions(),
@@ -967,15 +968,21 @@ async function viewPlans(rest = []) {
   const kinds = new Set(), list = [];   // plans ist nach created_at absteigend sortiert
   for (const p of plans) if (p.status === 'entwurf' && !kinds.has(p.kind)) { kinds.add(p.kind); if (p.id !== offer?.draft.id) list.push(p); }
   const old = plans.filter(p => p.id !== active?.id && p.id !== offer?.draft.id && !list.includes(p));
+  const vorm = plans.find(p => p.kind === 'build' && p.status === 'vorgemerkt');   // R7: höchstens einer
+  const vormCard = vorm ? `<div class="card warn"><div class="row between"><h2>Vorgemerkt: ${esc(planLabel(vorm.id))}</h2><span class="tag vorgemerkt">vorgemerkt</span></div>
+      <p class="small">${esc(tidy(vorm.title || ''))}</p><p><b>${esc(vormerkTxt(vorm))}</b> <span class="muted small">(Vormerk ${esc(when(vorm.status_at))})</span></p>
+      <p class="muted small">Der aktive Plan läuft weiter, bis der Autobuilder den Reset erkennt (Heimat des aktiven Plans nicht mehr im Account).</p>
+      ${own ? `<div class="row"><button data-act="zuruecknehmen" data-id="${esc(vorm.id)}">Zurücknehmen</button></div>` : ''}</div>` : '';
   const item = p => `<div class="list-item"><div class="row between">
       <span><b>${esc(planLabel(p.id))}</b> <span class="tag">${esc(KIND[p.kind] || p.kind)}</span></span><span class="muted small">${esc(when(p.created_at))}</span></div>
       <div class="small">${esc(tidy(p.title || '(ohne Titel)'))}</div>
       ${gainText(gains[p.id]) ? `<div class="small ${gainOk(gains[p.id]) ? 'ok' : ''}">Gegen den aktiven Plan: ${esc(gainText(gains[p.id]))}</div>` : ''}
       ${planTeilHtml(gains[p.id]?.teil)}${planDetails(p)}
       ${own ? `<div class="row" style="margin-top:6px"><button class="primary" data-act="freigegeben" data-id="${esc(p.id)}">Freigeben</button>
+        ${p.kind === 'build' ? `<button data-act="vormerken" data-id="${esc(p.id)}">Nach dem Reset starten</button>` : ''}
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
     </div>`;
-  $('#view').innerHTML = (offer ? `<div class="card warn small"><a href="#/steuerung">Neuer Plan verfügbar: ${esc(planLabel(offer.draft.id))} – Freigabe in der Steuerung →</a></div>` : '') + planKopfCard(active, sess, own, drift, hst) + (gesamt ? planGesamtCard(gesamt) : '')
+  $('#view').innerHTML = (offer ? `<div class="card warn small"><a href="#/steuerung">Neuer Plan verfügbar: ${esc(planLabel(offer.draft.id))} – Freigabe in der Steuerung →</a></div>` : '') + vormCard + planKopfCard(active, sess, own, drift, hst) + (gesamt ? planGesamtCard(gesamt) : '')
     + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
     + `<div class="card"><h2>Entwürfe</h2>${list.length ? list.map(item).join('') : `<p class="muted small">Kein offener Entwurf.${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
@@ -991,6 +998,8 @@ async function viewPlans(rest = []) {
   }));
   $('#view').querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act, p = plans.find(x => x.id === b.dataset.id);
+    if (act === 'vormerken' && p?.kind === 'build') return vormerkPlan(p);
+    if (act === 'zuruecknehmen' && p) return unvormerkPlan(p);
     if (act === 'freigegeben' && p?.kind === 'build') return takeNewPlan({ draft: p, teil: gains[p.id]?.teil }, sess);   // F4: danach direkt übernehmen
     const q = { freigegeben: 'Plan freigeben? Die Skripte dürfen ihn danach ausführen (Start nur per Kommando).',
       verworfen: 'Entwurf verwerfen?', abgebrochen: 'Plan abbrechen? Laufende Skripte halten an.' }[act];
