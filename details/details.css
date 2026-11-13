@@ -91,3 +91,15 @@ body.atlas .badge { position: static; }
 .qc0 { color: var(--qc0); } .qc1 { color: var(--qc1); } .qc2 { color: var(--qc2); }
 .qc3 { color: var(--qc3); } .qc4 { color: var(--qc4); } .qc5 { color: var(--qc5); }
 .qlegend { margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
+
+/* Ascension / Farmphase (ascension.js): Kacheln, Tabellen, Hervorhebung des laufenden Blocks */
+.atlas .ascKs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.atlas .ascK { display: flex; flex-direction: column; background: var(--accent-2); border-radius: var(--radius); padding: 8px 10px; }
+.atlas .ascK b { font-size: 1.05rem; }
+.atlas table.ascT td, .atlas table.ascT th { white-space: nowrap; }
+.atlas table.ascT td.small { white-space: normal; min-width: 260px; }
+.atlas table.ascT th.num { text-align: right; }
+.atlas tr.ascRow { cursor: pointer; }
+.atlas tr.ascRow.on td, .atlas tr.ascNow td { background: var(--accent-2); font-weight: 600; }
+.atlas tr.ascNow td:first-child { box-shadow: inset 3px 0 var(--accent); }
+.atlas tr.ascPast td { opacity: .55; }

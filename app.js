@@ -919,6 +919,24 @@ function driftLine(d) {
    Aufbau: Angebot „Neuer Plan“ (nur wenn besser) · Plan-Kopf (Status, „bis #“, Lauf, Abweichung) · je Planet eine Karte
    (Bau/Forschung/Werft in Realzeit, nächste Planschritte, letzte Schritte; planetKarte mit opts.plan) · Entwürfe (der neueste je Art).
    „bis #“ ist hier global (Tipp auf einen Schritt, Start unter Steuerung); Reiter je Planet gibt es im Cockpit nicht mehr. */
+/* Karte „Ascension“ (13.11.2026): Phase jetzt, nächster Aufstieg, Supremum 1 / Farmen ab; Zeitplan aus wissen/ascension (nicht öffentlich),
+   Rechnung in ascension.js, Details im Atlas (#/ascension). Fehlt der Schlüssel oder schlägt etwas fehl, bleibt die Karte weg. */
+async function ascensionKarte() {
+  try {
+    if (!S.asc || Date.now() - S.asc.at > 10 * 60e3) S.asc = { at: Date.now(), row: (await Cloud.q('wissen', { key: 'eq.ascension', select: 'content,version,updated_at' }))[0] || null };
+    let c = S.asc.row?.content;
+    if (typeof c === 'string') c = JSON.parse(c);
+    const v = c && Asc.waehleVariante(c), p = v && Asc.phaseJetzt(v, c.tNull, new Date());
+    if (!p) return '';
+    const n = p.naechsterAufstieg, k = v.kpi || {}, art = Asc.ART[p.art] || p.art;
+    return `<div class="card"><h2>Ascension</h2>
+      <div><b>Durchgang ${p.durchgangNr}</b> · ${esc(art)} <span class="muted small">· ${esc(p.vorStart ? 'Verteilung noch nicht berechnet' : Asc.skText(p.sk, c.namen))}</span></div>
+      ${n ? `<div class="small">Nächster Aufstieg: <b>${esc(Asc.datumText(n.wann))}</b> · danach ${esc(Asc.apText(n.apNach))} AP · ${esc(Asc.skText(n.skDanach, c.namen))}</div>` : '<div class="small muted">Kein weiterer Aufstieg im Plan.</div>'}
+      <div class="small muted">Supremum 1 ab ${esc(k.supremumTag == null ? '–' : Asc.datumText(Asc.tagDatum(c.tNull, k.supremumTag)))} · Farmen ab ${esc(k.farmAbTag == null ? '–' : Asc.datumText(Asc.tagDatum(c.tNull, k.farmAbTag)))}</div>
+      <p class="small"><a href="details/#/ascension" target="_blank" rel="noopener">Details im Atlas →</a></p></div>`;
+  } catch { return ''; }
+}
+
 async function viewPlans(rest = []) {
   // Plan-Editor seit C1 nur im Atlas; alte Links (#/plaene/edit/<id>) dorthin umleiten
   if (rest[0] === 'edit' && rest[1]) { location.replace(`details/#/plaene/edit/${encodeURIComponent(rest[1])}`); return; }
@@ -991,7 +1009,8 @@ async function viewPlans(rest = []) {
         ${p.kind === 'build' ? `<button data-act="vormerken" data-id="${esc(p.id)}">Nach dem Reset starten</button>` : ''}
         <button data-act="verworfen" data-id="${esc(p.id)}">Verwerfen</button></div>` : ''}
     </div>`;
-  $('#view').innerHTML = (offer ? `<div class="card warn small"><a href="#/steuerung">Neuer Plan verfügbar: ${esc(planLabel(offer.draft.id))} – Freigabe in der Steuerung →</a></div>` : '') + vormCard + planKopfCard(active, sess, own, drift, hst) + (gesamt ? planGesamtCard(gesamt) : '')
+  const ascHtml = await ascensionKarte();
+  $('#view').innerHTML = (offer ? `<div class="card warn small"><a href="#/steuerung">Neuer Plan verfügbar: ${esc(planLabel(offer.draft.id))} – Freigabe in der Steuerung →</a></div>` : '') + vormCard + planKopfCard(active, sess, own, drift, hst) + ascHtml + (gesamt ? planGesamtCard(gesamt) : '')
     + (plan && !pl.length ? '<p class="small muted pad">Noch keine Planetendaten (Live-Stand fehlt).</p>' : planCards)
     + `<div class="card"><h2>Entwürfe</h2>${list.length ? list.map(item).join('') : `<p class="muted small">Kein offener Entwurf.${hidden.length ? ` (${hidden.length} schlechtere ausgeblendet)` : ''}</p>`}
     <p class="small"><a href="details/#/plaene" target="_blank" rel="noopener">${old.length ? `Ältere Pläne (${old.length}) und Löschen` : 'Alle Pläne'} im Atlas →</a></p></div>`;
