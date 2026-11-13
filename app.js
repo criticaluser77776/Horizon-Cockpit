@@ -916,7 +916,7 @@ async function viewPlans(rest = []) {
   const acc = `eq.${S.acc}`;
   let [plans, heads, sess, W, lives, gds, effs, effEnds] = await Promise.all([
     Cloud.q('plans', { account_id: acc, order: 'created_at.desc', limit: 30,
-      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,vormerk' }),
+      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,vormerk,aufstieg:payload->aufstieg' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1,
       select: 'id,status,title,plan_hash' }),
     loadSessions(),

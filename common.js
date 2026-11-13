@@ -310,13 +310,22 @@ Achtung: Teilplan auf Basis ${o.teil.basis}, der aktive Plan ist inzwischen ein 
 /* Plan vormerken (R7, 11.11.2026, Account-Reset/Ascension): Bau-Entwurf schon vor dem Reset freigeben. Der aktive Plan läuft weiter;
    erkennt der Autobuilder, dass die Heimat des aktiven Plans nicht mehr zum Account gehört, übernimmt er den vorgemerkten Plan und
    startet ihn live bis „bis #“ (Standard: alle Schritte). Vormerken ist Freigabe und Startkommando zugleich; nur Owner (RPC plan_vormerken). */
-const vormerkTxt = p => `startet nach dem Reset live bis ${p.vormerk?.until ? '#' + p.vormerk.until : 'Ende'}`;
+// AP-Verteilung nach dem Reset (plan.aufstieg, analyse/build_autobuilder.js --aufstieg, 12.11.2026): Autobuilder ab 0.7.47 setzt mit
+// Option „Aufstieg automatisch“ den Account komplett zurück, sobald die Ascension-Seite min Punkte zeigt, und kauft die Skills
+const ASC_NAMEN = { ASCENDMETASCORE: 'Vervielfältigung', ASCENDBUILDINGCOST: 'Gebäudepreise', ASCENDRESEARCHCOST: 'Forschungskosten',
+  ASCENDMETALPRODUCTION: 'Metall', ASCENDCRYSTALPRODUCTION: 'Mineral', ASCENDFUELPRODUCTION: 'Treibstoff', ASCENDBUILDINGPRODUCTION: 'Bauhof-Tempo',
+  ASCENDHOMEBUILDINGS: 'Grundausstattung Heimat', ASCENDCOLONIESBUILDINGS: 'Grundausstattung Kolonien', ASCENDCOLONYCONTROL: 'Koloniekontrolle' };
+const aufstiegTxt = a => a && a.skills ? `Aufstieg ab ${a.min} Punkten (komplett zurücksetzen), dann ${Object.entries(a.skills).map(([c, n]) => `${ASC_NAMEN[c] || c} ${n}`).join(', ')}` : '';
+const vormerkTxt = p => `startet nach dem Reset live bis ${p.vormerk?.until ? '#' + p.vormerk.until : 'Ende'}${p.aufstieg ? ' · ' + aufstiegTxt(p.aufstieg) : ''}`;
 async function vormerkPlan(draft) {
-  const a = prompt(`${planLabel(draft.id)} („${tidy(draft.title)}“) nach dem Reset starten.\n\nDer aktive Plan läuft unverändert weiter. Merkt der Autobuilder, dass die Heimat des aktiven Plans nicht mehr zum Account gehört (Reset), übernimmt er diesen Plan und startet LIVE bis zum gewählten „bis #“.\n\n„bis #“ (leer = alle Schritte):`, '');
+  const asc = draft.aufstieg !== undefined ? draft.aufstieg
+    : await Cloud.q('plans', { id: `eq.${draft.id}`, select: 'aufstieg:payload->aufstieg' }).then(r => r?.[0]?.aufstieg || null).catch(() => null);
+  const ascHint = asc ? `\n\nDer Plan trägt die AP-Verteilung: ${aufstiegTxt(asc)}. Mit der Option „Aufstieg automatisch“ (Autobuilder ab 0.7.47, je PC) löst der Autobuilder den Reset damit selbst aus.` : '';
+  const a = prompt(`${planLabel(draft.id)} („${tidy(draft.title)}“) nach dem Reset starten.\n\nDer aktive Plan läuft unverändert weiter. Merkt der Autobuilder, dass die Heimat des aktiven Plans nicht mehr zum Account gehört (Reset), übernimmt er diesen Plan und startet LIVE bis zum gewählten „bis #“.${ascHint}\n\n„bis #“ (leer = alle Schritte):`, '');
   if (a === null) return;
   const t = a.trim(), until = t === '' ? null : Number(t);
   if (until !== null && (!Number.isInteger(until) || until < 1)) return toast('„bis #“ muss eine ganze Zahl ab 1 sein');
-  if (!confirm(`${planLabel(draft.id)} vormerken: Start LIVE nach dem Reset bis ${until ? '#' + until : 'zum letzten Schritt'}. Das ist die Freigabe und das Startkommando – ein früher vorgemerkter Plan wird wieder Entwurf. Vormerken?`)) return;
+  if (!confirm(`${planLabel(draft.id)} vormerken: Start LIVE nach dem Reset bis ${until ? '#' + until : 'zum letzten Schritt'}. Das ist die Freigabe und das Startkommando${asc ? ` – und die Freigabe der AP-Verteilung (${aufstiegTxt(asc)})` : ''} – ein früher vorgemerkter Plan wird wieder Entwurf. Vormerken?`)) return;
   try {
     await Cloud.rpc('plan_vormerken', { p_id: draft.id, p_until: until });
     S.planCache = null;
@@ -936,7 +945,7 @@ const activeEnd = (active, drift) => {
 };
 // Ausführungsrelevanter Inhalt eines Bauplans wie INHALT in tools/push_plan.py: Felder der Plan-ID (analyse/build_autobuilder.js
 // planHash) plus Haltepunkte und Faktor-Grenzen, ohne Metadaten (id, created, parent, lauf, bis, vergleich …)
-const PLAN_INHALT = ['startTime', 'steps', 'factors', 'stepPlanet', 'researchPlanet', 'planetFactors', 'park', 'kolonisieren', 'halts', 'limits'];
+const PLAN_INHALT = ['startTime', 'steps', 'factors', 'stepPlanet', 'researchPlanet', 'planetFactors', 'park', 'kolonisieren', 'aufstieg', 'halts', 'limits'];
 const PLAN_INHALT_SELECT = PLAN_INHALT.map(k => `${k}:payload->${k}`).join(',');
 const leerWert = x => x == null || x === '' || (Array.isArray(x) ? !x.length : typeof x === 'object' && !Object.keys(x).length);
 // Tiefer Vergleich unabhängig von der Schlüsselreihenfolge (jsonb ordnet Schlüssel um), Zahlen per Wert

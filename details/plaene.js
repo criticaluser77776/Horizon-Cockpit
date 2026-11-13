@@ -522,7 +522,7 @@ async function viewPlans(rest = []) {
   const acc = `eq.${S.acc}`;
   const [plans, heads, sess, W, homes, pl, accs] = await Promise.all([
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', order: 'created_at.desc', limit: 200,
-      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,vormerk,regel:payload->transportRegel' }),
+      select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,vormerk,aufstieg:payload->aufstieg,regel:payload->transportRegel' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1, select: 'id,status,title,plan_hash' }),
     loadSessions(),
     loadWissen().catch(() => null),
