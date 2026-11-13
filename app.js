@@ -756,8 +756,17 @@ async function sendBanner(sess) {
    und ungesehene Plan-/Lauf-Ereignisse (Bereiche Builder und Cockpit). Alle Ereignisse mit Filtern: Horizon Atlas → Ereignisse.
    Badge am Reiter: ungesehene „hoch“ + offene Entscheidungen. */
 const openDecision = e => { const x = e.data || {}; return Array.isArray(x.decision) && x.decision.length && !x.answer?.ok; };
-const loadDecisions = (select = '*') => Cloud.q('events', { account_id: `eq.${S.acc}`, kind: 'eq.bericht', 'data->decision': 'not.is.null',
-  dismissed_at: 'is.null', order: 't.desc', limit: 30, select });
+// „Motivationsvideo verfügbar“ gilt als erledigt, sobald ein späterer Bericht „Motivationsvideo abgespielt“ da ist (13.11.2026:
+// Video 10.11. benutzt, die Entscheidung vom 04.11. blieb ohne Antwort offen und stand bis zum Verfall in Steuerung/Meldungen).
+const loadDecisions = async (select = '*') => {
+  const acc = `eq.${S.acc}`, sel = select === '*' ? '*' : [...new Set([...select.split(','), 't', 'text'])].join(',');
+  const [list, used] = await Promise.all([
+    Cloud.q('events', { account_id: acc, kind: 'eq.bericht', 'data->decision': 'not.is.null', dismissed_at: 'is.null', order: 't.desc', limit: 30, select: sel }),
+    Cloud.q('events', { account_id: acc, kind: 'eq.bericht', text: 'ilike.*Motivationsvideo*abgespielt*', order: 't.desc', limit: 1, select: 't' }).catch(() => []),
+  ]);
+  const tUsed = used[0] ? new Date(used[0].t).getTime() : 0;
+  return list.filter(e => !(/Motivationsvideo\s+verf/i.test(e.text || '') && new Date(e.t).getTime() < tUsed));
+};
 async function viewMeldungen() {
   const acc = `eq.${S.acc}`;
   const [dec, high, plan] = await Promise.all([
