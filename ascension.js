@@ -86,7 +86,21 @@ const Asc = (() => {
     // Nummernbereich eines Blocks: „12“ oder „12–40“
     const blockNr = b => (b.anzahl || 1) > 1 ? `${b.nr}–${b.nr + b.anzahl - 1}` : String(b.nr);
 
-    return { SK_ORDER, ART, keyOf, findVariante, waehleVariante, skText, aufstiege, phaseJetzt, datumText, tagDatum, tagText, apText, blockZeit, blockNr };
+    // Abgleich eines echten Farm-Aufstiegs (R14, Ereignis „aufstieg“ mit data.farm des Autobuilders ab 0.7.48) mit dem Zeitplan:
+    // ist {at (ms oder ISO), T (AP-Summe nach dem Aufstieg)} → {soll: letzter geplanter Aufstieg bis at {nr, ap, at}, diff: T/ap − 1,
+    // vorH: Zeitvorsprung in h (wann der Zeitplan diese AP-Summe erreicht, positiv = früher als geplant)} oder null
+    function abgleich(v, tNull, ist) {
+        const at = typeof ist?.at === 'number' ? ist.at : Date.parse(ist?.at || ''), T = +ist?.T;
+        if (!isFinite(at) || !(T > 0)) return null;
+        const ev = aufstiege(v, tNull);
+        let soll = null;
+        for (const e of ev) if (e.at <= at) soll = e;
+        if (!soll) return null;
+        const hit = ev.find(e => e.ap >= T - 1e-9);
+        return { soll: { nr: soll.nr, ap: soll.ap, at: soll.at }, diff: T / soll.ap - 1, vorH: hit ? (hit.at - at) / H : null };
+    }
+
+    return { SK_ORDER, ART, keyOf, findVariante, waehleVariante, skText, aufstiege, phaseJetzt, datumText, tagDatum, tagText, apText, blockZeit, blockNr, abgleich };
 })();
 if (typeof window !== 'undefined') window.Asc = Asc;
 if (typeof module !== 'undefined' && module.exports) module.exports = Asc;

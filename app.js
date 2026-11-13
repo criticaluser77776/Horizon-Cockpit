@@ -929,10 +929,18 @@ async function ascensionKarte() {
     const v = c && Asc.waehleVariante(c), p = v && Asc.phaseJetzt(v, c.tNull, new Date());
     if (!p) return '';
     const n = p.naechsterAufstieg, k = v.kpi || {}, art = Asc.ART[p.art] || p.art;
+    // R14 (13.11.2026): letzter Farm-Aufstieg des Autobuilders (Ereignis „aufstieg“ mit data.farm, AB ab 0.7.48) gegen den Zeitplan
+    const fe = (await Cloud.q('events', { account_id: `eq.${S.acc}`, kind: 'eq.aufstieg', 'data->farm': 'not.is.null', order: 't.desc', limit: 1, select: 't,data' }).catch(() => []))[0];
+    const f = fe?.data?.farm, ab = f && Asc.abgleich(v, c.tNull, { at: f.at || fe.t, T: f.T });
+    const farmZeile = f ? `<div class="small">Farm-Aufstieg ${esc(String(f.nr))} (Autobuilder): <b>${esc(Asc.datumText(f.at || fe.t))}</b> · AP-Summe ${esc(Asc.apText(f.T))}`
+      + (f.dauerH != null ? ` · Durchgang ${esc(String(f.dauerH).replace('.', ','))} h` : '')
+      + (ab ? ` · Zeitplan ${esc(Asc.apText(ab.soll.ap))} AP (Aufstieg ${esc(String(ab.soll.nr))}): <b>${ab.diff >= 0 ? '+' : '−'}${esc(Math.abs(ab.diff * 100).toFixed(0))} %</b>`
+        + (ab.vorH != null ? ` (${ab.vorH >= 0 ? `${esc(ab.vorH.toFixed(0))} h vor` : `${esc((-ab.vorH).toFixed(0))} h hinter`} dem Plan)` : '') : '') + '</div>' : '';
     return `<div class="card"><h2>Ascension</h2>
       <div><b>Durchgang ${p.durchgangNr}</b> · ${esc(art)} <span class="muted small">· ${esc(p.vorStart ? 'Verteilung noch nicht berechnet' : Asc.skText(p.sk, c.namen))}</span></div>
       ${n ? `<div class="small">Nächster Aufstieg: <b>${esc(Asc.datumText(n.wann))}</b> · danach ${esc(Asc.apText(n.apNach))} AP · ${esc(Asc.skText(n.skDanach, c.namen))}</div>` : '<div class="small muted">Kein weiterer Aufstieg im Plan.</div>'}
       <div class="small muted">Supremum 1 ab ${esc(k.supremumTag == null ? '–' : Asc.datumText(Asc.tagDatum(c.tNull, k.supremumTag)))} · Farmen ab ${esc(k.farmAbTag == null ? '–' : Asc.datumText(Asc.tagDatum(c.tNull, k.farmAbTag)))}</div>
+      ${farmZeile}
       <p class="small"><a href="details/#/ascension" target="_blank" rel="noopener">Details im Atlas →</a></p></div>`;
   } catch { return ''; }
 }
