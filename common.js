@@ -589,7 +589,9 @@ function planLive(plan, isDone, execs, hb, now = Date.now()) {
     if (+e.end > now) ends[e.step - 1] = +e.end;
   }
   const mine = hb && hb.plan === plan.id ? hb : null;
-  const lag = mine?.ahead != null ? -mine.ahead : 0;
+  // ahead zählt ab der Planuhr des Autobuilders: ab AB 0.7.50 steht ihr Start in hb.t0, wenn er von startTime abweicht (Startverzug,
+  // Farm-Neustart) – hier auf startTime umrechnen, wie lagsFrom
+  const lag = mine?.ahead != null ? -mine.ahead + (+mine.t0 ? (+mine.t0 - Date.parse(plan.startTime)) / 3600e3 : 0) : 0;
   const F = Zeitplan.forecast(plan, { now, state: i => i in ends ? '1' : isDone(i + 1) ? '2' : '0', ends,
     anchors: mine?.fc || {}, lags: Zeitplan.lagsFrom(plan, starts), lag });
   F.lagB = Zeitplan.lagsFrom(plan, starts).b ?? lag;
