@@ -59,6 +59,7 @@ function when(t) {
 const NUMS = { acc: null, at: 0, plan: {}, run: {} };
 const RUN_RE = /\bauto-(\d{2})(\d{2})T(\d{2})(\d{2})\b/g;
 async function loadNums(force) {
+  await loadKoloziel(force);
   if (!force && NUMS.acc === S.acc && Date.now() - NUMS.at < 30e3) return NUMS;
   const rows = await Cloud.q('plans', { account_id: `eq.${S.acc}`, order: 'created_at.asc', limit: 1000, select: 'id,plan_hash,created_at,note' }).catch(() => null);
   if (!rows) return NUMS;
@@ -72,6 +73,29 @@ async function loadNums(force) {
   Object.assign(NUMS, { acc: S.acc, at: Date.now(), plan, run });
   return NUMS;
 }
+/* Kolonieziele (21.11.2026, Autobuilder 0.7.51 Panel → Kolonieziele, Tabelle kolonieziele, Migration 20261121100001): Platzhalter-Kolonien
+   „kolonie-<n>“ eines Plans mit dem gewählten Ziel. KOLOZIEL.by[Plan-id (plan_hash)][Platzhalter] = {ziel, typ, name}; geladen mit den
+   Plannummern (loadNums, vor jeder Ansicht). Plan, Schrittkennungen, Fortschritt und Gruppen bleiben auf dem Platzhalter; umgerechnet wird
+   nur, wo Live-Daten (Spiel-Koordinaten) auf den Plan treffen (planLiveOf/planPlatzOf) und in der Anzeige (planTabName, planTabs, koloZeile). */
+const KOLOZIEL = { acc: null, at: 0, by: {} };
+async function loadKoloziel(force) {
+  if (!force && KOLOZIEL.acc === S.acc && Date.now() - KOLOZIEL.at < 30e3) return KOLOZIEL;
+  const rows = await Cloud.q('kolonieziele', { account_id: `eq.${S.acc}`, ziel: 'not.is.null', select: 'plan,platz,ziel,typ,name,t' }).catch(() => null);
+  if (!rows) return KOLOZIEL;   // ältere Datenbank ohne Tabelle oder Netzfehler: bisheriger Stand
+  const by = {};
+  for (const r of rows) if (r?.plan && /^kolonie-\d+$/.test(r.platz || '') && /^\d+:\d+:\d+$/.test(r.ziel || ''))
+    (by[r.plan] = by[r.plan] || {})[r.platz] = { ziel: r.ziel, typ: r.typ || '', name: r.name || '' };
+  Object.assign(KOLOZIEL, { acc: S.acc, at: Date.now(), by });
+  return KOLOZIEL;
+}
+// plan.koloziel (gleiche Form) geht vor – für Tests und Pläne, die ihre Ziele selbst mitbringen
+const planZiele = plan => (plan?.koloziel && typeof plan.koloziel === 'object' ? plan.koloziel : KOLOZIEL.by[plan?.id]) || {};
+const planZielMap = plan => Object.fromEntries(Object.entries(planZiele(plan)).filter(([, z]) => z?.ziel).map(([k, z]) => [k, z.ziel]));
+// Plan-Koordinaten → Spiel (Platzhalter mit Ziel) bzw. Spiel → Platzhalter; sonst unverändert
+const planLiveOf = (plan, c) => (c && planZiele(plan)[c]?.ziel) || c;
+const planPlatzOf = (plan, c) => { const z = planZiele(plan); return (c && Object.keys(z).find(k => z[k]?.ziel === c)) || c; };
+// „1:524:9 RKPL Uxoniit IX“ für einen Platzhalter mit Ziel, sonst null
+const planZielTxt = (plan, c) => { const z = c ? planZiele(plan)[c] : null; return z?.ziel ? [z.ziel, z.typ, z.name].filter(Boolean).join(' ') : null; };
 const planNo = key => NUMS.plan[key] || null;
 const planLabel = key => !key ? '–' : planNo(key) ? `Plan ${planNo(key)}` : 'unbekannter Plan';
 // Lauf-id „auto-MMTTThhmm“ (UTC): Nummer, sonst Datum des Laufs
@@ -474,7 +498,7 @@ function planTabs(plan, home) {
   const kol = (Array.isArray(plan.planets) ? plan.planets : []).filter(p => typeof p?.coords === 'string').map(p => ({ ...p }));
   (plan.steps || []).forEach((s, i) => { const c = planAway(plan, i + 1); if (c && !kol.some(p => p.coords === c)) kol.push({ name: '', coords: c }); });
   return [{ k: 'alle', t: 'Alle' }, { k: 'heim', t: h?.coords ? `${h.name || 'Heimat'} (${h.coords})` : 'Heimat' },
-    ...kol.map(p => ({ k: p.coords, t: `${p.name || 'Kolonie'} (${p.coords})`, kol: true })), { k: 'r', t: 'Forschung (global)' }];
+    ...kol.map(p => ({ k: p.coords, t: `${p.name || 'Kolonie'} (${planZielTxt(plan, p.coords) || p.coords})`, kol: true })), { k: 'r', t: 'Forschung (global)' }];
 }
 // Schritt Nr. n im Reiter k? Heimat = Gebäude und Schiffe ohne Planet
 const planInTab = (plan, k, s, n) => !k || k === 'alle' ? true : k === 'r' ? s[0] === 'r' : k === 'heim' ? s[0] !== 'r' && !planAway(plan, n) : planAway(plan, n) === k;
@@ -549,7 +573,11 @@ function planLiveLevels(st) {
   for (const [id, v] of Array.isArray(st.r) ? st.r : []) if (typeof v === 'number') r.set(id, v);
   return { at, start: typeof st.start === 'string' ? st.start : null, b, r };
 }
-const planTabName = (plan, c) => (Array.isArray(plan.planets) && plan.planets.find(p => p?.coords === c)?.name) || c;
+// Platzhalter mit Kolonieziel: „Kolonie 1 → 1:524:9 RKPL“ (21.11.2026)
+const planTabName = (plan, c) => {
+  const n = (Array.isArray(plan?.planets) && plan.planets.find(p => p?.coords === c)?.name) || c, z = c ? planZiele(plan)[c] : null;
+  return z?.ziel ? `${n} → ${z.ziel}${z.typ ? ' ' + z.typ : ''}` : n;
+};
 // Forschungs-Startplanet (M6): plan.researchPlanet {Nr: Koordinaten} nur für Forschung, die auf einer Kolonie startet (dort
 // günstiger, Simulator --forschort); Forschung bleibt global (Reiter „Forschung (global)“, Kennung r:…). null = Heimat.
 const planResPlanet = (plan, n) => { const c = plan?.researchPlanet?.[n]; return plan?.steps?.[n - 1]?.[0] === 'r' && typeof c === 'string' ? c : null; };
@@ -605,7 +633,7 @@ function planFeed(plan, execs, sess, gd, now = Date.now()) {
   const ex = execs || [];
   const F = planLive(plan, planStepDone(plan, hst, ex), ex, hst, now);
   const hb = dev?.ab ? { ...st, at: dev.ab.at } : null;
-  return Zeitfeed.feed(plan, F, { gd: gd || null, hb, execs: ex }, now);
+  return Zeitfeed.feed(plan, F, { gd: gd || null, hb, execs: ex, koloziel: planZielMap(plan) }, now);
 }
 /* Planetenkarte der Lage (Cockpit-Umbau PR 5, 25.10.2026): ein Planet kompakt, nur Realzeit (Zeitfeed), nie rohe Planzeiten.
    Reine String-Funktion (kein DOM). p = Planet aus empirePlanets ({name, coords}); rows = Feed-Zeilen dieses Planeten
@@ -626,7 +654,7 @@ function feedByPlanet(plan, feed, home, planets) {
     return r.planet === 'heim' || !r.planet ? home : r.planet;
   };
   const out = Object.fromEntries(coords.map(c => [c, []]));
-  for (const r of feed || []) { const o = owner(r); if (out[o]) out[o].push(r); }
+  for (const r of feed || []) { const o = planLiveOf(plan, owner(r)); if (out[o]) out[o].push(r); }   // Platzhalter mit Ziel → Spiel-Koordinaten
   return out;
 }
 // Heimat-Koordinaten eines Plans: getData (gd.colony), sonst Plan (plan.planet als Text oder Objekt), sonst Rückfall fb
@@ -642,7 +670,7 @@ function planKarteSchritte(p, pp, research) {
     return (label ? `<div class="small muted">${label}</div>` : '') + stepsTable(plan, hs, execs, W, k, LT, { fcRows: false, horizonH: 24 });
   };
   return '<div class="small muted">Verteidigung: folgt</div>'
-    + table(p.coords === home ? 'heim' : p.coords, 'Planschritte (nächste 24 h)')
+    + table(p.coords === home ? 'heim' : planPlatzOf(plan, p.coords), 'Planschritte (nächste 24 h)')
     + (research ? table('r', 'Forschung (global, nächste 24 h)') : '');
 }
 function planetKarte(p, rows, opts = {}) {
@@ -774,7 +802,7 @@ const planStepDone = (plan, st, execs) => {
   const liveLvl = n => {
     const s = plan.steps[n - 1];
     if (!L || !s || (s[0] !== 'b' && s[0] !== 'r')) return null;
-    const v = s[0] === 'r' ? L.r.get(s[1]) : L.b.get(`${planAway(plan, n) || home}|${s[1]}`);
+    const v = s[0] === 'r' ? L.r.get(s[1]) : L.b.get(`${planLiveOf(plan, planAway(plan, n)) || home}|${s[1]}`);
     return v ?? null;
   };
   return n => {
@@ -807,8 +835,10 @@ const planLadung = l => { const p = (Array.isArray(l) ? l : []).map((v, i) => +v
 // Kolonisieren laut Plan; gesendet = Ausführung „Kolonisieren“ des Autobuilders (executions.data.kolo = Flugnummer, AB 0.7.35)
 const planKolo = (plan, n) => (Array.isArray(plan?.kolonisieren) ? plan.kolonisieren : []).find(k => k && k.scol === n) || null;
 function koloZeile(plan, k, x, execs) {
-  const offen = !/^\d+:\d+:\d+$/.test(k.nach || ''), name = planTabName(plan, k.nach);
-  const ziel = offen ? `${name} – Ziel offen` : name !== k.nach ? `${name} (${k.nach})` : k.nach;
+  // 21.11.2026: Platzhalter mit Kolonieziel (Autobuilder-Panel) zeigt das Ziel mit Typ und Name
+  const zt = planZielTxt(plan, k.nach), offen = !zt && !/^\d+:\d+:\d+$/.test(k.nach || ''), name = planTabName(plan, k.nach);
+  const pn = (Array.isArray(plan?.planets) && plan.planets.find(p => p?.coords === k.nach)?.name) || k.nach;
+  const ziel = zt ? `${pn} → ${zt}` : offen ? `${name} – Ziel offen` : name !== k.nach ? `${name} (${k.nach})` : k.nach;
   const sent = (execs || []).find(e => /^Kolonisieren/.test(e.action || '') && String(e.kolo) === String(k.nr));
   const flugH = isFinite(k.landH) && isFinite(k.t) ? k.landH - k.t : null;
   const ab = sent ? Date.parse(sent.t) : x && isFinite(x.e) ? x.e : null;

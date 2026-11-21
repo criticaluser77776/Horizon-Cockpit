@@ -350,7 +350,7 @@ function lageAusbau(p, ctx) {
   for (const k of ['b', 'r', 's', 'd']) {
     let rows = [];
     if (plan && LT) {
-      const mine = plan.steps.map((s, i) => i).filter(i => plan.steps[i][0] === k && LT.t[i] && owner(i) === p.coords)
+      const mine = plan.steps.map((s, i) => i).filter(i => plan.steps[i][0] === k && LT.t[i] && planLiveOf(plan, owner(i)) === p.coords)
         .map(i => { const t = LT.t[i], s = plan.steps[i]; return { n: i + 1, name: s[5], cost: s[6], start: t.run ? t.s : t.a, end: t.e, run: !!t.run, due: t.due }; })
         .sort((a, b) => a.start - b.start || a.n - b.n);
       rows = mine.filter(r => r.run || r.start <= now + 24 * H);

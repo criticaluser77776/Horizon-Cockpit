@@ -109,7 +109,8 @@ const Zeitfeed = (() => {
     /**
      * plan  Plan-Payload {id, startTime, steps, stepPlanet, planet, researchPlanet}
      * F     Ergebnis von Zeitplan.forecast / planLive ({t, first})
-     * src   {gd, hb, execs} – alle optional; gd = Zeile getdata_state, hb = Lebenszeichen {at, plan, fc, stock, rate, jobs, liveAt}
+     * src   {gd, hb, execs, koloziel} – alle optional; gd = Zeile getdata_state, hb = Lebenszeichen {at, plan, fc, stock, rate, jobs, liveAt},
+     *       koloziel = {kolonie-<n>: Spiel-Koordinaten} (Kolonieziele, 21.11.2026)
      * Ergebnis [{ q, planet: 'heim' | Koordinaten | null (Forschung), run: {i, end} | null,
      *            next: {i, at, due, why: {art, res?, detail?}, wait?: {fehl?, frei?}, src: 'getData'|'Autobuilder'|'Plan', srcAt} | null }]
      *   i ab 0; at/due/end/srcAt in ms; next.at ist nie vor jetzt (due = ursprünglich erwarteter Start, wenn schon überfällig);
@@ -138,7 +139,10 @@ const Zeitfeed = (() => {
         // laufende Aufträge je Quelle (echte Endzeiten): getData jobs {k, cls, level, coords, end}, Autobuilder jobs {k, t, l, end}
         const normJobs = list => arr(list).map(j => j && typeof j === 'object' ? { k: j.k, cls: low(j.cls ?? j.t), level: num(j.level ?? j.l), coords: j.coords || null, end: ms(j.end) } : null)
             .filter(j => j && j.end != null && j.end > now && (j.k === 'b' || j.k === 'r' || j.k === 's'));
-        const jobQ = j => j.k === 'r' ? 'r' : (!j.coords || j.coords === home) ? j.k : `${j.k}:${j.coords}`;
+        // 21.11.2026: src.koloziel {Platzhalter: Spiel-Koordinaten} – Aufträge und Lager (Spiel) auf die Schlange des Platzhalters
+        const kz = src.koloziel && typeof src.koloziel === 'object' ? src.koloziel : {};
+        const platzOf = c => (c && Object.keys(kz).find(k => kz[k] === c)) || c, liveOf = c => (c && kz[c]) || c;
+        const jobQ = j => j.k === 'r' ? 'r' : (!j.coords || j.coords === home) ? j.k : `${j.k}:${platzOf(j.coords)}`;
         const jobSrc = [];
         if (gd && Array.isArray(gd.jobs)) jobSrc.push({ t: gdAt ?? -Infinity, jobs: normJobs(gd.jobs) });
         if (hb && hbFresh && Array.isArray(hb.jobs)) jobSrc.push({ t: hbAt, jobs: normJobs(hb.jobs) });
@@ -173,7 +177,7 @@ const Zeitfeed = (() => {
                 if (L) return L;
                 return Array.isArray(hb?.stock) ? mkLager({ res: hb.stock, net: hb.rate }, ms(hb.liveAt) ?? hbAt) : null;
             }
-            return mkLager(arr(gd?.colonies).find(x => x && x.coords === c), gdAt);
+            return mkLager(arr(gd?.colonies).find(x => x && x.coords === liveOf(c)), gdAt);
         };
 
         // Kosten eines Schritts; Werft: Plankosten gelten je Einheit, der Autobuilder bestellt die ganze Menge (steps[i][7]) auf einmal

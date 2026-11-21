@@ -5,4 +5,4 @@ window.APP_CONFIG = {
   supabaseKey: 'sb_publishable__2RSF5BCobEg0AgGy9fkcw_RKfaczwY',
 };
 window.APP_VERSION = window.APP_VERSION || { number: 0, built: 'lokal' };
-window.APP_VERSION = {"number": 163, "built": "2026-11-13T19:46:06+01:00"};
+window.APP_VERSION = {"number": 164, "built": "2026-11-21T10:33:08+01:00"};
