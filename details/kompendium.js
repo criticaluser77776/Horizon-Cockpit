@@ -119,7 +119,9 @@
   // laufend laut Live-Stand zählt wie eine Ausführung mit Ende (carried: kein Start für die Abweichung der Schlange)
   async function liveTimes(p, LV) {
     const plan = S.kPlans[p.id];
-    const [execs, sess] = await Promise.all([loadPlanExecs(`eq.${S.acc}`, p.id, plan).catch(() => []), loadSessions().catch(() => ({ devs: [] }))]);
+    const [execs, sess, snap, gds] = await Promise.all([loadPlanExecs(`eq.${S.acc}`, p.id, plan).catch(() => []), loadSessions().catch(() => ({ devs: [] })),
+      loadSnap(), Cloud.q('getdata_state', { account_id: `eq.${S.acc}`, select: 'colonies' }).catch(() => [])]);
+    cardPlanets(snap, gds[0] || null, null);   // OWN_PL/OWN_FO für planLands (Ende der Kolonisierung), wie Cockpit und Atlas (Review PR #1044)
     const hst = sess.devs.map(d => d.ab?.state).find(s => s?.plan === plan.id) || {};
     const done = planStepDone(plan, hst, execs), LD = LV?.done || new Set();
     const run = Object.entries(LV?.running || {}).map(([i, rem]) => ({ t: LV.at, step: +i + 1, end: Date.parse(LV.at) + rem * 1000, carried: true }));

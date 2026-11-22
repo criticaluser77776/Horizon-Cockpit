@@ -613,13 +613,22 @@ function planTabsWire(root) {
 // koloLands): gesendet (Ausführung „Kolonisieren“ mit end) → dieses Ende; sonst Abflug = Ende des Kolonieschiffs (Ausführung des
 // Werft-Schritts scol, frühestens jetzt) + Planabstand Abflug → Landung. Ohne Schiffsauftrag oder ohne bekannte eigene Planeten
 // (OWN_PL leer) nichts – dann wie bisher nach Planzeit. Schlüssel = Plan-Koordinaten (Platzhalter).
+// Von Hand unterwegs (Review PR #1044): Flottenstatus des Snapshots (OWN_FO aus cardPlanets, flotten.ops) mit Auftrag
+// „Kolonialisieren“ zum Ziel → Ende wie AB koloDecide: Phase Orbit = Ende der Etappe, sonst Ankunft + 3 h Kolonialisieren.
+const KOLO_MS = 3 * 3600e3;
 function planLands(plan, execs, now = Date.now()) {
   const out = {};
   if (!OWN_PL.size) return out;
   for (const k of Array.isArray(plan?.kolonisieren) ? plan.kolonisieren : []) {
-    if (!k?.nach || !isFinite(k.landH) || OWN_PL.has(planLiveOf(plan, k.nach))) continue;
+    const to = k?.nach ? planLiveOf(plan, k.nach) : null;
+    if (!to || !isFinite(k.landH) || OWN_PL.has(to)) continue;
     const sent = (execs || []).find(e => /^Kolonisieren/.test(e.action || '') && String(e.kolo) === String(k.nr));
     let at = sent && +sent.end > 0 ? +sent.end : null;
+    if (at == null) {
+      const op = OWN_FO.find(o => o?.cmd === 'Kolonialisieren' && o.target === to && +o.end > 0);
+      const t = op ? (op.phase === 'Orbit' ? +op.end : +op.end + KOLO_MS) : NaN;
+      if (t > now) at = t;   // vorbei, aber noch nicht gegründet (zurückgerufen, Snapshot alt) → wie ohne Flottenstatus
+    }
     if (at == null) {
       const ship = k.scol ? (execs || []).find(e => e.step === k.scol && !e.carried) : null;
       if (!ship || !(+ship.end > 0)) continue;
@@ -780,15 +789,18 @@ function empirePlanets(d) {
    nächsten Login – die Karte fehlte stundenlang). Grundlage ist der Snapshot (empire.planets). Dazu kommen Planeten aus getData
    (gd.colonies, jede Minute), die der Snapshot noch nicht kennt (quelle 'getdata'), und Plan-Kolonien (plan.planets) ohne
    eigenen Planeten als „geplant“: Platzhalter mit Kolonieziel unter den Spiel-Koordinaten, ohne Ziel unter dem Platzhalter.
-   Ohne Snapshot und getData keine Karten (wie bisher). Die eigenen Planeten merkt sich OWN_PL (für koloZeile). */
+   Ohne Snapshot und getData keine Karten (wie bisher). Die eigenen Planeten merkt sich OWN_PL (für koloZeile), die Flugaufträge
+   des Snapshots (flotten.ops.list) OWN_FO (für planLands). Der Atlas ruft cardPlanets nur dafür auf (Pläne, Review PR #1044). */
 const OWN_PL = new Set();
+let OWN_FO = [];
 function cardPlanets(d, gd, plan) {
   const CO = /^\d+:\d+:\d+$/, out = empirePlanets(d).filter(p => CO.test(p.coords || '')), have = new Set(out.map(p => p.coords));
   for (const c of Array.isArray(gd?.colonies) ? gd.colonies : []) {
     if (!c || !CO.test(c.coords || '') || have.has(c.coords)) continue;
     out.push({ name: c.name || '', coords: c.coords, quelle: 'getdata' }); have.add(c.coords);
   }
-  if (have.size) { OWN_PL.clear(); for (const c of have) OWN_PL.add(c); }
+  OWN_PL.clear(); for (const c of have) OWN_PL.add(c);   // ohne Daten leer (kein Stand eines anderen Accounts/Aufrufs)
+  OWN_FO = have.size && Array.isArray(d?.flotten?.ops?.list) ? d.flotten.ops.list : [];
   if (!out.length) return out;
   for (const k of Array.isArray(plan?.planets) ? plan.planets : []) {
     const c = typeof k?.coords === 'string' && k.coords ? planLiveOf(plan, k.coords) : null;

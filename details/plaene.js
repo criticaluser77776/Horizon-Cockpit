@@ -520,18 +520,20 @@ const ATLAS_RUN = p => ['freigegeben', 'aktiv', 'vorgemerkt'].includes(p.status)
 async function viewPlans(rest = []) {
   if (rest[0] === 'edit' && rest[1]) return viewPlanEdit(rest[1]);
   const acc = `eq.${S.acc}`;
-  const [plans, heads, sess, W, homes, pl, accs] = await Promise.all([
+  const [plans, heads, sess, W, homes, pl, accs, gds] = await Promise.all([
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', order: 'created_at.desc', limit: 200,
       select: 'id,kind,source,status,title,note,plan_hash,parent_id,created_at,approved_at,status_at,vormerk,aufstieg:payload->aufstieg,regel:payload->transportRegel' }),
     Cloud.q('plans', { account_id: acc, kind: 'eq.build', status: 'in.(freigegeben,aktiv)', order: 'approved_at.desc.nullslast', limit: 1, select: 'id,status,title,plan_hash' }),
     loadSessions(),
     loadWissen().catch(() => null),
-    S.home?.acc === S.acc ? null : Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start' }).catch(() => []),
+    // eigene Planeten und Flugaufträge aus dem Snapshot (für koloZeile/planLands über cardPlanets, Review PR #1044)
+    Cloud.q('state_latest', { account_id: acc, kind: 'eq.live', select: 'start:data->start,pl:data->empire->planets,fo:data->flotten->ops' }).catch(() => []),
     Cloud.rpc('planlauf_status', { p_account: S.acc }).catch(() => null),
     Cloud.q('accounts', { id: acc, select: 'settings' }).catch(() => null),
+    Cloud.q('getdata_state', { account_id: acc, select: 'colonies' }).catch(() => []),
   ]);
   const settings = accs?.[0]?.settings || null;
-  if (homes) { const st = homes[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
+  if (S.home?.acc !== S.acc) { const st = homes?.[0]?.start; S.home = { acc: S.acc, name: st?.planet || '', coords: st?.coords || '' }; }
   if (plans.some(p => !planNo(p.id))) await loadNums(true);
   const head = heads[0];
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
@@ -550,6 +552,9 @@ async function viewPlans(rest = []) {
   const tpn = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && new URLSearchParams(location.search).get('testplan');
   const testPlan = tpn && /^[\w-]+$/.test(tpn) ? await fetch(`${HZ_ROOT}../Horiversum/tests/fixtures/${tpn}.json`).then(r => r.ok ? r.json() : null).catch(() => null) : null;
   const plan = testPlan || active?.payload;
+  // wie das Cockpit: OWN_PL/OWN_FO füllen (Snapshot + getData), damit koloZeile „Kolonie gegründet“ zeigt und planLands wirkt
+  const h0 = homes?.[0];
+  cardPlanets(h0 ? { start: h0.start, empire: { planets: Array.isArray(h0.pl) ? h0.pl : [] }, flotten: { ops: h0.fo } } : null, gds?.[0] || null, null);
   if (plan?.steps) {
     const holder = sess.devs.find(x => x.holds);
     const hst = holder?.ab?.state?.plan === plan.id ? holder.ab.state : {};
