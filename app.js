@@ -304,9 +304,9 @@ function liveJobRows(gd, home, W, now = Date.now()) {
   });
 }
 async function planetenKarten(d, ap, gd, sess, W, liveAt, effByPl = {}) {
-  const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
-  if (!pl.length) return '';
   const plan = ap?.payload && Array.isArray(ap.payload.steps) ? ap.payload : null;
+  const pl = cardPlanets(d, gd, plan);   // Snapshot + getData + geplante Kolonien (22.11.2026)
+  if (!pl.length) return '';
   const [execs, wplans] = await Promise.all([plan ? loadPlanExecs(`eq.${S.acc}`, ap.row.id, plan).catch(() => []) : [],
     Cloud.q('plans', { account_id: `eq.${S.acc}`, kind: 'in.(ship,defense)', status: 'in.(freigegeben,aktiv)', select: 'id,kind,created_at,payload', limit: 4 }).catch(() => [])]);
   const home = planHomeCoords(plan, gd, pl[0].coords);
@@ -469,7 +469,7 @@ function effectsLine(effs, ends = []) {
    (Collector ab 0.4.33: laufend + wartende Aufträge, nach Ablauf von total leer), sonst aus Ausbau. Eine Verteidigungs-Schlange
    liest noch keine Quelle (Paket F) → „–“. */
 function ausbauTable(d, gd, liveAt, now = Date.now()) {
-  const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
+  const pl = cardPlanets(d, gd, null);   // ab 22.11.2026 auch Kolonien, die bisher nur getData kennt
   if (!pl.length) return '';
   const snapAt = Date.parse(liveAt), gdAt = gd?.at ? Date.parse(gd.at) : NaN, home = d?.start?.coords;
   const useGd = isFinite(gdAt) && (!isFinite(snapAt) || gdAt > snapAt) && Array.isArray(gd.jobs);
@@ -969,7 +969,7 @@ async function viewPlans(rest = []) {
   if (head && S.planCache?.id !== head.id) S.planCache = { id: head.id, payload: (await Cloud.q('plans', { id: `eq.${head.id}`, select: 'payload' }))[0]?.payload };
   const active = head ? { ...head, payload: S.planCache.payload } : null;
   const plan = active?.payload && Array.isArray(active.payload.steps) ? active.payload : null;
-  const pl = empirePlanets(d).filter(p => /^\d+:\d+:\d+$/.test(p.coords || ''));
+  const pl = cardPlanets(d, gds[0] || null, plan);   // Snapshot + getData + geplante Kolonien (22.11.2026)
   // Abweichung: ein Ladeweg (loadDrift → S.drift); gilt nur, wenn der Server denselben Plan meint wie die Ansicht
   const [execs, drift0] = await Promise.all([
     plan ? loadPlanExecs(acc, active.id, plan) : [],
@@ -994,7 +994,7 @@ async function viewPlans(rest = []) {
     const by = feedByPlanet(plan, planFeed(plan, execs, sess, gd), home, pl);
     askCtx = Object.fromEntries(pl.map(p => [p.coords, askPlanetPayload(p, by[p.coords], active.id, plan.steps)]));
     const effByPl = planetEffects(effs, effEnds), po = planOpen();
-    planCards = pl.map(p => `<details class="plfold" data-plopen="${esc(p.coords)}"${po[p.coords] === false ? '' : ' open'}><summary><b>${esc(p.name || p.coords)}</b> <span class="muted small">${esc(p.coords)}</span>${p.coords === cur ? ' <span title="im Spiel gewählt">◉</span>' : ''}</summary>`
+    planCards = pl.map(p => `<details class="plfold" data-plopen="${esc(p.coords)}"${po[p.coords] === false ? '' : ' open'}><summary><b>${esc(p.name || p.coords)}</b> <span class="muted small">${esc(p.coords)}</span>${planetTag(p)}${p.coords === cur ? ' <span title="im Spiel gewählt">◉</span>' : ''}</summary>`
       + planetKarte(p, by[p.coords], { research: by[p.coords].some(r => r.q === 'r'), effects: effByPl[p.coords],
       steps: plan.steps, current: p.coords === cur, plan: { plan, st: hst, execs, W, LT, home } }) + '</details>').join('');
     gesamt = () => stepsTable(plan, hst, execs, W, 'alle', LT, { gesamt: { last: 5, hide: planHide() }, home: { coords: home, name: S.home?.name } });

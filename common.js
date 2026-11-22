@@ -609,6 +609,26 @@ function planTabsWire(root) {
 // Live-Zeitplan (zeitplan.js, Nutzer 24.10.2026): erwartete Zeiten je Schritt wie im Autobuilder. Fertig laut isDone(n); läuft:
 // Ausführung mit Ende in der Zukunft (executions.data.end); Startpunkte je Schlange aus dem Lebenszeichen des Autobuilders mit
 // diesem Plan (hb.fc, ab 0.5.75), sonst Abweichung je Schlange aus den Starts, sonst sein Vorlauf. Überfälliges rückt auf jetzt.
+// Erwartetes Ende der Kolonisierung je noch nicht gegründeter Kolonie für Zeitplan.forecast (o.lands, 22.11.2026, wie AB 0.7.39
+// koloLands): gesendet (Ausführung „Kolonisieren“ mit end) → dieses Ende; sonst Abflug = Ende des Kolonieschiffs (Ausführung des
+// Werft-Schritts scol, frühestens jetzt) + Planabstand Abflug → Landung. Ohne Schiffsauftrag oder ohne bekannte eigene Planeten
+// (OWN_PL leer) nichts – dann wie bisher nach Planzeit. Schlüssel = Plan-Koordinaten (Platzhalter).
+function planLands(plan, execs, now = Date.now()) {
+  const out = {};
+  if (!OWN_PL.size) return out;
+  for (const k of Array.isArray(plan?.kolonisieren) ? plan.kolonisieren : []) {
+    if (!k?.nach || !isFinite(k.landH) || OWN_PL.has(planLiveOf(plan, k.nach))) continue;
+    const sent = (execs || []).find(e => /^Kolonisieren/.test(e.action || '') && String(e.kolo) === String(k.nr));
+    let at = sent && +sent.end > 0 ? +sent.end : null;
+    if (at == null) {
+      const ship = k.scol ? (execs || []).find(e => e.step === k.scol && !e.carried) : null;
+      if (!ship || !(+ship.end > 0)) continue;
+      at = Math.max(now, +ship.end) + Math.max(0, k.landH - (+k.t || 0)) * 3600e3;
+    }
+    out[k.nach] = { at, h: k.landH };
+  }
+  return out;
+}
 function planLive(plan, isDone, execs, hb, now = Date.now()) {
   const ends = {}, starts = [];
   for (const e of execs || []) {
@@ -621,7 +641,7 @@ function planLive(plan, isDone, execs, hb, now = Date.now()) {
   // Farm-Neustart) – hier auf startTime umrechnen, wie lagsFrom
   const lag = mine?.ahead != null ? -mine.ahead + (+mine.t0 ? (+mine.t0 - Date.parse(plan.startTime)) / 3600e3 : 0) : 0;
   const F = Zeitplan.forecast(plan, { now, state: i => i in ends ? '1' : isDone(i + 1) ? '2' : '0', ends,
-    anchors: mine?.fc || {}, lags: Zeitplan.lagsFrom(plan, starts), lag });
+    anchors: mine?.fc || {}, lags: Zeitplan.lagsFrom(plan, starts), lag, lands: planLands(plan, execs, now) });
   F.lagB = Zeitplan.lagsFrom(plan, starts).b ?? lag;
   return F;
 }
@@ -706,7 +726,7 @@ function planetKarte(p, rows, opts = {}) {
   if (effs.length) body = effs.map(e => `<div class="pleff small">⚡ <b>${esc(e.name)}</b> · noch ${esc(durDHM((Date.parse(e.until) - now) / 1000))} · bis ${esc(dt(e.until))}${e.src === 'typisch' ? ' <span class="muted">(geschätzt)</span>' : ''}</div>`).join('') + body;
   if (opts.extra) body += opts.extra;   // Lage (Umbau 2 U2): aufklappbar Ausbau je Art und Flotten (lageAusbau in app.js)
   const ask = typeof window !== 'undefined' && window.HZ_ASK && (typeof isOwner !== 'function' || isOwner()) ?`<div class="plfoot"><button class="small askgo" data-ask="${esc(p.coords)}">Claude fragen</button></div>` : '';
-  return `<div class="card plcard"><h2>${esc(p.name || p.coords)} <span class="muted small">${esc(p.coords)}</span>${opts.current ? ' <span title="im Spiel gewählt">◉</span>' : ''}</h2>${body}${ask}</div>`;
+  return `<div class="card plcard"><h2>${esc(p.name || p.coords)} <span class="muted small">${esc(p.coords)}</span>${planetTag(p)}${opts.current ? ' <span title="im Spiel gewählt">◉</span>' : ''}</h2>${body}${ask}</div>`;
 }
 const PLAN_LIVE_NOTE ='Zeiten live je Schlange (Heimat, Forschung, je Kolonie): laufende Aufträge bis zu ihrem Ende, sonst Startschätzung des Autobuilders bzw. Abweichung der Schlange; Überfälliges ab jetzt (reine Planzeit als Tooltip)';
 // Zeitzelle eines Schritts (Tabellen und Kopfzeile): läuft bis …, fällig seit … oder erwarteter Start; done = Ausführung
@@ -756,6 +776,31 @@ function empirePlanets(d) {
   }
   return list;
 }
+/* Planeten für die Karten unter Lage und Pläne (22.11.2026, Befund Kolonie 1:524:9: um 10:56 gegründet, Snapshot erst beim
+   nächsten Login – die Karte fehlte stundenlang). Grundlage ist der Snapshot (empire.planets). Dazu kommen Planeten aus getData
+   (gd.colonies, jede Minute), die der Snapshot noch nicht kennt (quelle 'getdata'), und Plan-Kolonien (plan.planets) ohne
+   eigenen Planeten als „geplant“: Platzhalter mit Kolonieziel unter den Spiel-Koordinaten, ohne Ziel unter dem Platzhalter.
+   Ohne Snapshot und getData keine Karten (wie bisher). Die eigenen Planeten merkt sich OWN_PL (für koloZeile). */
+const OWN_PL = new Set();
+function cardPlanets(d, gd, plan) {
+  const CO = /^\d+:\d+:\d+$/, out = empirePlanets(d).filter(p => CO.test(p.coords || '')), have = new Set(out.map(p => p.coords));
+  for (const c of Array.isArray(gd?.colonies) ? gd.colonies : []) {
+    if (!c || !CO.test(c.coords || '') || have.has(c.coords)) continue;
+    out.push({ name: c.name || '', coords: c.coords, quelle: 'getdata' }); have.add(c.coords);
+  }
+  if (have.size) { OWN_PL.clear(); for (const c of have) OWN_PL.add(c); }
+  if (!out.length) return out;
+  for (const k of Array.isArray(plan?.planets) ? plan.planets : []) {
+    const c = typeof k?.coords === 'string' && k.coords ? planLiveOf(plan, k.coords) : null;
+    if (!c || have.has(c)) continue;
+    const zt = planZielTxt(plan, k.coords), offen = !zt && !CO.test(c);
+    out.push({ name: `${k.name || 'Kolonie'}${offen ? ' – Ziel offen' : ''}`, coords: c, geplant: true }); have.add(c);
+  }
+  return out;
+}
+// Kennzeichen hinter dem Planetennamen: geplant (noch nicht gegründet) bzw. nur aus getData (noch nicht im Live-Stand)
+const planetTag = p => p?.geplant ? ' <span class="tag" title="laut Plan, noch nicht gegründet">geplant</span>'
+  : p?.quelle === 'getdata' ? ' <span class="tag" title="aus getData, noch nicht im Live-Stand (Snapshot)">neu</span>' : '';
 function empireRes(d, hrs) {
   const pl = empirePlanets(d).filter(p => p.storage);
   if (!pl.length) return null;
@@ -840,9 +885,12 @@ function koloZeile(plan, k, x, execs) {
   const pn = (Array.isArray(plan?.planets) && plan.planets.find(p => p?.coords === k.nach)?.name) || k.nach;
   const ziel = zt ? `${pn} → ${zt}` : offen ? `${name} – Ziel offen` : name !== k.nach ? `${name} (${k.nach})` : k.nach;
   const sent = (execs || []).find(e => /^Kolonisieren/.test(e.action || '') && String(e.kolo) === String(k.nr));
+  // 22.11.2026: von Hand geflogen (keine Ausführung) – gegründet, sobald das Ziel ein eigener Planet ist (cardPlanets → OWN_PL)
+  const da = OWN_PL.has(planLiveOf(plan, k.nach));
   const flugH = isFinite(k.landH) && isFinite(k.t) ? k.landH - k.t : null;
   const ab = sent ? Date.parse(sent.t) : x && isFinite(x.e) ? x.e : null;
-  const zeit = sent ? `gesendet ${dt(sent.t)}${sent.end ? ` · Kolonie ca. ${dt(+sent.end)}` : ''}`
+  const zeit = sent ? `gesendet ${dt(sent.t)}${da ? ' · Kolonie gegründet' : sent.end ? ` · Kolonie ca. ${dt(+sent.end)}` : ''}`
+    : da ? 'Kolonie gegründet'
     : ab ? `Abflug ca. ${dt(ab)}${flugH != null ? ` · Landung ca. ${dt(ab + flugH * 3600e3)}` : ''}` : '';
   return `<div class="small">Kolonisieren → ${esc(ziel)} · Ladung ${esc(planLadung(k.ladung))}${zeit ? ` · ${esc(zeit)}` : ''}</div>`;
 }
