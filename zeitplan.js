@@ -23,6 +23,7 @@ const Zeitplan = (() => {
      * o.lags   {Schlange: h} Abweichung je Schlange; o.lag Rückfall für alle (h)
      * o.lands  {Koordinaten: {at (ms), h}} erwartetes Ende der Kolonisierung einer noch nicht bestehenden Kolonie (h = Planzeit der Landung)
      * o.slide  false: nicht auf „jetzt“ rücken (Startpunkte fürs Lebenszeichen, ändern sich nicht mit der Uhr)
+     * o.scale  i => Faktor auf die Plandauer von Schritt i (AB 0.7.57: gelernte Bauzeit je Kolonie), fehlt = 1
      * Ergebnis {t: [{q, a, s (nur laufend: Start = Ende − Dauer, höchstens jetzt), e, due, run} | null (fertig)], first: {Schlange: {i, at}} erster offener Schritt je Schlange}
      */
     function forecast(plan, o = {}) {
@@ -33,7 +34,8 @@ const Zeitplan = (() => {
         plan.steps.forEach((s, i) => {
             const c = state(i);
             if (c === '2') return;
-            const q = queueOf(plan, i), ps = t0 + s[3] * H, dur = Math.max(0, (s[4] - s[3]) * H);
+            const f = o.scale ? +o.scale(i) : 1;
+            const q = queueOf(plan, i), ps = t0 + s[3] * H, dur = Math.max(0, (s[4] - s[3]) * H) * (f > 0 ? f : 1);
             let x = Q[q];
             if (!x) {
                 x = Q[q] = { sh: (isFinite(lags[q]) ? lags[q] : isFinite(o.lag) ? o.lag : 0) * H, last: -Infinity };
